@@ -1,0 +1,88 @@
+# Secrets and local env files
+.env
+.env.*
+*.env
+!.env.example
+!.env.balanced.example
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Runtime sessions and private keys
+sessions/
+*.session
+*.session-journal
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Server-local SearXNG config. Commit searxng/settings.example.yml instead.
+searxng/settings.yml
+!searxng/settings.example.yml
+
+# Runtime / Docker volume data.
+# Keep schema and helper files under storage/** tracked; only exclude actual data dumps/dirs.
+storage/**/data/
+storage/**/pgdata/
+storage/**/*.dump
+storage/**/*.backup
+storage/**/*.sqlite
+storage/**/*.db
+grafana/data/
+prometheus/data/
+
+# Docs archive and bulky local knowledge packs
+docs/old_docs*/
+docs/chatgpt/designer-ai-visionary/books/
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+.next/
+.nuxt/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local AI/editor tooling
+.agents/
+.claude/
+.cursor/
+.vscode/
+.idea/
+*.iml
+AGENTS.md
+CLAUDE.md
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# Temporary files
+test_write.txt
+*.tmp

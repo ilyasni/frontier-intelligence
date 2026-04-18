@@ -1,0 +1,22 @@
+Ты оцениваешь пост для workspace "{{workspace_name}}" и одновременно извлекаешь ключевые концепции.
+
+Категории:
+{{categories_json}}
+
+Верни строго JSON без Markdown в формате:
+{
+  "score": 0.0,
+  "category": "одна категория из списка или other",
+  "reasoning": "коротко, почему пост релевантен или нет",
+  "concepts": [
+    {"name": "concept name", "category": "technology|design|business_models|science|society|other", "weight": 1}
+  ]
+}
+
+Правила:
+- score от 0 до 1
+- concepts максимум 10, weight от 1 до 5
+- не выдумывай сущности, если сигнал слабый
+
+Пост:
+{{content}}

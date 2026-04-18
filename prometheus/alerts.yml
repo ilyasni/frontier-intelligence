@@ -1,0 +1,198 @@
+groups:
+  - name: frontier_runtime_resilience
+    rules:
+      - alert: FrontierTelegramClientResetBurst
+        expr: increase(frontier_telegram_client_resets_total[10m]) >= 3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Telegram ingest is repeatedly resetting clients"
+          description: "Telegram client resets increased by {{ $value }} in the last 10 minutes. Check ingest logs and proxy/Telethon stability."
+
+      - alert: FrontierCrawlSessionRecreateBurst
+        expr: increase(frontier_crawl_session_recreates_total[10m]) >= 3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "crawl4ai is repeatedly recreating HTTP sessions"
+          description: "crawl4ai session recreations increased by {{ $value }} in the last 10 minutes. Check crawl network health and upstream errors."
+
+      - alert: FrontierRateLimitBurst
+        expr: sum by (service, upstream, operation) (increase(frontier_rate_limit_events_total[10m])) >= 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Frontier is hitting upstream rate limits"
+          description: "Rate-limit events for {{ $labels.service }}/{{ $labels.upstream }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes."
+
+      - alert: FrontierGigaChatBalanceLow
+        expr: frontier_gigachat_balance_tokens{service="admin"} < 100000
+        for: 5m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "GigaChat token balance is below 100k"
+          description: "Remaining {{ $labels.usage }} balance is {{ $value }} tokens. Top up package tokens to avoid 402 Payment Required and false dropped posts."
+
+      - alert: FrontierGigaChatBalanceRefreshStale
+        expr: time() - frontier_gigachat_balance_refresh_timestamp_seconds{service="admin"} > 1800
+        for: 10m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "GigaChat balance refresh is stale"
+          description: "Admin has not refreshed GigaChat balance metrics for more than 30 minutes. Check scheduler health, OAuth, proxy, and GigaChat API reachability."
+
+      - alert: FrontierRedisStreamLagHigh
+        expr: frontier_redis_stream_lag{service="admin"} > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: admin
+        annotations:
+          summary: "Redis stream lag is growing"
+          description: "{{ $labels.stream }}/{{ $labels.group }} lag is {{ $value }}. Check worker throughput and pending reclaim."
+
+      - alert: FrontierRedisStreamLagCritical
+        expr: frontier_redis_stream_lag{service="admin"} > 5000
+        for: 10m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Redis stream lag is critically high"
+          description: "{{ $labels.stream }}/{{ $labels.group }} lag is {{ $value }} for more than 10 minutes. New events are not being processed in time."
+
+      - alert: FrontierRedisStreamPendingHigh
+        expr: frontier_redis_stream_pending{service="admin"} > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: admin
+        annotations:
+          summary: "Redis stream pending backlog is growing"
+          description: "{{ $labels.stream }}/{{ $labels.group }} pending is {{ $value }}. Check consumer crashes, XAUTOCLAIM reclaim, and DLQ."
+
+      - alert: FrontierRedisStreamOldestPendingTooOld
+        expr: frontier_redis_stream_oldest_pending_age_seconds{service="admin"} > 900
+        for: 5m
+        labels:
+          severity: warning
+          service: admin
+        annotations:
+          summary: "Oldest pending Redis stream message is too old"
+          description: "{{ $labels.stream }}/{{ $labels.group }} has a pending message older than {{ $value }} seconds."
+
+      - alert: FrontierAdminSchedulerNotRunning
+        expr: frontier_admin_scheduler_running{service="admin"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Admin scheduler is not running"
+          description: "Scheduled maintenance jobs in admin are stopped. Cron-based source scoring, signal analysis, and balance refresh are not executing."
+
+      - alert: FrontierManualSignalJobRunningTooLong
+        expr: frontier_admin_manual_job_oldest_running_age_seconds{service="admin",job_name=~"run_signal_analysis|run_semantic_clusters"} > 5400
+        for: 10m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Manual analysis job is running too long"
+          description: "The oldest {{ $labels.job_name }} job has been running for {{ $value }} seconds. Check worker pressure, model latency, or a stuck subprocess."
+
+      - alert: FrontierManualSignalJobFailedRecently
+        expr: frontier_admin_manual_jobs_recent_failures{service="admin",job_name=~"run_signal_analysis|run_semantic_clusters"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Manual analysis job recently failed"
+          description: "{{ $labels.job_name }} has {{ $value }} failures in the recent observation window. Inspect admin manual job history and logs."
+
+      - alert: FrontierSearxngErrorBurst
+        expr: sum by (service, mode) (increase(frontier_searxng_requests_total{status="error"}[15m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: worker
+        annotations:
+          summary: "SearXNG is returning repeated errors"
+          description: "{{ $labels.service }} {{ $labels.mode }} queries saw {{ $value }} SearXNG errors in the last 15 minutes. Check upstream engines and SearXNG availability."
+
+      - alert: FrontierSearxngNoSuccessfulQueries
+        expr: (sum by (service, mode) (increase(frontier_searxng_requests_total{status="ok"}[30m])) == 0) and (sum by (service, mode) (increase(frontier_searxng_requests_total{status="error"}[30m])) >= 5)
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "SearXNG grounding is fully degraded"
+          description: "{{ $labels.service }} {{ $labels.mode }} has no successful SearXNG queries in 30 minutes while errors continue. Missing-signals grounding is effectively down."
+
+      - alert: FrontierHostRootDiskFilling
+        expr: (node_filesystem_avail_bytes{job="node-exporter", mountpoint="/", fstype!=""} / node_filesystem_size_bytes{job="node-exporter", mountpoint="/", fstype!=""}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: "Host root filesystem free space is below 15%"
+          description: "Root filesystem on the Docker host has only {{ $value | humanizePercentage }} free. Clean up container logs/cache before Redis/Postgres start failing writes."
+
+      - alert: FrontierHostRootDiskCritical
+        expr: (node_filesystem_avail_bytes{job="node-exporter", mountpoint="/", fstype!=""} / node_filesystem_size_bytes{job="node-exporter", mountpoint="/", fstype!=""}) < 0.07
+        for: 5m
+        labels:
+          severity: critical
+          service: host
+          notify: telegram
+        annotations:
+          summary: "Host root filesystem free space is below 7%"
+          description: "Root filesystem on the Docker host has only {{ $value | humanizePercentage }} free. Expect Redis persistence, Docker exec healthchecks, and Postgres writes to fail."
+
+      - alert: FrontierCoreServiceDown
+        expr: up{job=~"worker|ingest|qdrant"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: '{{ $labels.job }}'
+          notify: telegram
+        annotations:
+          summary: "Core Frontier service is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 5 minutes."
+
+      - alert: FrontierControlPlaneServiceDown
+        expr: up{job=~"admin|mcp"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: "Control-plane Frontier service is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 10 minutes."
+
+      - alert: FrontierSupportServiceDown
+        expr: up{job=~"crawl4ai|alertmanager|node-exporter"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: "Support service is down"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable for more than 10 minutes."

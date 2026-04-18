@@ -1,0 +1,27 @@
+# Опционально: обход типичных сбоев AppArmor на healthcheck / docker exec (хост-специфично).
+# Подключение:
+#   docker compose -f docker-compose.yml -f docker-compose.host-fixes.yml up -d
+# В проде ослабляет изоляцию контейнеров — включай только если без этого health/exec ломаются.
+#
+# Сборка образов по-прежнему: scripts/server-build-stack.sh (DOCKER_BUILDKIT=0).
+
+services:
+  postgres:
+    security_opt:
+      - apparmor:unconfined
+
+  redis:
+    security_opt:
+      - apparmor:unconfined
+
+  qdrant:
+    security_opt:
+      - apparmor:unconfined
+
+  neo4j:
+    security_opt:
+      - apparmor:unconfined
+
+  gpt2giga-proxy:
+    security_opt:
+      - apparmor:unconfined

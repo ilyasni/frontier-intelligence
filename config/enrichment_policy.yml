@@ -1,0 +1,19 @@
+defaults:
+  relevance_threshold: 0.6
+  embedding_model: EmbeddingsGigaR
+  embed_dim: 2560
+  embedding_cache_ttl_days: 7
+  max_content_length: 4000
+  retry_max: 5
+  retry_backoff_ms: 2000
+  batch_size: 32
+
+workspaces:
+  disruption:
+    relevance_threshold: 0.6
+    categories:
+      - technology
+      - design
+      - business_models
+      - society
+      - science

@@ -1,0 +1,2248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Frontier Intelligence — Admin</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; }
+    .sidebar { width: 220px; position: fixed; left: 0; top: 0; bottom: 0; background: #1a1d27; border-right: 1px solid #2d3748; padding: 20px 0; }
+    .sidebar h1 { font-size: 13px; color: #4a5568; text-transform: uppercase; letter-spacing: 0.1em; padding: 0 20px 16px; }
+    .sidebar a { display: block; padding: 10px 20px; color: #a0aec0; text-decoration: none; font-size: 14px; border-left: 3px solid transparent; }
+    .sidebar a:hover, .sidebar a.active { color: #fff; background: rgba(99,102,241,0.1); border-left-color: #6366f1; }
+    .sidebar a:focus-visible, .btn:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+      outline: 2px solid #8b8ef7;
+      outline-offset: 2px;
+    }
+    .main { margin-left: 220px; padding: 32px; min-height: 100vh; }
+    .page { display: none; }
+    .page.active { display: block; }
+    h2 { font-size: 22px; margin-bottom: 24px; color: #f7fafc; }
+    .card { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+    .card h3 { font-size: 15px; margin-bottom: 12px; color: #e2e8f0; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-done { background: rgba(16,185,129,0.15); color: #10b981; }
+    .badge-dropped { background: rgba(156,163,175,0.15); color: #9ca3af; }
+    .badge-error { background: rgba(239,68,68,0.15); color: #ef4444; }
+    .badge-pending, .badge-processing { background: rgba(251,191,36,0.15); color: #fbbf24; }
+    .badge-telegram { background: rgba(0,136,204,0.15); color: #0088cc; }
+    .badge-rss { background: rgba(255,165,0,0.15); color: #ffa500; }
+    .badge-habr { background: rgba(100,200,100,0.15); color: #64c864; }
+    .badge-web { background: rgba(150,100,255,0.15); color: #9664ff; }
+    .badge-api { background: rgba(72,187,120,0.15); color: #48bb78; }
+    .badge-email { background: rgba(244,114,182,0.15); color: #f472b6; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .stat-card { background: #1a1d27; border: 1px solid #2d3748; border-radius: 8px; padding: 16px; text-align: center; }
+    .stat-num { font-size: 28px; font-weight: 700; color: #6366f1; }
+    .stat-label { font-size: 12px; color: #718096; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; color: #718096; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 8px 12px; border-bottom: 1px solid #2d3748; }
+    td { padding: 10px 12px; border-bottom: 1px solid #1e2536; }
+    tr:hover td { background: rgba(99,102,241,0.05); }
+    .btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; }
+    .btn-primary { background: #6366f1; color: #fff; }
+    .btn-primary:hover { background: #5355d4; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .btn-outline { background: transparent; border: 1px solid #4a5568; color: #a0aec0; }
+    .btn-outline:hover { border-color: #6366f1; color: #6366f1; }
+    input, select, textarea { background: #0f1117; border: 1px solid #2d3748; color: #e2e8f0; border-radius: 6px; padding: 8px 12px; font-size: 14px; width: 100%; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #6366f1; }
+    .form-row { margin-bottom: 14px; }
+    label { display: block; font-size: 12px; color: #718096; margin-bottom: 6px; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
+    .modal.open { display: flex; }
+    .modal-box { background: #1a1d27; border: 1px solid #2d3748; border-radius: 10px; padding: 28px; width: 480px; max-width: 95vw; }
+    .modal-box h3 { margin-bottom: 20px; }
+    .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    .field-group { display: none; }
+    .field-group.visible { display: block; }
+    .search-results { margin-top: 20px; }
+    .result-item { background: #0f1117; border: 1px solid #2d3748; border-radius: 6px; padding: 14px; margin-bottom: 10px; }
+    .result-meta { font-size: 11px; color: #718096; margin-top: 6px; }
+    pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+    .synthesis-box { background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.3); border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+    .synthesis-box h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #6366f1; margin-bottom: 10px; }
+    .card-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; align-items: start; }
+    .toolbar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
+    .toolbar .form-row { margin-bottom: 0; min-width: 160px; }
+    .empty { color: #718096; text-align: center; padding: 20px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .kv { display: grid; grid-template-columns: 160px 1fr; gap: 8px 16px; }
+    .kv div { padding: 4px 0; border-bottom: 1px solid #1e2536; }
+    .settings-layout { display: grid; gap: 16px; }
+    .settings-hero {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .settings-metric {
+      background: linear-gradient(180deg, rgba(99,102,241,0.12), rgba(15,17,23,0.2));
+      border: 1px solid rgba(99,102,241,0.18);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .settings-metric strong {
+      display: block;
+      font-size: 22px;
+      color: #f7fafc;
+      margin-bottom: 4px;
+    }
+    .settings-metric span {
+      display: block;
+      font-size: 12px;
+      color: #9ca3af;
+      line-height: 1.5;
+    }
+    .settings-panel {
+      background: rgba(15,17,23,0.5);
+      border: 1px solid #2d3748;
+      border-radius: 12px;
+      padding: 16px;
+      margin-top: 14px;
+    }
+    .settings-panel-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+    .settings-panel-header h3 {
+      margin-bottom: 4px;
+      font-size: 14px;
+      color: #f7fafc;
+    }
+    .settings-panel-header p {
+      color: #9ca3af;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .settings-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      border: 1px solid transparent;
+    }
+    .settings-pill-ok { background: rgba(16,185,129,0.1); color: #34d399; border-color: rgba(16,185,129,0.2); }
+    .settings-pill-warn { background: rgba(245,158,11,0.1); color: #fbbf24; border-color: rgba(245,158,11,0.22); }
+    .settings-pill-error { background: rgba(239,68,68,0.1); color: #f87171; border-color: rgba(239,68,68,0.22); }
+    .settings-balance-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .settings-balance-item {
+      background: #0f1117;
+      border: 1px solid #1e2536;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .settings-balance-item .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #718096;
+      margin-bottom: 8px;
+    }
+    .settings-balance-item .value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #e2e8f0;
+    }
+    .settings-balance-item.low .value { color: #fbbf24; }
+    .settings-note {
+      font-size: 12px;
+      color: #9ca3af;
+      line-height: 1.7;
+    }
+    .settings-stack {
+      display: grid;
+      gap: 12px;
+    }
+    .settings-subgrid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    .settings-cell {
+      background: #0f1117;
+      border: 1px solid #1e2536;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .settings-cell-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #718096;
+      margin-bottom: 8px;
+    }
+    .settings-cell-value {
+      font-size: 15px;
+      font-weight: 700;
+      color: #f7fafc;
+      word-break: break-word;
+    }
+    .settings-cell-meta {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #9ca3af;
+      line-height: 1.5;
+    }
+    .settings-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 12px;
+      overflow: hidden;
+      border: 1px solid #1e2536;
+      border-radius: 10px;
+    }
+    .settings-table th,
+    .settings-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #1e2536;
+      vertical-align: top;
+    }
+    .settings-table th {
+      background: rgba(15, 17, 23, 0.75);
+      font-size: 10px;
+      color: #718096;
+    }
+    .settings-table td {
+      background: rgba(15, 17, 23, 0.35);
+      color: #e2e8f0;
+    }
+    .settings-table tr:last-child td { border-bottom: none; }
+    .settings-inline-status {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .settings-refresh[disabled] {
+      opacity: 0.55;
+      cursor: progress;
+    }
+    #graph-canvas { width: 100%; height: 620px; border-radius: 8px; background: #0f1117; border: 1px solid #2d3748; }
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: #a0aec0; }
+    .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 999px; margin-right: 6px; vertical-align: middle; }
+    .legend-tech::before { background: #60a5fa; }
+    .legend-design::before { background: #f59e0b; }
+    .legend-business::before { background: #34d399; }
+    .legend-default::before { background: #a78bfa; }
+    @media (max-width: 1100px) {
+      .card-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="sidebar">
+  <h1>Frontier Intel</h1>
+  <a href="#" class="nav-link active" data-page="dashboard">Dashboard</a>
+  <a href="#" class="nav-link" data-page="workspaces">Workspaces</a>
+  <a href="#" class="nav-link" data-page="sources">Sources</a>
+  <a href="#" class="nav-link" data-page="pipeline">Pipeline</a>
+  <a href="#" class="nav-link" data-page="clusters">Clusters</a>
+  <a href="#" class="nav-link" data-page="posts">Posts</a>
+  <a href="#" class="nav-link" data-page="albums">Albums</a>
+  <a href="#" class="nav-link" data-page="media">Media</a>
+  <a href="#" class="nav-link" data-page="graph">Graph</a>
+  <a href="#" class="nav-link" data-page="settings">Settings</a>
+  <a href="#" class="nav-link" data-page="search">Search</a>
+</div>
+
+<div class="main">
+  <!-- Dashboard -->
+  <div class="page active" id="page-dashboard">
+    <h2>Dashboard</h2>
+    <div class="stats-grid" id="dash-stats"></div>
+    <div class="card">
+      <h3>Recent posts</h3>
+      <table>
+        <thead><tr><th>Source</th><th>Preview</th><th>Status</th><th>Score</th><th>Category</th></tr></thead>
+        <tbody id="dash-recent"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Workspaces -->
+  <div class="page" id="page-workspaces">
+    <h2>Workspaces <button class="btn btn-outline btn-sm" onclick="bootstrapWorkspaces()" style="float:right;margin-left:8px">Bootstrap Config</button><button class="btn btn-primary btn-sm" onclick="openWorkspaceModalCreate()" style="float:right">+ New</button></h2>
+    <div id="ws-list"></div>
+  </div>
+
+  <!-- Sources -->
+  <div class="page" id="page-sources">
+    <h2>Sources <button class="btn btn-outline btn-sm" onclick="bootstrapSources()" style="float:right;margin-left:8px">Bootstrap Bundle</button><button class="btn btn-outline btn-sm" onclick="refreshSourceScores()" style="float:right;margin-left:8px">Refresh Scores</button><button class="btn btn-primary btn-sm" onclick="openModal('src-modal')" style="float:right">+ Add source</button></h2>
+    <div class="form-row" style="max-width:300px;margin-bottom:20px">
+      <select id="src-ws-filter" onchange="loadSources()">
+        <option value="">All workspaces</option>
+      </select>
+    </div>
+    <div id="src-list"></div>
+  </div>
+
+  <!-- Pipeline -->
+  <div class="page" id="page-pipeline">
+    <h2>Pipeline</h2>
+    <div class="form-row" style="max-width:300px;margin-bottom:20px">
+      <select id="pipe-ws-filter" onchange="loadPipeline()">
+        <option value="">All workspaces</option>
+      </select>
+    </div>
+    <div class="card">
+      <h3>Scheduler</h3>
+      <div id="pipe-scheduler" class="empty">Loading scheduler...</div>
+    </div>
+    <div class="stats-grid" id="pipe-stats"></div>
+    <div class="card">
+      <h3>Recent</h3>
+      <table>
+        <thead><tr><th>Source</th><th>Preview</th><th>Status</th><th>Score</th><th>Category</th><th></th></tr></thead>
+        <tbody id="pipe-recent"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Clusters -->
+  <div class="page" id="page-clusters">
+    <h2>Clusters <button class="btn btn-primary btn-sm" onclick="runSemanticClusters()" style="float:right">Run Batch</button></h2>
+    <div class="toolbar">
+      <div class="form-row">
+        <label>Workspace</label>
+        <select id="clusters-ws-filter" onchange="loadClusters()">
+          <option value="">All workspaces</option>
+        </select>
+      </div>
+      <button class="btn btn-outline" onclick="loadClusters()">Refresh</button>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <h3>Semantic Clusters</h3>
+        <table>
+          <thead><tr><th>Title</th><th>Posts</th><th>State</th><th>Detected</th></tr></thead>
+          <tbody id="semantic-clusters-list"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Stable Trends</h3>
+        <table>
+          <thead><tr><th>Title</th><th>Docs</th><th>Stage</th><th>Score</th></tr></thead>
+          <tbody id="trend-clusters-list"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <h3>Emerging Signals</h3>
+        <table>
+          <thead><tr><th>Title</th><th>Stage</th><th>Score</th><th>Confidence</th></tr></thead>
+          <tbody id="emerging-signals-list"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Batch Runs</h3>
+        <table>
+          <thead><tr><th>Started</th><th>Status</th><th>Workspace</th><th>Summary</th></tr></thead>
+          <tbody id="cluster-runs-list"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Posts -->
+  <div class="page" id="page-posts">
+    <h2>Posts</h2>
+    <div class="toolbar">
+      <div class="form-row">
+        <label>Workspace</label>
+        <select id="posts-ws-filter" onchange="loadPosts()">
+          <option value="">All workspaces</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Status</label>
+        <select id="posts-status-filter" onchange="loadPosts()">
+          <option value="">All</option>
+          <option value="pending">pending</option>
+          <option value="done">done</option>
+          <option value="dropped">dropped</option>
+          <option value="error">error</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Media</label>
+        <select id="posts-media-filter" onchange="loadPosts()">
+          <option value="">All</option>
+          <option value="true">With media</option>
+          <option value="false">No media</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Limit</label>
+        <input id="posts-limit" type="number" min="1" max="200" value="50" onchange="loadPosts()">
+      </div>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <table>
+          <thead><tr><th>Post</th><th>Status</th><th>Vision</th><th>Graph</th><th>Score</th><th></th></tr></thead>
+          <tbody id="posts-list"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Post details</h3>
+        <div id="post-detail" class="empty">Select a post to inspect enrichments and linked album state.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Albums -->
+  <div class="page" id="page-albums">
+    <h2>Albums</h2>
+    <div class="toolbar">
+      <div class="form-row">
+        <label>Workspace</label>
+        <select id="albums-ws-filter" onchange="loadAlbums()">
+          <option value="">All workspaces</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Assembled</label>
+        <select id="albums-assembled-filter" onchange="loadAlbums()">
+          <option value="">All</option>
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Limit</label>
+        <input id="albums-limit" type="number" min="1" max="200" value="50" onchange="loadAlbums()">
+      </div>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <table>
+          <thead><tr><th>Album</th><th>Items</th><th>Posts</th><th>Assembled</th><th>Summary</th><th></th></tr></thead>
+          <tbody id="albums-list"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Album details</h3>
+        <div id="album-detail" class="empty">Select an album to inspect linked posts.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Media -->
+  <div class="page" id="page-media">
+    <h2>Media</h2>
+    <div class="toolbar">
+      <div class="form-row">
+        <label>Workspace</label>
+        <select id="media-ws-filter" onchange="loadMedia()">
+          <option value="">All workspaces</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>MIME</label>
+        <input id="media-mime-filter" placeholder="image/jpeg" onkeydown="if(event.key==='Enter')loadMedia()">
+      </div>
+      <div class="form-row">
+        <label>Limit</label>
+        <input id="media-limit" type="number" min="1" max="200" value="50" onchange="loadMedia()">
+      </div>
+      <button class="btn btn-outline" onclick="loadMedia()">Apply</button>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <table>
+          <thead><tr><th>Key</th><th>MIME</th><th>Size</th><th>Posts</th><th></th></tr></thead>
+          <tbody id="media-list"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Media details</h3>
+        <div id="media-detail" class="empty">Select a media object to inspect linked posts and vision payloads.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Graph -->
+  <div class="page" id="page-graph">
+    <h2>Graph</h2>
+    <div class="toolbar">
+      <div class="form-row">
+        <label>Workspace</label>
+        <select id="graph-ws-filter" onchange="loadGraph()">
+          <option value="">All workspaces</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Recent posts</label>
+        <input id="graph-limit" type="number" min="10" max="500" value="120" onchange="loadGraph()">
+      </div>
+      <div class="form-row">
+        <label>Min mentions</label>
+        <input id="graph-min-mentions" type="number" min="1" max="50" value="2" onchange="loadGraph()">
+      </div>
+      <div class="form-row">
+        <label>Max nodes</label>
+        <input id="graph-max-nodes" type="number" min="10" max="150" value="50" onchange="loadGraph()">
+      </div>
+      <button class="btn btn-outline" onclick="loadGraph()">Refresh</button>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <div id="graph-canvas"></div>
+        <div class="legend">
+          <span class="legend-tech">technology</span>
+          <span class="legend-design">design</span>
+          <span class="legend-business">business</span>
+          <span class="legend-default">other</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Graph details</h3>
+        <div id="graph-meta" class="empty">Loading graph...</div>
+        <div id="graph-detail" class="empty">Tap a node or edge to inspect co-occurrence details.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="page" id="page-settings">
+    <h2>Settings</h2>
+    <div class="card-grid">
+      <div class="card">
+        <div class="settings-panel-header">
+          <div>
+            <h3>Operations console</h3>
+            <p>Read-only runtime snapshot, token balances, and integration flags in one place.</p>
+          </div>
+          <button class="btn btn-outline btn-sm settings-refresh" id="settings-refresh-btn" type="button" onclick="loadSettings()">Refresh</button>
+        </div>
+        <div id="settings-detail" class="empty" role="status" aria-live="polite">Loading settings...</div>
+      </div>
+      <div class="card">
+        <div class="settings-panel-header">
+          <div>
+            <h3>Policy</h3>
+            <p>How to interpret this page without accidentally exposing secrets.</p>
+          </div>
+          <span class="settings-pill settings-pill-ok">Read only</span>
+        </div>
+        <div class="settings-note">
+          Workspace and source records are still edited in their own sections.
+          This page only exposes runtime and integration state as a diagnostic view.
+          Secret values are never rendered directly; only boolean “configured” flags are shown.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Search -->
+  <div class="page" id="page-search">
+    <h2>Search</h2>
+    <div class="card">
+      <div class="form-row">
+        <label>Query</label>
+        <input id="search-q" type="text" placeholder="Search frontier signals..." onkeydown="if(event.key==='Enter')doSearch()">
+      </div>
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-row" style="margin:0">
+          <label>Mode</label>
+          <select id="search-mode" style="width:160px">
+            <option value="frontier">Frontier</option>
+            <option value="balanced">Balanced</option>
+          </select>
+        </div>
+        <div class="form-row" style="flex:1;margin:0">
+          <label>Workspace</label>
+          <select id="search-ws"></select>
+        </div>
+        <div class="form-row" style="margin:0">
+          <label>Limit</label>
+          <input id="search-limit" type="number" value="10" style="width:80px">
+        </div>
+        <div class="form-row" style="margin:0">
+          <label>Lang</label>
+          <select id="search-lang" style="width:100px">
+            <option value="">all</option>
+            <option value="ru">ru</option>
+            <option value="en">en</option>
+          </select>
+        </div>
+        <div class="form-row" style="margin:0">
+          <label>Days</label>
+          <input id="search-days-back" type="number" value="7" min="1" max="365" style="width:90px">
+        </div>
+        <div class="form-row" style="margin:0">
+          <label>Region</label>
+          <select id="search-source-region" style="width:120px">
+            <option value="">all</option>
+            <option value="ru">ru</option>
+            <option value="global">global</option>
+            <option value="us">us</option>
+            <option value="eu">eu</option>
+          </select>
+        </div>
+        <div class="form-row" style="flex:1;min-width:220px;margin:0">
+          <label>Entities / Competitors</label>
+          <input id="search-entities" type="text" placeholder="Tesla, BYD, GM">
+        </div>
+        <button class="btn btn-primary" onclick="doSearch()">Search</button>
+      </div>
+    </div>
+    <div class="search-results" id="search-results"></div>
+  </div>
+</div>
+
+<!-- Workspace Modal -->
+<div class="modal" id="ws-modal">
+  <div class="modal-box">
+    <h3 id="ws-modal-title">New Workspace</h3>
+    <div class="form-row"><label>ID (slug)</label><input id="ws-id" placeholder="my_workspace"></div>
+    <div class="form-row"><label>Name</label><input id="ws-name" placeholder="My Workspace"></div>
+    <div class="form-row"><label>Description</label><input id="ws-desc"></div>
+    <div class="form-row"><label>Categories (comma-separated)</label><input id="ws-cats" value="technology, design, business_models"></div>
+    <div class="form-row"><label>Relevance threshold</label><input id="ws-threshold" type="number" step="0.05" value="0.6" min="0" max="1"></div>
+    <div class="form-row"><label>Design lenses (comma-separated, e.g. automotive,spatial)</label><input id="ws-lenses" placeholder="automotive, spatial, ai"></div>
+    <div class="form-row"><label>Cross-workspace bridges (workspace IDs, comma-separated)</label><input id="ws-bridges" placeholder="ai_trends, design"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('ws-modal')">Cancel</button>
+      <button class="btn btn-primary" id="ws-save-btn" onclick="saveWorkspace()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Source Modal -->
+<div class="modal" id="src-modal">
+  <div class="modal-box">
+    <h3>Add source</h3>
+    <div class="form-row"><label>ID (unique slug)</label><input id="src-id" placeholder="redmad_tg"></div>
+    <div class="form-row"><label>Display name</label><input id="src-name" placeholder="Redmad News"></div>
+    <div class="form-row"><label>Workspace</label><select id="src-ws-sel"></select></div>
+    <div class="form-row"><label>Source authority (0.0-1.0)</label><input id="src-authority" type="number" min="0" max="1" step="0.05" value="0.5"></div>
+    <div class="form-row"><label>Quality tier</label><select id="src-quality-tier"><option value="standard">standard</option><option value="trusted">trusted</option><option value="research">research</option><option value="exploratory">exploratory</option><option value="primary">primary</option></select></div>
+    <div class="form-row"><label>Expected signal types (comma-separated)</label><input id="src-signal-types" placeholder="ai, mobility, ux"></div>
+    <div class="form-row"><label>Vision mode</label><select id="src-vision-mode"><option value="full">full</option><option value="ocr_only">ocr_only</option><option value="skip">skip</option></select></div>
+    <div class="form-row"><label>Max media bytes for Vision</label><input id="src-vision-max-bytes" type="number" min="0" max="100000000" value="9000000"></div>
+    <div class="form-row">
+      <label>Type</label>
+      <select id="src-type" onchange="updateSourceFields()">
+        <option value="telegram">Telegram</option>
+        <option value="rss">RSS / Atom</option>
+        <option value="web">Website</option>
+        <option value="api">API / CSV</option>
+        <option value="email">Email alerts</option>
+      </select>
+    </div>
+
+    <!-- Telegram fields -->
+    <div class="field-group visible" id="fields-telegram">
+      <div class="form-row">
+        <label>Channel (e.g. @redmadnews or t.me/redmadnews)</label>
+        <input id="src-tg-channel" placeholder="@redmadnews" oninput="autoFillSourceId(this.value)">
+      </div>
+      <div class="form-row">
+        <label>Lookback hours</label>
+        <input id="src-tg-lookback" type="number" value="24">
+      </div>
+      <div class="form-row">
+        <label>TG Account index</label>
+        <select id="src-tg-account">
+          <option value="0">Account 0</option>
+          <option value="1">Account 1</option>
+        </select>
+      </div>
+      <details style="margin-bottom:14px">
+        <summary style="font-size:12px;color:#718096;cursor:pointer;padding:4px 0">Proxy (optional)</summary>
+        <div style="margin-top:10px">
+          <div class="form-row">
+            <label>Proxy type</label>
+            <select id="src-proxy-type">
+              <option value="">None</option>
+              <option value="socks5">SOCKS5</option>
+              <option value="mtproto">MTProto</option>
+            </select>
+          </div>
+          <div class="form-row"><label>Host</label><input id="src-proxy-host" placeholder="195.58.62.71"></div>
+          <div class="form-row"><label>Port</label><input id="src-proxy-port" type="number" placeholder="1080"></div>
+          <div class="form-row"><label>User / Secret</label><input id="src-proxy-user" placeholder="username or MTProto secret"></div>
+          <div class="form-row"><label>Password</label><input id="src-proxy-pass" type="password" placeholder="password"></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="field-group" id="fields-rss">
+      <div class="form-row">
+        <label>Preset</label>
+        <select id="src-rss-preset" onchange="applyRssPreset()">
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Feed URL</label>
+        <input id="src-url" placeholder="https://example.com/rss">
+      </div>
+      <div class="form-row">
+        <label>Include keywords (comma-separated)</label>
+        <input id="src-keywords" placeholder="mobility, ai, autonomous">
+      </div>
+      <div class="form-row">
+        <label>Allowed languages (comma-separated)</label>
+        <input id="src-lang-allow" placeholder="ru, en">
+      </div>
+      <div class="form-row">
+        <label><input id="src-full-content" type="checkbox" style="width:auto;margin-right:8px">Hydrate full article text</label>
+      </div>
+    </div>
+
+    <div class="field-group" id="fields-web">
+      <div class="form-row">
+        <label>Listing URL</label>
+        <input id="src-web-url" placeholder="https://example.com/news">
+      </div>
+      <div class="form-row">
+        <label>Listing selector</label>
+        <input id="src-web-listing-selector" placeholder="article, .post, .item">
+      </div>
+      <div class="form-row">
+        <label>Link selector</label>
+        <input id="src-web-link-selector" placeholder="a[href]">
+      </div>
+      <div class="form-row">
+        <label>Title selector</label>
+        <input id="src-web-title-selector" placeholder="h2, h3, a[href]">
+      </div>
+      <div class="form-row">
+        <label>Date selector</label>
+        <input id="src-web-date-selector" placeholder="time">
+      </div>
+      <div class="form-row">
+        <label>Article selector</label>
+        <input id="src-web-article-selector" placeholder="article">
+      </div>
+    </div>
+
+    <div class="field-group" id="fields-api">
+      <div class="form-row">
+        <label>API / CSV URL</label>
+        <input id="src-api-url" placeholder="https://example.com/feed.json">
+      </div>
+      <div class="form-row">
+        <label>Format</label>
+        <select id="src-api-format">
+          <option value="json">JSON</option>
+          <option value="csv">CSV</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Field map JSON</label>
+        <textarea id="src-api-field-map" rows="7">{"items_path":"","id":"id","url":"url","title":"title","content":"content","summary":"summary","author":"author","published_at":"published_at","tags":"tags","linked_urls":"linked_urls","next_cursor":""}</textarea>
+      </div>
+    </div>
+
+    <div class="field-group" id="fields-email">
+      <div class="form-row">
+        <label>IMAP host</label>
+        <input id="src-email-host" placeholder="imap.gmail.com">
+      </div>
+      <div class="form-row">
+        <label>Username</label>
+        <input id="src-email-username" placeholder="alerts@example.com">
+      </div>
+      <div class="form-row">
+        <label>Password / app password</label>
+        <input id="src-email-password" type="password">
+      </div>
+      <div class="form-row">
+        <label>Mailbox</label>
+        <input id="src-email-mailbox" value="INBOX">
+      </div>
+      <div class="form-row">
+        <label>Search query</label>
+        <input id="src-email-search" value="ALL">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label>Fetch interval (minutes)</label>
+      <input id="src-interval" type="number" value="60" min="5">
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('src-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createSource()">Add</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script>
+const API = '';
+let workspaces = [];
+let wsEditMode = false;
+let wsEditingId = null;
+let graphCy = null;
+let sourceCatalog = { source_types: [], rss_presets: [] };
+
+// Navigation
+document.querySelectorAll('.nav-link').forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
+    const page = link.dataset.page;
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    link.classList.add('active');
+    document.getElementById('page-' + page).classList.add('active');
+    if (page === 'dashboard') loadDashboard();
+    else if (page === 'workspaces') loadWorkspaces();
+    else if (page === 'sources') loadSources();
+    else if (page === 'pipeline') loadPipeline();
+    else if (page === 'clusters') loadClusters();
+    else if (page === 'posts') loadPosts();
+    else if (page === 'albums') loadAlbums();
+    else if (page === 'media') loadMedia();
+    else if (page === 'graph') loadGraph();
+    else if (page === 'settings') loadSettings();
+    else if (page === 'search') loadSearchWs();
+  });
+});
+
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function apiGet(url) {
+  return fetch(API + url).then(async (r) => {
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  });
+}
+
+function prettyJson(value) {
+  return `<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+}
+
+function kvHtml(obj) {
+  return `<div class="kv">${Object.entries(obj).map(([key, value]) => {
+    const rendered = value && typeof value === 'object' ? prettyJson(value) : escapeHtml(value);
+    return `<div style="color:#718096">${escapeHtml(key)}</div><div>${rendered}</div>`;
+  }).join('')}</div>`;
+}
+
+function formatTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return escapeHtml(value);
+  return date.toLocaleString();
+}
+
+function formatSize(bytes) {
+  if (bytes == null) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatCompactNumber(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return new Intl.NumberFormat('en-US').format(num);
+}
+
+function formatPercent(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return `${Math.round(num * 100)}%`;
+}
+
+function compactMiddle(value, maxLength = 42) {
+  const text = String(value ?? '-');
+  if (text.length <= maxLength) return text;
+  const left = Math.max(8, Math.floor((maxLength - 1) * 0.6));
+  const right = Math.max(8, maxLength - left - 1);
+  return `${text.slice(0, left)}…${text.slice(-right)}`;
+}
+
+function secretIsCritical(key) {
+  return [
+    'database_url_set',
+    'gigachat_credentials_set',
+    'telegram_bot_token_set',
+    'telegram_alert_chat_id_set',
+  ].includes(String(key));
+}
+
+function sourceVisionPolicy(src) {
+  const vision = src?.extra?.vision && typeof src.extra.vision === 'object' ? src.extra.vision : {};
+  return {
+    mode: String(vision.mode || 'full'),
+    max_media_bytes: Number(vision.max_media_bytes || 9000000),
+  };
+}
+
+function settingsPill(label, tone) {
+  return `<span class="settings-pill settings-pill-${tone}">${escapeHtml(label)}</span>`;
+}
+
+function renderSettingsCells(items) {
+  if (!items.length) return '<div class="empty">No data available yet.</div>';
+  return `
+    <div class="settings-subgrid">
+      ${items.map((item) => `
+        <div class="settings-cell">
+          <div class="settings-cell-label">${escapeHtml(item.label)}</div>
+          <div class="settings-cell-value">${escapeHtml(item.value)}</div>
+          ${item.meta ? `<div class="settings-cell-meta">${escapeHtml(item.meta)}</div>` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderSettingsTable(headers, rows, emptyText) {
+  if (!rows.length) return `<div class="empty">${escapeHtml(emptyText || 'No rows available yet.')}</div>`;
+  return `
+    <table class="settings-table">
+      <thead>
+        <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderSettingsRawDetails(payload, label) {
+  return `
+    <details style="margin-top:12px">
+      <summary class="settings-note" style="cursor:pointer">${escapeHtml(label || 'Raw payload')}</summary>
+      <div style="margin-top:10px">${prettyJson(payload || {})}</div>
+    </details>
+  `;
+}
+
+function renderSettingsPanel(title, description, statusLabel, statusTone, contentHtml) {
+  return `
+    <section class="settings-panel" role="region" aria-label="${escapeHtml(title)}">
+      <div class="settings-panel-header">
+        <div>
+          <h3>${escapeHtml(title)}</h3>
+          <p>${escapeHtml(description)}</p>
+        </div>
+        ${settingsPill(statusLabel, statusTone)}
+      </div>
+      ${contentHtml}
+    </section>
+  `;
+}
+
+function renderGigaChatBalance(balancePayload) {
+  const items = balancePayload?.balance || [];
+  const threshold = Number(balancePayload?.alert_threshold || 100000);
+  const statusValue = String(balancePayload?.status || 'unavailable');
+  const hasStaleCache = Boolean(balancePayload?.stale || statusValue.startsWith('stale_'));
+  const hasError = !hasStaleCache && (!balancePayload?.available || statusValue !== 'ok');
+  const hasLowBalance = items.some((item) => Number(item.value || 0) < threshold);
+  const pillLabel = hasError ? statusValue : (hasStaleCache ? 'Cached' : (hasLowBalance ? 'Low balance' : 'Healthy'));
+  const pillTone = hasError ? 'error' : ((hasStaleCache || hasLowBalance) ? 'warn' : 'ok');
+  const tokenExpiry = balancePayload?.token_expires_at
+    ? `OAuth token refreshes around ${formatTime(balancePayload.token_expires_at * 1000)}.`
+    : 'OAuth token refresh schedule is not available yet.';
+  const fetchedAt = balancePayload?.fetched_at
+    ? `Balance snapshot fetched at ${formatTime(balancePayload.fetched_at * 1000)}.`
+    : 'No successful balance snapshot has been cached yet.';
+  const content = `
+    ${renderSettingsCells(items.map((item) => ({
+      label: String(item.usage || 'usage'),
+      value: formatCompactNumber(Number(item.value || 0)),
+      meta: Number(item.value || 0) < threshold ? `Below threshold ${formatCompactNumber(threshold)}` : 'Package balance is above alert threshold.',
+    })))}
+    <div class="settings-note">
+      Alert threshold: ${formatCompactNumber(threshold)} tokens.
+      ${escapeHtml(fetchedAt)}
+      ${escapeHtml(tokenExpiry)}
+      ${hasError ? `Last balance refresh failed: ${escapeHtml(balancePayload?.error || 'unknown error')}` : (hasStaleCache ? `Showing cached snapshot because the latest refresh failed: ${escapeHtml(balancePayload?.error || statusValue)}` : 'Current balance snapshot is fresh from the admin API.')}
+    </div>
+    ${renderSettingsRawDetails(balancePayload, 'Raw payload')}
+  `;
+  return renderSettingsPanel(
+    'GigaChat token balance',
+    'Live package token balance by model family with low-balance alert threshold.',
+    pillLabel,
+    pillTone,
+    content,
+  );
+}
+
+function renderRedisStreamQueues(streamPayload) {
+  const streams = streamPayload?.streams || [];
+  const hasBacklog = streams.some((item) =>
+    Number(item.lag || 0) > 0 ||
+    Number(item.pending || 0) > 0 ||
+    Number(item.oldest_pending_age_seconds || 0) > 0
+  );
+  const activeConsumers = streams.flatMap((stream) =>
+    (stream.consumers || [])
+      .filter((consumer) =>
+        Number(consumer.pending || 0) > 0 ||
+        Number(consumer.idle_seconds || 0) < 3600
+      )
+      .map((consumer) => ({
+        stream: stream.stream || '',
+        group: stream.group || '',
+        name: consumer.name || '',
+        pending: Number(consumer.pending || 0),
+        idle_seconds: Number(consumer.idle_seconds || 0),
+      }))
+  );
+  const hiddenIdleConsumers = streams.flatMap((stream) =>
+    (stream.consumers || []).filter((consumer) =>
+      Number(consumer.pending || 0) === 0 &&
+      Number(consumer.idle_seconds || 0) >= 3600
+    )
+  ).length;
+  const content = `
+    <div class="settings-stack">
+      ${renderSettingsCells(streams.map((item) => ({
+        label: `${item.stream || ''} / ${item.group || ''}`,
+        value: `lag ${formatCompactNumber(item.lag || 0)}`,
+        meta: `pending ${formatCompactNumber(item.pending || 0)} | oldest pending ${Math.round(Number(item.oldest_pending_age_seconds || 0))}s`,
+      })))}
+      ${renderSettingsTable(
+        ['Stream', 'Group', 'Consumer', 'Pending', 'Idle'],
+        activeConsumers
+          .sort((a, b) =>
+            Number(b.pending || 0) - Number(a.pending || 0) ||
+            Number(a.idle_seconds || 0) - Number(b.idle_seconds || 0)
+          )
+          .map((consumer) => [
+            `<span class="mono">${escapeHtml(consumer.stream)}</span>`,
+            `<span class="mono">${escapeHtml(consumer.group)}</span>`,
+            `<span class="mono">${escapeHtml(consumer.name)}</span>`,
+            formatCompactNumber(consumer.pending),
+            `${Math.round(consumer.idle_seconds)}s`,
+          ]),
+        hiddenIdleConsumers
+          ? `No active/problem consumers right now. ${hiddenIdleConsumers} old idle zero-pending consumers are folded into Raw stream snapshot.`
+          : 'No stream consumers reported yet.',
+      )}
+      ${renderSettingsRawDetails(streamPayload, 'Raw stream snapshot')}
+    </div>
+  `;
+  return renderSettingsPanel(
+    'Redis stream queues',
+    'Backlog and pending snapshots from XINFO GROUPS and XPENDING.',
+    hasBacklog ? 'Backlog' : 'Healthy',
+    hasBacklog ? 'warn' : 'ok',
+    content,
+  );
+}
+
+function renderWeeklyGigaChatReport(reportPayload) {
+  const requests = reportPayload?.requests || [];
+  const tokens = reportPayload?.billable_tokens || [];
+  const escalations = reportPayload?.escalations || [];
+  const rateLimits = reportPayload?.rate_limits || [];
+  const pipelineStatus = reportPayload?.pipeline_status || [];
+  const totalRequests = requests.reduce((sum, row) => sum + Number(row.value || 0), 0);
+  const totalTokens = tokens.reduce((sum, row) => sum + Number(row.value || 0), 0);
+  const totalEscalations = escalations.reduce((sum, row) => sum + Number(row.value || 0), 0);
+  const totalRateLimits = rateLimits.reduce((sum, row) => sum + Number(row.value || 0), 0);
+  const doneShare = pipelineStatus.find((row) => row.status === 'done')?.share;
+  const totalRequestCount = requests.reduce((sum, row) => sum + Math.max(0, Number(row.value || 0)), 0);
+  const errorRequestCount = requests
+    .filter((row) => row.status !== 'ok')
+    .reduce((sum, row) => sum + Math.max(0, Number(row.value || 0)), 0);
+  const errorShare = totalRequestCount > 0 ? errorRequestCount / totalRequestCount : 0;
+  const requestRows = requests
+    .slice()
+    .sort((a, b) =>
+      String(a.task || '').localeCompare(String(b.task || '')) ||
+      String(a.model || '').localeCompare(String(b.model || '')) ||
+      String(a.status || '').localeCompare(String(b.status || ''))
+    )
+    .map((row) => {
+      const value = Math.round(Number(row.value || 0));
+      const share = totalRequestCount > 0 ? Number(row.value || 0) / totalRequestCount : 0;
+      return [
+        escapeHtml(row.task || 'task'),
+        escapeHtml(row.model || 'model'),
+        settingsPill(row.status || 'status', row.status === 'ok' ? 'ok' : 'warn'),
+        formatCompactNumber(value),
+        formatPercent(share),
+      ];
+    });
+  const content = `
+    <div class="settings-stack">
+      ${renderSettingsCells([
+        { label: 'Requests / 7d', value: formatCompactNumber(Math.round(totalRequests)), meta: 'All GigaChat tasks and statuses.' },
+        { label: 'Billable tokens / 7d', value: formatCompactNumber(Math.round(totalTokens)), meta: 'Summed across task/model labels.' },
+        { label: 'Escalations / 7d', value: formatCompactNumber(Math.round(totalEscalations)), meta: 'Fallback transitions between models.' },
+        { label: '429s / 7d', value: formatCompactNumber(Math.round(totalRateLimits)), meta: 'Rate-limit pressure from GigaChat upstream.' },
+        { label: 'Done share / 7d', value: doneShare == null ? '-' : `${Math.round(Number(doneShare) * 100)}%`, meta: 'Share of done records among done/dropped/error.' },
+        { label: 'LLM error share / 7d', value: formatPercent(errorShare), meta: 'Non-ok share across GigaChat request counters.' },
+      ])}
+      ${renderSettingsTable(
+        ['Task', 'Model', 'Status', 'Requests', 'Share'],
+        requestRows,
+        'No request samples in Prometheus yet.',
+      )}
+      ${renderSettingsTable(
+        ['Task', 'Model', 'Billable tokens'],
+        tokens
+          .slice()
+          .sort((a, b) => Number(b.value || 0) - Number(a.value || 0))
+          .map((row) => [
+            escapeHtml(row.task || 'task'),
+            escapeHtml(row.model || 'model'),
+            formatCompactNumber(Math.round(Number(row.value || 0))),
+          ]),
+        'No token samples in Prometheus yet.',
+      )}
+      ${renderSettingsTable(
+        ['Status', 'Count', 'Share'],
+        pipelineStatus.map((row) => [
+          settingsPill(row.status || '-', row.status === 'done' ? 'ok' : (row.status === 'error' ? 'error' : 'warn')),
+          formatCompactNumber(Math.round(Number(row.count || 0))),
+          `${Math.round(Number(row.share || 0) * 100)}%`,
+        ]),
+        'No pipeline status data yet.',
+      )}
+      ${renderSettingsRawDetails({ escalations, rateLimits }, 'Escalations and 429 payloads')}
+    </div>
+  `;
+  const hasRateLimits = rateLimits.some((row) => Number(row.value || 0) > 0);
+  const hasRequestErrors = errorRequestCount > 0;
+  return renderSettingsPanel(
+    'GigaChat weekly report',
+    'Seven-day cost and quality snapshot from Prometheus counters and DB status.',
+    hasRequestErrors ? 'Review errors' : (hasRateLimits ? 'Has 429' : 'Ready'),
+    hasRequestErrors ? 'warn' : (hasRateLimits ? 'warn' : 'ok'),
+    content,
+  );
+}
+
+function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyReport) {
+  const runtime = data.runtime || {};
+  const integrations = data.integrations || {};
+  const secrets = data.secrets || {};
+  const configuredSecrets = Object.values(secrets).filter(Boolean).length;
+  const totalSecrets = Object.keys(secrets).length;
+  const balanceItems = balancePayload?.balance || [];
+  const totalBalance = balanceItems.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  const criticalSecretEntries = Object.entries(secrets).filter(([key]) => secretIsCritical(key));
+  const optionalSecretEntries = Object.entries(secrets).filter(([key]) => !secretIsCritical(key));
+  const missingCriticalSecrets = criticalSecretEntries.filter(([, value]) => !value).map(([key]) => key);
+
+  return `
+    <div class="settings-layout">
+      <div class="settings-hero" role="status" aria-live="polite">
+        <div class="settings-metric">
+          <strong>${escapeHtml(String(runtime.environment || 'production'))}</strong>
+          <span>Runtime environment</span>
+        </div>
+        <div class="settings-metric">
+          <strong>${configuredSecrets}/${totalSecrets}</strong>
+          <span>Configured secret flags</span>
+        </div>
+        <div class="settings-metric">
+          <strong>${formatCompactNumber(totalBalance)}</strong>
+          <span>Total tracked GigaChat tokens</span>
+        </div>
+      </div>
+      ${renderGigaChatBalance(balancePayload)}
+      ${renderWeeklyGigaChatReport(weeklyReport)}
+      ${renderRedisStreamQueues(streamPayload)}
+      ${renderSettingsPanel(
+        'Business rules',
+        'Workspace-agnostic relevance defaults and clustering behavior.',
+        'Configured',
+        'ok',
+        `
+          <div class="settings-stack">
+            ${renderSettingsCells([
+              { label: 'Relevance threshold', value: String((data.business || {}).default_relevance_threshold ?? '-'), meta: 'Default cutoff before a post becomes done vs dropped.' },
+              { label: 'Novelty half-life', value: `${String((data.business || {}).default_half_life_days ?? '-')} days`, meta: 'Recency decay for signal scoring.' },
+              { label: 'Window', value: `${String((data.business || {}).default_window_days ?? '-')} days`, meta: 'Default analysis horizon for clustering/trends.' },
+              { label: 'Min docs per cluster', value: String((data.business || {}).default_min_docs ?? '-'), meta: 'Guardrail against noisy tiny clusters.' },
+            ])}
+            ${renderSettingsRawDetails(data.business || {}, 'Raw business config')}
+          </div>
+        `,
+      )}
+      ${renderSettingsPanel(
+        'Runtime',
+        'Worker, ingestion, and service-level execution parameters.',
+        runtime.indexing_max_concurrency === 1 ? '1 flow' : 'Multi flow',
+        runtime.indexing_max_concurrency === 1 ? 'ok' : 'warn',
+        `
+          <div class="settings-stack">
+            ${renderSettingsCells([
+              { label: 'Indexing concurrency', value: String(runtime.indexing_max_concurrency ?? '-'), meta: 'Keep this at 1 for your current GigaChat simultaneous request limit.' },
+              { label: 'Batch size', value: String(runtime.indexing_batch_size ?? '-'), meta: 'Redis read batch for enrichment loop.' },
+              { label: 'Max retries', value: String(runtime.indexing_max_retries ?? '-'), meta: 'Retries before an event becomes error/DLQ.' },
+              { label: 'Vision claim idle', value: `${String(runtime.vision_claim_idle_ms ?? '-')} ms`, meta: 'How long a vision message can stay idle before reclaim.' },
+              { label: 'Vision max delivery', value: String(runtime.vision_max_delivery_count ?? '-'), meta: 'Requeue budget before DLQ handoff.' },
+              { label: 'Joint RC canary', value: runtime.gigachat_rc_joint_enabled ? 'enabled' : 'disabled', meta: `workspaces=${runtime.gigachat_rc_joint_workspaces || 'all'} | sources=${runtime.gigachat_rc_joint_sources || 'all'}` },
+            ])}
+            ${renderSettingsRawDetails(runtime, 'Raw runtime config')}
+          </div>
+        `,
+      )}
+      ${renderSettingsPanel(
+        'Integrations',
+        'External endpoints, proxy routes, and service connection details.',
+        'Online',
+        'ok',
+        `
+          <div class="settings-stack">
+            ${renderSettingsCells(Object.entries(integrations).map(([key, value]) => ({
+              label: key,
+              value: compactMiddle(value, 44),
+              meta: String(value ?? '').length > 44
+                ? `Full value available in raw payload. ${key.includes('url') || key.includes('dsn') ? 'Endpoint configured for backend services.' : ''}`.trim()
+                : (key.includes('url') || key.includes('dsn') ? 'Endpoint configured for backend services.' : ''),
+            })))}
+            ${renderSettingsRawDetails(integrations, 'Raw integrations config')}
+          </div>
+        `,
+      )}
+      ${renderSettingsPanel(
+        'Secret flags',
+        'Boolean-only checklist showing which credentials are wired.',
+        missingCriticalSecrets.length ? `${missingCriticalSecrets.length} critical missing` : `${configuredSecrets}/${totalSecrets} set`,
+        missingCriticalSecrets.length ? 'error' : (configuredSecrets === totalSecrets ? 'ok' : 'warn'),
+        `
+          <div class="settings-stack">
+            ${missingCriticalSecrets.length ? `<div class="settings-note" role="alert" aria-live="assertive">Critical missing: ${escapeHtml(missingCriticalSecrets.join(', '))}</div>` : ''}
+            <div class="settings-note">Critical secrets</div>
+            <div class="settings-inline-status">
+              ${criticalSecretEntries.map(([key, value]) => settingsPill(
+                `${key}: ${value ? 'set' : 'missing'}`,
+                value ? 'ok' : 'error',
+              )).join('')}
+            </div>
+            <div class="settings-note">Optional secrets</div>
+            <div class="settings-inline-status">
+              ${optionalSecretEntries.map(([key, value]) => settingsPill(
+                `${key}: ${value ? 'set' : 'missing'}`,
+                value ? 'ok' : 'warn',
+              )).join('')}
+            </div>
+            ${renderSettingsRawDetails(secrets, 'Raw secret flags')}
+          </div>
+        `,
+      )}
+    </div>
+  `;
+}
+
+function graphColor(category) {
+  const value = String(category || '').toLowerCase();
+  if (value.includes('tech')) return '#60a5fa';
+  if (value.includes('design')) return '#f59e0b';
+  if (value.includes('business')) return '#34d399';
+  return '#a78bfa';
+}
+
+function badgeHtml(status) {
+  const map = { done: 'badge-done', dropped: 'badge-dropped', error: 'badge-error',
+                pending: 'badge-pending', processing: 'badge-pending' };
+  return `<span class="badge ${map[status] || ''}">${status || '-'}</span>`;
+}
+
+function typeBadge(type) {
+  return `<span class="badge badge-${type}">${type}</span>`;
+}
+
+// Source type field toggling
+function updateSourceFields() {
+  const type = document.getElementById('src-type').value;
+  document.querySelectorAll('.field-group').forEach(el => el.classList.remove('visible'));
+  if (type === 'telegram') {
+    document.getElementById('fields-telegram').classList.add('visible');
+  }
+  if (type === 'rss') document.getElementById('fields-rss').classList.add('visible');
+  if (type === 'web') document.getElementById('fields-web').classList.add('visible');
+  if (type === 'api') document.getElementById('fields-api').classList.add('visible');
+  if (type === 'email') document.getElementById('fields-email').classList.add('visible');
+}
+
+function applyRssPreset() {
+  const preset = document.getElementById('src-rss-preset').value;
+  const found = (sourceCatalog.rss_presets || []).find(item => item.key === preset);
+  if (found && preset !== 'custom' && !document.getElementById('src-url').value.trim()) {
+    document.getElementById('src-url').value = found.url;
+  }
+}
+
+async function loadDashboard() {
+  const data = await fetch(API + '/api/pipeline/stats').then(r => r.json()).catch(() => ({}));
+  const stats = data.stats || {};
+  const el = document.getElementById('dash-stats');
+  el.innerHTML = Object.entries(stats).map(([k, v]) =>
+    `<div class="stat-card"><div class="stat-num">${v.count}</div><div class="stat-label">${k}</div></div>`
+  ).join('') || '<div style="color:#718096;padding:20px">No data yet</div>';
+
+  const tbody = document.getElementById('dash-recent');
+  tbody.innerHTML = (data.recent || []).map(r =>
+    `<tr><td>${escapeHtml(r.source_id || '')}</td>
+     <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.preview || '')}</td>
+     <td>${badgeHtml(r.embedding_status)}</td>
+     <td>${r.relevance_score != null ? parseFloat(r.relevance_score).toFixed(2) : '-'}</td>
+     <td>${escapeHtml(r.category || '')}</td></tr>`
+  ).join('') || '<tr><td colspan="5" style="color:#718096;text-align:center;padding:20px">No posts yet</td></tr>';
+}
+
+async function loadWorkspaces() {
+  workspaces = await fetch(API + '/api/workspaces').then(r => r.json()).catch(() => []);
+  const el = document.getElementById('ws-list');
+  el.innerHTML = workspaces.map(ws => `
+    <div class="card" style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <strong>${ws.name}</strong> <code style="color:#6366f1;font-size:12px;margin-left:8px">${ws.id}</code>
+        <div style="font-size:12px;color:#718096;margin-top:4px">${ws.description || ''}</div>
+        <div style="font-size:11px;color:#4a5568;margin-top:4px">${JSON.stringify(ws.categories || []).slice(0,80)}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="badge ${ws.is_active ? 'badge-done' : 'badge-dropped'}">${ws.is_active ? 'active' : 'disabled'}</span>
+        <button class="btn btn-outline btn-sm" onclick="openWorkspaceModalEdit('${ws.id}')">Edit</button>
+        <button class="btn btn-outline btn-sm" onclick="toggleWorkspace('${ws.id}')">Toggle</button>
+      </div>
+    </div>`).join('') || '<div style="color:#718096;padding:20px">No workspaces</div>';
+  populateWsSelects();
+}
+
+function populateWsSelects() {
+  const opts = workspaces.map(ws => `<option value="${ws.id}">${ws.name}</option>`).join('');
+  ['src-ws-filter', 'src-ws-sel', 'pipe-ws-filter', 'clusters-ws-filter', 'search-ws', 'posts-ws-filter', 'albums-ws-filter', 'media-ws-filter'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      const prefix = id.includes('filter') ? '<option value="">All workspaces</option>' : '';
+      el.innerHTML = prefix + opts;
+    }
+  });
+}
+
+function _parseWsThreshold(ws) {
+  let rw = ws.relevance_weights;
+  if (typeof rw === 'string') {
+    try { rw = JSON.parse(rw); } catch (e) { rw = {}; }
+  }
+  if (rw && typeof rw === 'object' && rw.threshold != null && rw.threshold !== '')
+    return parseFloat(rw.threshold);
+  return 0.6;
+}
+
+function openWorkspaceModalCreate() {
+  wsEditMode = false;
+  wsEditingId = null;
+  document.getElementById('ws-modal-title').textContent = 'New Workspace';
+  document.getElementById('ws-save-btn').textContent = 'Create';
+  document.getElementById('ws-id').readOnly = false;
+  document.getElementById('ws-id').value = '';
+  document.getElementById('ws-name').value = '';
+  document.getElementById('ws-desc').value = '';
+  document.getElementById('ws-cats').value = 'technology, design, business_models';
+  document.getElementById('ws-threshold').value = '0.6';
+  document.getElementById('ws-lenses').value = '';
+  document.getElementById('ws-bridges').value = '';
+  openModal('ws-modal');
+}
+
+async function openWorkspaceModalEdit(id) {
+  const resp = await fetch(API + '/api/workspaces/' + encodeURIComponent(id));
+  if (!resp.ok) return alert('Workspace not found');
+  const ws = await resp.json();
+  wsEditMode = true;
+  wsEditingId = ws.id;
+  document.getElementById('ws-modal-title').textContent = 'Edit Workspace';
+  document.getElementById('ws-save-btn').textContent = 'Save';
+  document.getElementById('ws-id').value = ws.id;
+  document.getElementById('ws-id').readOnly = true;
+  document.getElementById('ws-name').value = ws.name || '';
+  document.getElementById('ws-desc').value = ws.description || '';
+  const cats = Array.isArray(ws.categories) ? ws.categories : [];
+  document.getElementById('ws-cats').value = cats.join(', ');
+  document.getElementById('ws-threshold').value = String(_parseWsThreshold(ws));
+  const lenses = Array.isArray(ws.design_lenses) ? ws.design_lenses : [];
+  document.getElementById('ws-lenses').value = lenses.join(', ');
+  const bridges = Array.isArray(ws.cross_workspace_bridges) ? ws.cross_workspace_bridges : [];
+  document.getElementById('ws-bridges').value = bridges.join(', ');
+  openModal('ws-modal');
+}
+
+async function saveWorkspace() {
+  const id = document.getElementById('ws-id').value.trim();
+  const name = document.getElementById('ws-name').value.trim();
+  const description = document.getElementById('ws-desc').value.trim();
+  const categories = document.getElementById('ws-cats').value.split(',').map(s => s.trim()).filter(Boolean);
+  const relevance_threshold = parseFloat(document.getElementById('ws-threshold').value);
+  const design_lenses = document.getElementById('ws-lenses').value.split(',').map(s => s.trim()).filter(Boolean);
+  const cross_workspace_bridges = document.getElementById('ws-bridges').value.split(',').map(s => s.trim()).filter(Boolean);
+
+  if (!name) return alert('Name required');
+  if (wsEditMode) {
+    if (!wsEditingId) return alert('Invalid edit state');
+    const body = {
+      name,
+      description,
+      categories,
+      relevance_threshold,
+      design_lenses,
+      cross_workspace_bridges,
+    };
+    const resp = await fetch(API + '/api/workspaces/' + encodeURIComponent(wsEditingId), {
+      method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      let msg = 'Error';
+      try { const e = await resp.json(); msg = e.detail || JSON.stringify(e); } catch (x) {}
+      return alert(msg);
+    }
+  } else {
+    if (!id) return alert('ID and Name required');
+    const body = {
+      id,
+      name,
+      description,
+      categories,
+      relevance_threshold,
+      design_lenses,
+      cross_workspace_bridges,
+    };
+    const resp = await fetch(API + '/api/workspaces', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      let msg = 'Error';
+      try { const e = await resp.json(); msg = e.detail || JSON.stringify(e); } catch (x) {}
+      return alert(msg);
+    }
+  }
+  closeModal('ws-modal');
+  loadWorkspaces();
+}
+
+async function bootstrapWorkspaces() {
+  await fetch(API + '/api/workspaces/bootstrap', { method: 'POST' });
+  loadWorkspaces();
+}
+
+async function toggleWorkspace(id) {
+  await fetch(API + '/api/workspaces/' + id + '/toggle', { method: 'PATCH' });
+  loadWorkspaces();
+}
+
+async function loadSources() {
+  const ws = document.getElementById('src-ws-filter')?.value || '';
+  const url = API + '/api/sources' + (ws ? '?workspace_id=' + ws : '');
+  const sources = await fetch(url).then(r => r.json()).catch(() => []);
+  const el = document.getElementById('src-list');
+  el.innerHTML = sources.map(src => {
+    const preset = src.extra?.preset || 'custom';
+    const vision = sourceVisionPolicy(src);
+    const target = src.tg_channel || src.url || '';
+    const runtime = [
+      src.last_run_status ? `run: ${src.last_run_status}` : '',
+      src.last_run_emitted_count != null ? `emitted: ${src.last_run_emitted_count}` : '',
+      src.last_success_at ? `last ok: ${formatTime(src.last_success_at)}` : '',
+    ].filter(Boolean).join(' · ');
+    const sourceScore = src.source_score != null ? Number(src.source_score).toFixed(2) : '-';
+    const scoreBreakdown = src.score_breakdown || {};
+    const recommendation = src.recommended_content_mode || '-';
+    const errorText = src.last_error || src.last_run_error_text || '';
+    return `
+    <div class="card" style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div style="flex:1">
+        <strong>${src.name}</strong> ${typeBadge(src.source_type)}
+        <span class="badge ${src.is_enabled ? 'badge-done' : 'badge-dropped'}" style="margin-left:6px">${src.is_enabled ? 'enabled' : 'disabled'}</span>
+        <div style="font-size:12px;color:#a0aec0;margin-top:4px">${target}</div>
+        <div style="font-size:11px;color:#4a5568;margin-top:2px">ws: ${src.workspace_id} · cron: ${src.schedule_cron} · preset: ${preset}</div>
+        <div style="font-size:11px;color:#a0aec0;margin-top:4px">score: ${sourceScore} · authority: ${Number(src.source_authority || 0).toFixed(2)} · tier: ${escapeHtml(src.quality_tier || 'standard')} · mode: ${escapeHtml(recommendation)}</div>
+        <div style="font-size:11px;color:#718096;margin-top:2px">runtime ${Number(scoreBreakdown.runtime_health || 0).toFixed(2)} · signal ${Number(scoreBreakdown.signal_yield || 0).toFixed(2)} · fresh ${Number(scoreBreakdown.freshness || 0).toFixed(2)}</div>
+        <div style="font-size:11px;color:#a0aec0;margin-top:2px">vision: ${escapeHtml(vision.mode)} | max: ${formatSize(vision.max_media_bytes)}</div>
+        ${runtime ? `<div style="font-size:11px;color:#718096;margin-top:4px">${runtime}</div>` : ''}
+        ${errorText ? `<div style="font-size:11px;color:#ef4444;margin-top:4px">${escapeHtml(errorText)}</div>` : ''}
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="editSourceVision('${src.id}', '${vision.mode}', ${vision.max_media_bytes})">Vision</button>
+        <button class="btn btn-outline btn-sm" onclick="toggleSource('${src.id}')">
+          ${src.is_enabled ? 'Disable' : 'Enable'}
+        </button>
+        <button class="btn btn-outline btn-sm" onclick="deleteSource('${src.id}')">Del</button>
+      </div>
+    </div>`;
+  }).join('') || '<div style="color:#718096;padding:20px">No sources yet. Add a Telegram channel or RSS feed.</div>';
+}
+
+function autoFillSourceId(val) {
+  const idEl = document.getElementById('src-id');
+  if (idEl.value) return; // don't overwrite if user typed something
+  let slug = val.replace(/^https?:\/\/t\.me\//i, '').replace(/^t\.me\//i, '').replace(/^@/, '');
+  slug = slug.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+  if (slug) idEl.value = slug;
+}
+
+async function createSource() {
+  const type = document.getElementById('src-type').value;
+  const intervalMin = parseInt(document.getElementById('src-interval').value) || 60;
+  const scheduleCron = `*/${intervalMin} * * * *`;
+
+  const body = {
+    id: document.getElementById('src-id').value.trim(),
+    name: document.getElementById('src-name').value.trim(),
+    workspace_id: document.getElementById('src-ws-sel').value,
+    source_type: type,
+    schedule_cron: scheduleCron,
+    extra: {
+      source_authority: parseFloat(document.getElementById('src-authority').value) || 0.5,
+      quality_tier: document.getElementById('src-quality-tier').value || 'standard',
+      expected_signal_types: document.getElementById('src-signal-types').value.split(',').map(v => v.trim()).filter(Boolean),
+      vision: {
+        mode: document.getElementById('src-vision-mode').value || 'full',
+        max_media_bytes: parseInt(document.getElementById('src-vision-max-bytes').value, 10) || 0,
+      },
+    },
+  };
+
+  if (!body.id || !body.name) return alert('ID and Name required');
+
+  if (type === 'telegram') {
+    let ch = document.getElementById('src-tg-channel').value.trim();
+    // Normalize: accept t.me/foo or @foo or just foo
+    ch = ch.replace(/^https?:\/\/t\.me\//i, '').replace(/^t\.me\//i, '').replace(/^@/, '');
+    if (!ch) return alert('Telegram channel is required (e.g. @redmadnews or t.me/redmadnews)');
+    ch = '@' + ch;
+    body.tg_channel = ch;
+    body.tg_account_idx = parseInt(document.getElementById('src-tg-account').value) || 0;
+    body.extra = {
+      ...body.extra,
+      fetch: { lookback_hours: parseInt(document.getElementById('src-tg-lookback').value) || 24 }
+    };
+    // Proxy config
+    const proxyType = document.getElementById('src-proxy-type').value;
+    if (proxyType) {
+      body.proxy_config = {
+        type: proxyType,
+        host: document.getElementById('src-proxy-host').value.trim(),
+        port: parseInt(document.getElementById('src-proxy-port').value) || 1080,
+        user: document.getElementById('src-proxy-user').value.trim(),
+        password: document.getElementById('src-proxy-pass').value,
+      };
+    }
+  } else if (type === 'rss') {
+    body.url = document.getElementById('src-url').value.trim();
+    if (!body.url) return alert('Feed URL required');
+    body.extra = {
+      ...body.extra,
+      preset: document.getElementById('src-rss-preset').value || 'custom',
+      filters: {
+        include_keywords: document.getElementById('src-keywords').value.split(',').map(v => v.trim()).filter(Boolean),
+        lang_allow: document.getElementById('src-lang-allow').value.split(',').map(v => v.trim()).filter(Boolean),
+      },
+      parse: {
+        full_content: document.getElementById('src-full-content').checked,
+      },
+    };
+  } else if (type === 'web') {
+    body.url = document.getElementById('src-web-url').value.trim();
+    if (!body.url) return alert('Listing URL required');
+    body.extra = {
+      ...body.extra,
+      parse: {
+        listing_selector: document.getElementById('src-web-listing-selector').value.trim(),
+        link_selector: document.getElementById('src-web-link-selector').value.trim(),
+        title_selector: document.getElementById('src-web-title-selector').value.trim(),
+        date_selector: document.getElementById('src-web-date-selector').value.trim(),
+        article_selector: document.getElementById('src-web-article-selector').value.trim(),
+      },
+    };
+  } else if (type === 'api') {
+    body.url = document.getElementById('src-api-url').value.trim();
+    if (!body.url) return alert('API URL required');
+    let fieldMap = {};
+    try {
+      fieldMap = JSON.parse(document.getElementById('src-api-field-map').value || '{}');
+    } catch (e) {
+      return alert('Field map must be valid JSON');
+    }
+    body.extra = {
+      ...body.extra,
+      parse: {
+        format: document.getElementById('src-api-format').value,
+        field_map: fieldMap,
+      },
+      fetch: {
+        page_param: 'page',
+      },
+    };
+  } else if (type === 'email') {
+    body.extra = {
+      ...body.extra,
+      fetch: {
+        host: document.getElementById('src-email-host').value.trim(),
+        username: document.getElementById('src-email-username').value.trim(),
+        password: document.getElementById('src-email-password').value,
+        mailbox: document.getElementById('src-email-mailbox').value.trim() || 'INBOX',
+        search: document.getElementById('src-email-search').value.trim() || 'ALL',
+      },
+    };
+  }
+
+  const resp = await fetch(API + '/api/sources', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if (!resp.ok) { const e = await resp.json(); return alert(e.detail || 'Error'); }
+  closeModal('src-modal');
+  loadSources();
+}
+
+async function toggleSource(id) {
+  await fetch(API + '/api/sources/' + id + '/toggle', { method: 'PATCH' });
+  loadSources();
+}
+
+async function deleteSource(id) {
+  if (!confirm('Delete source ' + id + '?')) return;
+  await fetch(API + '/api/sources/' + id, { method: 'DELETE' });
+  loadSources();
+}
+
+async function editSourceVision(id, currentMode, currentMaxBytes) {
+  const mode = prompt('Vision mode: full | ocr_only | skip', currentMode || 'full');
+  if (mode == null) return;
+  const normalizedMode = mode.trim();
+  if (!['full', 'ocr_only', 'skip'].includes(normalizedMode)) {
+    return alert('Vision mode must be full, ocr_only, or skip');
+  }
+
+  const maxInput = prompt('Max media bytes for Vision (0 disables size cap)', String(currentMaxBytes || 9000000));
+  if (maxInput == null) return;
+  const maxMediaBytes = parseInt(maxInput, 10);
+  if (!Number.isFinite(maxMediaBytes) || maxMediaBytes < 0) {
+    return alert('Max media bytes must be a non-negative integer');
+  }
+
+  const resp = await fetch(API + '/api/sources/' + encodeURIComponent(id) + '/vision', {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ mode: normalizedMode, max_media_bytes: maxMediaBytes }),
+  });
+  if (!resp.ok) {
+    let msg = 'Failed to update vision policy';
+    try { const err = await resp.json(); msg = err.detail || JSON.stringify(err); } catch (e) {}
+    return alert(msg);
+  }
+  loadSources();
+}
+
+async function refreshSourceScores() {
+  const ws = document.getElementById('src-ws-filter')?.value || '';
+  const url = API + '/api/pipeline/refresh-source-scores' + (ws ? '?workspace_id=' + encodeURIComponent(ws) : '');
+  await fetch(url, { method: 'POST' });
+  loadSources();
+}
+
+async function bootstrapSources() {
+  const ws = document.getElementById('src-ws-filter')?.value || '';
+  const url = API + '/api/sources/bootstrap' + (ws ? '?workspace_id=' + encodeURIComponent(ws) : '');
+  await fetch(url, { method: 'POST' });
+  loadSources();
+}
+
+async function loadPipeline() {
+  const ws = document.getElementById('pipe-ws-filter')?.value || '';
+  const url = API + '/api/pipeline/stats' + (ws ? '?workspace_id=' + ws : '');
+  const scheduler = await fetch(API + '/api/pipeline/scheduler').then(r => r.json()).catch(() => ({}));
+  const data = await fetch(url).then(r => r.json()).catch(() => ({}));
+  const stats = data.stats || {};
+
+  document.getElementById('pipe-scheduler').innerHTML = `
+    <div class="kv">
+      <div>Enabled</div><div>${scheduler.enabled ? 'true' : 'false'}</div>
+      <div>Running</div><div>${scheduler.running ? 'true' : 'false'}</div>
+      <div>Timezone</div><div>${escapeHtml(scheduler.timezone || 'UTC')}</div>
+      <div>Jobs</div><div>${(scheduler.jobs || []).map(job => `${escapeHtml(job.id || '')}: ${escapeHtml(job.next_run_time || 'n/a')}`).join('<br>') || '-'}</div>
+    </div>
+  `;
+
+  document.getElementById('pipe-stats').innerHTML = Object.entries(stats).map(([k, v]) =>
+    `<div class="stat-card"><div class="stat-num">${v.count}</div><div class="stat-label">${k}</div></div>`
+  ).join('') || '<div style="color:#718096;padding:20px">No data yet</div>';
+
+  const tbody = document.getElementById('pipe-recent');
+  tbody.innerHTML = (data.recent || []).map(r =>
+    `<tr>
+      <td>${escapeHtml(r.source_id || '')}</td>
+      <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.preview || '')}</td>
+      <td>${badgeHtml(r.embedding_status)}</td>
+      <td>${r.relevance_score != null ? parseFloat(r.relevance_score).toFixed(2) : '-'}</td>
+      <td>${escapeHtml(r.category || '')}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="reprocess('${r.id}')">↺</button></td>
+    </tr>`
+  ).join('') || '<tr><td colspan="6" style="color:#718096;text-align:center;padding:20px">No posts yet</td></tr>';
+}
+
+async function reprocess(postId) {
+  await fetch(API + '/api/pipeline/reprocess/' + postId, { method: 'POST' });
+  setTimeout(loadPipeline, 1500);
+}
+
+async function loadClusters() {
+  const ws = document.getElementById('clusters-ws-filter')?.value || '';
+  const semanticUrl = API + '/api/clusters/semantic' + (ws ? '?workspace_id=' + encodeURIComponent(ws) : '');
+  const trendUrl = API + '/api/clusters/trends' + (ws ? '?workspace_id=' + encodeURIComponent(ws) : '');
+  const emergingParams = new URLSearchParams();
+  if (ws) emergingParams.set('workspace_id', ws);
+  emergingParams.append('stages', 'emerging');
+  const emergingUrl = API + '/api/clusters/emerging?' + emergingParams.toString();
+  const runsUrl = API + '/api/clusters/runs' + (ws ? '?workspace_id=' + encodeURIComponent(ws) : '');
+  const semantic = await fetch(semanticUrl).then(r => r.json()).catch(() => []);
+  const trends = await fetch(trendUrl).then(r => r.json()).catch(() => []);
+  const emerging = await fetch(emergingUrl).then(r => r.json()).catch(() => []);
+  const runs = await fetch(runsUrl).then(r => r.json()).catch(() => []);
+  document.getElementById('semantic-clusters-list').innerHTML = semantic.map(cluster => `
+    <tr>
+      <td>
+        <div>${escapeHtml(cluster.title || '')}</div>
+        <div style="font-size:11px;color:#718096">${escapeHtml(cluster.workspace_id || '')}</div>
+      </td>
+      <td>${cluster.post_count ?? 0}</td>
+      <td>${escapeHtml(cluster.lifecycle_state || 'active')}</td>
+      <td>${formatTime(cluster.detected_at)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="empty">No semantic clusters yet</td></tr>';
+  document.getElementById('trend-clusters-list').innerHTML = trends.map(cluster => `
+    <tr>
+      <td>
+        <div>${escapeHtml(cluster.title || '')}</div>
+        <div style="font-size:11px;color:#718096">${escapeHtml(cluster.workspace_id || '')}</div>
+      </td>
+      <td>${cluster.doc_count ?? 0}</td>
+      <td>${escapeHtml(cluster.signal_stage || 'stable')}</td>
+      <td>${Number(cluster.signal_score || 0).toFixed(2)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="empty">No trend clusters yet</td></tr>';
+  document.getElementById('emerging-signals-list').innerHTML = emerging.map(signal => `
+    <tr>
+      <td>
+        <div>${escapeHtml(signal.title || '')}</div>
+        <div style="font-size:11px;color:#718096">${escapeHtml(signal.workspace_id || '')}</div>
+      </td>
+      <td>${escapeHtml(signal.signal_stage || 'weak')}</td>
+      <td>${Number(signal.signal_score || 0).toFixed(2)}</td>
+      <td>${Number(signal.confidence || 0).toFixed(2)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="empty">No emerging signals yet</td></tr>';
+  document.getElementById('cluster-runs-list').innerHTML = runs.map(run => `
+    <tr>
+      <td>${formatTime(run.started_at)}</td>
+      <td>${badgeHtml(run.status || '')}</td>
+      <td>${escapeHtml(run.workspace_id || 'all')}</td>
+      <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(JSON.stringify(run.summary || {}))}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="empty">No cluster runs yet</td></tr>';
+}
+
+async function runSemanticClusters() {
+  const ws = document.getElementById('clusters-ws-filter')?.value || '';
+  const url = API + '/api/pipeline/run-semantic-clusters' + (ws ? '?workspace_id=' + encodeURIComponent(ws) : '');
+  await fetch(url, { method: 'POST' });
+  loadClusters();
+}
+
+async function loadPosts() {
+  const params = new URLSearchParams();
+  const ws = document.getElementById('posts-ws-filter')?.value || '';
+  const status = document.getElementById('posts-status-filter')?.value || '';
+  const media = document.getElementById('posts-media-filter')?.value || '';
+  const limit = document.getElementById('posts-limit')?.value || '50';
+  if (ws) params.set('workspace_id', ws);
+  if (status) params.set('status', status);
+  if (media) params.set('has_media', media);
+  params.set('limit', limit);
+  const posts = await apiGet('/api/posts?' + params.toString()).catch(() => []);
+  document.getElementById('posts-list').innerHTML = posts.map(post => `
+    <tr>
+      <td>
+        <div class="mono">${escapeHtml((post.id || '').slice(0, 8))}</div>
+        <div style="max-width:260px">${escapeHtml(post.preview || '')}</div>
+        <div style="font-size:11px;color:#718096">${escapeHtml(post.source_id || '')}${post.grouped_id ? ' | album ' + escapeHtml(post.grouped_id) : ''}</div>
+      </td>
+      <td>${badgeHtml(post.embedding_status)}</td>
+      <td>${badgeHtml(post.vision_status)}</td>
+      <td>${badgeHtml(post.graph_status)}</td>
+      <td>${post.relevance_score != null ? parseFloat(post.relevance_score).toFixed(2) : '-'}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="openPostDetails('${post.id}')">View</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" class="empty">No posts found</td></tr>';
+  document.getElementById('post-detail').innerHTML = '<div class="empty">Select a post to inspect enrichments and linked album state.</div>';
+}
+
+async function openPostDetails(postId) {
+  const data = await apiGet('/api/posts/' + encodeURIComponent(postId)).catch(() => null);
+  if (!data) return;
+  const post = data.post || {};
+  const enrichments = data.enrichments || [];
+  const album = data.album || null;
+  document.getElementById('post-detail').innerHTML = `
+    ${kvHtml({
+      id: post.id,
+      workspace_id: post.workspace_id,
+      source_id: post.source_id,
+      external_id: post.external_id,
+      grouped_id: post.grouped_id || '-',
+      category: post.category || '-',
+      relevance_score: post.relevance_score ?? '-',
+      embedding_status: post.embedding_status,
+      vision_status: post.vision_status,
+      graph_status: post.graph_status,
+      retry_count: post.retry_count ?? 0,
+      qdrant_point_id: post.qdrant_point_id || '-',
+      published_at: formatTime(post.published_at),
+      created_at: formatTime(post.created_at),
+      media_urls: post.media_urls || [],
+      tags: post.tags || [],
+      error_message: post.error_message || '-'
+    })}
+    <div style="margin-top:16px">
+      <h3>Content</h3>
+      <pre>${escapeHtml(post.content || '')}</pre>
+    </div>
+    <div style="margin-top:16px">
+      <h3>Enrichments</h3>
+      ${enrichments.length ? enrichments.map(item => `
+        <div style="margin-bottom:12px">
+          <div class="mono" style="margin-bottom:6px">${escapeHtml(item.kind)} | ${formatTime(item.updated_at)}</div>
+          ${item.s3_key ? `<div style="font-size:11px;color:#718096;margin-bottom:6px">${escapeHtml(item.s3_key)}</div>` : ''}
+          ${prettyJson(item.data)}
+        </div>
+      `).join('') : '<div class="empty">No enrichments</div>'}
+    </div>
+    <div style="margin-top:16px">
+      <h3>Album</h3>
+      ${album ? prettyJson(album) : '<div class="empty">No related album</div>'}
+    </div>
+  `;
+}
+
+async function loadAlbums() {
+  const params = new URLSearchParams();
+  const ws = document.getElementById('albums-ws-filter')?.value || '';
+  const assembled = document.getElementById('albums-assembled-filter')?.value || '';
+  const limit = document.getElementById('albums-limit')?.value || '50';
+  if (ws) params.set('workspace_id', ws);
+  if (assembled) params.set('assembled', assembled);
+  params.set('limit', limit);
+  const albums = await apiGet('/api/albums?' + params.toString()).catch(() => []);
+  document.getElementById('albums-list').innerHTML = albums.map(album => `
+    <tr>
+      <td>
+        <div class="mono">${escapeHtml(album.grouped_id || '')}</div>
+        <div style="font-size:11px;color:#718096">${escapeHtml(album.id || '')}</div>
+      </td>
+      <td>${album.item_count ?? 0}</td>
+      <td>${album.posts_count ?? 0}</td>
+      <td>${badgeHtml(String(Boolean(album.assembled)))}</td>
+      <td>${album.vision_summary_s3_key ? '<span class="badge badge-done">present</span>' : '<span class="badge badge-dropped">missing</span>'}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="openAlbumDetails('${album.id}')">View</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" class="empty">No albums found</td></tr>';
+  document.getElementById('album-detail').innerHTML = '<div class="empty">Select an album to inspect linked posts.</div>';
+}
+
+async function openAlbumDetails(albumId) {
+  const data = await apiGet('/api/albums/' + encodeURIComponent(albumId)).catch(() => null);
+  if (!data) return;
+  const album = data.album || {};
+  const posts = data.posts || [];
+  document.getElementById('album-detail').innerHTML = `
+    ${kvHtml({
+      id: album.id,
+      workspace_id: album.workspace_id,
+      source_id: album.source_id,
+      grouped_id: album.grouped_id,
+      item_count: album.item_count,
+      assembled: String(Boolean(album.assembled)),
+      vision_summary_s3_key: album.vision_summary_s3_key || '-',
+      vision_labels: album.vision_labels || [],
+      created_at: formatTime(album.created_at),
+      updated_at: formatTime(album.updated_at)
+    })}
+    <div style="margin-top:16px">
+      <h3>Linked posts</h3>
+      ${posts.length ? posts.map(post => `
+        <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #1e2536">
+          <div class="mono">${escapeHtml(post.id)} | ${formatTime(post.published_at || post.created_at)}</div>
+          <div style="margin-top:4px">${escapeHtml(post.content || '')}</div>
+          <div style="margin-top:4px">${badgeHtml(post.embedding_status)} ${badgeHtml(post.vision_status)} ${badgeHtml(post.graph_status)}</div>
+        </div>
+      `).join('') : '<div class="empty">No linked posts</div>'}
+    </div>
+  `;
+}
+
+async function loadMedia() {
+  const params = new URLSearchParams();
+  const ws = document.getElementById('media-ws-filter')?.value || '';
+  const mime = document.getElementById('media-mime-filter')?.value.trim() || '';
+  const limit = document.getElementById('media-limit')?.value || '50';
+  if (ws) params.set('workspace_id', ws);
+  if (mime) params.set('mime_type', mime);
+  params.set('limit', limit);
+  const media = await apiGet('/api/media?' + params.toString()).catch(() => []);
+  document.getElementById('media-list').innerHTML = media.map(item => `
+    <tr>
+      <td>
+        <div class="mono">${escapeHtml(item.s3_key || '')}</div>
+        <div style="font-size:11px;color:#718096">${escapeHtml((item.sha256 || '').slice(0, 16))}</div>
+      </td>
+      <td>${escapeHtml(item.mime_type || '-')}</td>
+      <td>${formatSize(item.size_bytes)}</td>
+      <td>${item.posts_count ?? 0}</td>
+      <td><button class="btn btn-outline btn-sm" onclick="openMediaDetails('${item.sha256}')">View</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" class="empty">No media found</td></tr>';
+  document.getElementById('media-detail').innerHTML = '<div class="empty">Select a media object to inspect linked posts and vision payloads.</div>';
+}
+
+async function openMediaDetails(sha256) {
+  const data = await apiGet('/api/media/' + encodeURIComponent(sha256)).catch(() => null);
+  if (!data) return;
+  const media = data.media || {};
+  const posts = data.posts || [];
+  const vision = data.vision || [];
+  document.getElementById('media-detail').innerHTML = `
+    ${kvHtml({
+      sha256: media.sha256,
+      s3_key: media.s3_key,
+      mime_type: media.mime_type || '-',
+      size_bytes: media.size_bytes ?? '-',
+      workspace_id: media.workspace_id,
+      created_at: formatTime(media.created_at)
+    })}
+    <div style="margin-top:16px">
+      <h3>Linked posts</h3>
+      ${posts.length ? posts.map(post => `
+        <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #1e2536">
+          <div class="mono">${escapeHtml(post.id)} | ${escapeHtml(post.source_id || '')}${post.grouped_id ? ' | album ' + escapeHtml(post.grouped_id) : ''}</div>
+          <div style="margin-top:4px">${escapeHtml(post.content || '')}</div>
+        </div>
+      `).join('') : '<div class="empty">No linked posts</div>'}
+    </div>
+    <div style="margin-top:16px">
+      <h3>Vision payloads</h3>
+      ${vision.length ? vision.map(item => `
+        <div style="margin-bottom:12px">
+          <div class="mono" style="margin-bottom:6px">${escapeHtml(item.post_id)} | ${formatTime(item.updated_at)}</div>
+          ${prettyJson(item.data)}
+        </div>
+      `).join('') : '<div class="empty">No vision payloads</div>'}
+    </div>
+  `;
+}
+
+function renderGraph(data) {
+  const container = document.getElementById('graph-canvas');
+  const nodes = (data.nodes || []).map(node => ({
+    data: {
+      id: node.id,
+      label: node.label,
+      category: node.category || 'other',
+      mentions: node.mentions || 0,
+      avg_weight: node.avg_weight || 0,
+      posts: node.posts || [],
+      color: graphColor(node.category),
+      size: 24 + Math.min((node.mentions || 0) * 5, 34),
+    },
+  }));
+  const edges = (data.edges || []).map(edge => ({
+    data: {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      mentions: edge.mentions || 0,
+      weight: edge.weight || 0,
+      category: edge.category || 'other',
+      width: 1 + Math.min((edge.mentions || 0) * 0.9, 6),
+      color: graphColor(edge.category),
+    },
+  }));
+
+  if (!window.cytoscape) {
+    container.innerHTML = '<div class="empty">Graph library failed to load.</div>';
+    return;
+  }
+
+  if (graphCy) graphCy.destroy();
+  graphCy = cytoscape({
+    container,
+    elements: [...nodes, ...edges],
+    style: [
+      {
+        selector: 'node',
+        style: {
+          'background-color': 'data(color)',
+          'label': 'data(label)',
+          'color': '#e2e8f0',
+          'font-size': 11,
+          'text-wrap': 'wrap',
+          'text-max-width': 110,
+          'text-valign': 'center',
+          'text-halign': 'center',
+          'width': 'data(size)',
+          'height': 'data(size)',
+          'border-width': 2,
+          'border-color': '#0f1117',
+        },
+      },
+      {
+        selector: 'edge',
+        style: {
+          'line-color': 'data(color)',
+          'width': 'data(width)',
+          'curve-style': 'bezier',
+          'opacity': 0.7,
+        },
+      },
+      {
+        selector: ':selected',
+        style: {
+          'border-color': '#f8fafc',
+          'border-width': 3,
+          'line-color': '#f8fafc',
+          'opacity': 1,
+        },
+      },
+    ],
+    layout: {
+      name: 'cose',
+      animate: false,
+      fit: true,
+      padding: 28,
+      idealEdgeLength: 110,
+      nodeRepulsion: 400000,
+    },
+  });
+
+  graphCy.on('tap', 'node', (event) => {
+    const node = event.target.data();
+    document.getElementById('graph-detail').innerHTML = `
+      ${kvHtml({
+        id: node.id,
+        label: node.label,
+        category: node.category,
+        mentions: node.mentions,
+        avg_weight: node.avg_weight
+      })}
+      <div style="margin-top:16px">
+        <h3>Sample posts</h3>
+        ${node.posts.length ? node.posts.map(post => `
+          <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #1e2536">
+            <div class="mono">${escapeHtml(post.post_id)} | ${escapeHtml(post.source_id || '')}</div>
+            <div style="font-size:12px;color:#718096;margin-top:4px">category: ${escapeHtml(post.category || '-')} | weight: ${escapeHtml(post.weight)}</div>
+          </div>
+        `).join('') : '<div class="empty">No sample posts</div>'}
+      </div>
+    `;
+  });
+
+  graphCy.on('tap', 'edge', (event) => {
+    const edge = event.target.data();
+    document.getElementById('graph-detail').innerHTML = kvHtml({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      category: edge.category,
+      mentions: edge.mentions,
+      weight: edge.weight,
+    });
+  });
+}
+
+async function loadGraph() {
+  const params = new URLSearchParams();
+  const ws = document.getElementById('graph-ws-filter')?.value || '';
+  const limit = document.getElementById('graph-limit')?.value || '120';
+  const minMentions = document.getElementById('graph-min-mentions')?.value || '2';
+  const maxNodes = document.getElementById('graph-max-nodes')?.value || '50';
+  if (ws) params.set('workspace_id', ws);
+  params.set('limit', limit);
+  params.set('min_mentions', minMentions);
+  params.set('max_nodes', maxNodes);
+
+  document.getElementById('graph-meta').innerHTML = '<div class="empty">Loading graph...</div>';
+  document.getElementById('graph-detail').innerHTML = '<div class="empty">Tap a node or edge to inspect co-occurrence details.</div>';
+  const data = await apiGet('/api/graph?' + params.toString()).catch(() => null);
+  if (!data) {
+    document.getElementById('graph-meta').innerHTML = '<div class="empty">Failed to load graph.</div>';
+    return;
+  }
+  document.getElementById('graph-meta').innerHTML = prettyJson(data.meta || {});
+  if (!(data.nodes || []).length) {
+    document.getElementById('graph-canvas').innerHTML = '<div class="empty">No graph data yet for this filter.</div>';
+    return;
+  }
+  renderGraph(data);
+}
+
+async function loadSettings() {
+  const settingsDetail = document.getElementById('settings-detail');
+  const refreshBtn = document.getElementById('settings-refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.disabled = true;
+    refreshBtn.setAttribute('aria-disabled', 'true');
+    refreshBtn.textContent = 'Refreshing...';
+  }
+  settingsDetail.innerHTML = '<div class="empty" role="status" aria-live="polite">Loading settings...</div>';
+  try {
+    const [data, balanceData, streamData, weeklyReport] = await Promise.all([
+      apiGet('/api/settings').catch(() => null),
+      apiGet('/api/settings/gigachat-balance').catch(() => null),
+      apiGet('/api/pipeline/streams').catch(() => null),
+      apiGet('/api/settings/gigachat-weekly-report').catch(() => null),
+    ]);
+    if (!data) {
+      settingsDetail.innerHTML = '<div class="empty" role="alert" aria-live="assertive">Failed to load settings.</div>';
+      return;
+    }
+    const balancePayload = balanceData || { available: false, status: 'unavailable', balance: [] };
+    settingsDetail.innerHTML = renderSettingsSnapshot(
+      data,
+      balancePayload,
+      streamData || { streams: [] },
+      weeklyReport || {},
+    );
+  } finally {
+    if (refreshBtn) {
+      refreshBtn.disabled = false;
+      refreshBtn.setAttribute('aria-disabled', 'false');
+      refreshBtn.textContent = 'Refresh';
+    }
+  }
+}
+
+async function loadSearchWs() {
+  if (workspaces.length === 0) workspaces = await fetch(API + '/api/workspaces').then(r => r.json()).catch(() => []);
+  populateWsSelects();
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-q').value.trim();
+  if (!q) return;
+  const mode = document.getElementById('search-mode').value;
+  const ws = document.getElementById('search-ws').value;
+  const limit = parseInt(document.getElementById('search-limit').value) || 10;
+  const lang = document.getElementById('search-lang').value || null;
+  const daysBack = parseInt(document.getElementById('search-days-back').value) || null;
+  const sourceRegion = document.getElementById('search-source-region').value || null;
+  const entities = document.getElementById('search-entities').value.split(',').map(v => v.trim()).filter(Boolean);
+  const el = document.getElementById('search-results');
+  el.innerHTML = '<div style="color:#718096;padding:20px">Searching...</div>';
+
+  const payload = { query: q, workspace: ws, limit, synthesize: mode === 'balanced' };
+  if (lang) payload.lang = lang;
+  if (daysBack) payload.days_back = daysBack;
+  if (sourceRegion) payload.source_region = sourceRegion;
+  if (entities.length) payload.entities = entities;
+
+  const endpoint = mode === 'balanced' ? '/api/search/balanced' : '/api/search';
+  const data = await fetch(API + endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(r => r.json()).catch(e => ({ error: String(e) }));
+
+  if (data.error) { el.innerHTML = `<div style="color:#ef4444">${data.error}</div>`; return; }
+
+  let html = '';
+  if (mode === 'balanced') {
+    if (data.synthesis?.parsed || data.synthesis?.raw) {
+      html += `<div class="synthesis-box"><h4>Balanced Synthesis</h4><pre>${JSON.stringify(data.synthesis.parsed || data.synthesis.raw, null, 2)}</pre></div>`;
+    }
+    if ((data.known_blind_spots || []).length) {
+      html += `<div class="synthesis-box"><h4>Known Blind Spots</h4><pre>${JSON.stringify(data.known_blind_spots, null, 2)}</pre></div>`;
+    }
+    const renderLane = (items, title) => {
+      let block = `<div class="card"><h3>${title}</h3>`;
+      if (!items || !items.length) return block + '<div class="empty">No evidence</div></div>';
+      items.forEach((r, i) => {
+        const url = r.payload?.url || r.url;
+        block += `<div class="result-item">
+          <div style="font-size:12px;color:#6366f1;margin-bottom:4px">#${i+1} · score ${r.score?.toFixed(3)} · ${r.payload?.signal_type || ''} · ${r.payload?.source_region || ''}</div>
+          <pre>${r.content || r.payload?.content || ''}</pre>
+          <div class="result-meta">
+            ${r.payload?.author ? '👤 ' + r.payload.author : ''}
+            ${url ? `<a href="${url}" target="_blank" style="color:#6366f1;margin-left:8px">link</a>` : ''}
+            ${(r.payload?.concepts || r.concepts || []).length ? '· ' + (r.payload?.concepts || r.concepts).slice(0,5).join(', ') : ''}
+          </div>
+        </div>`;
+      });
+      return block + '</div>';
+    };
+    html += renderLane(data.signals || [], 'Signals');
+    html += renderLane(data.counter_signals || [], 'Counter-signals');
+    html += renderLane((data.ru_verification || {}).results || [], 'RU Verification');
+    if (data.competitors) {
+      html += `<div class="card"><h3>Competitors</h3><pre>${JSON.stringify(data.competitors, null, 2)}</pre></div>`;
+    }
+    if (!html) html = '<div style="color:#718096;padding:20px">No balanced results yet.</div>';
+    el.innerHTML = html;
+    return;
+  }
+  (data.results || []).forEach((r, i) => {
+    const url = r.payload?.url || r.url;
+    html += `<div class="result-item">
+      <div style="font-size:12px;color:#6366f1;margin-bottom:4px">#${i+1} · score ${r.score?.toFixed(3)} · ${r.payload?.category || r.category || ''} · src ${Number(r.payload?.source_score || 0).toFixed(2)}</div>
+      <pre>${r.content || r.payload?.content || ''}</pre>
+      <div class="result-meta">
+        ${r.payload?.author ? '👤 ' + r.payload.author : ''}
+        ${url ? `<a href="${url}" target="_blank" style="color:#6366f1;margin-left:8px">🔗 link</a>` : ''}
+        ${(r.payload?.concepts || r.concepts || []).length ? '· ' + (r.payload?.concepts || r.concepts).slice(0,5).join(', ') : ''}
+      </div>
+    </div>`;
+  });
+  if (!html) html = '<div style="color:#718096;padding:20px">No results — add sources and let the pipeline index some posts first.</div>';
+  el.innerHTML = html;
+}
+
+// Init
+(async () => {
+  sourceCatalog = await fetch(API + '/api/sources/catalog').then(r => r.json()).catch(() => ({ source_types: [], rss_presets: [] }));
+  workspaces = await fetch(API + '/api/workspaces').then(r => r.json()).catch(() => []);
+  const presetEl = document.getElementById('src-rss-preset');
+  if (presetEl) {
+    presetEl.innerHTML = '<option value="custom">Custom</option>' + (sourceCatalog.rss_presets || []).map(p => `<option value="${p.key}">${p.name}</option>`).join('');
+  }
+  populateWsSelects();
+  updateSourceFields();
+  loadDashboard();
+})();
+</script>
+</body>
+</html>

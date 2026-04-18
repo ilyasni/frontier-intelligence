@@ -1,0 +1,11 @@
+{
+  "same_story": [
+    ["post-1", "post-2"]
+  ],
+  "different_story": [
+    ["post-1", "post-3"]
+  ],
+  "same_trend": [
+    ["semantic-1", "semantic-2"]
+  ]
+}

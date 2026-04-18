@@ -1,0 +1,48 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: worker
+    static_configs:
+      - targets: ['worker:9090']
+
+  - job_name: ingest
+    static_configs:
+      - targets: ['ingest:9091']
+
+  - job_name: crawl4ai
+    static_configs:
+      - targets: ['crawl4ai:9092']
+
+  - job_name: mcp
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['mcp:8100']
+
+  - job_name: admin
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['admin:8101']
+
+  - job_name: qdrant
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['qdrant:6333']
+
+  - job_name: alertmanager
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['alertmanager:9093']
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']

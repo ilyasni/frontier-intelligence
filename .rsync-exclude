@@ -1,0 +1,87 @@
+# Runtime secrets
+.env
+.env.*
+*.env
+!.env.example
+!.env.balanced.example
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Telethon session files stay on the server
+sessions/
+*.session
+*.session-journal
+
+# Private keys / certificates
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Server-local SearXNG config with secret_key. Use settings.example.yml as template.
+searxng/settings.yml
+!searxng/settings.example.yml
+
+# Docker volume data.
+# Do not exclude storage/postgres, storage/neo4j, or storage/qdrant wholesale:
+# the repository stores init.sql, migrations, constraints, and helper code there.
+storage/**/data/
+storage/**/pgdata/
+storage/**/*.dump
+storage/**/*.backup
+storage/**/*.sqlite
+storage/**/*.db
+grafana/data/
+prometheus/data/
+
+# Docs archive and bulky local knowledge packs
+docs/old_docs*/
+docs/chatgpt/designer-ai-visionary/books/
+
+# Local AI/editor tooling
+.agents/
+.cursor/
+.vscode/
+.claude/
+AGENTS.md
+CLAUDE.md
+
+# Version control
+.git/
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+.next/
+.nuxt/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# Temporary files
+test_write.txt
+*.tmp

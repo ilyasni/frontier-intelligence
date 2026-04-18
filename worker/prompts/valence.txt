@@ -1,0 +1,19 @@
+Определи, какой тип сигнала описывает текст ниже.
+
+Верни только JSON-объект:
+{
+  "valence": "positive|neutral|negative",
+  "signal_type": "growth|failure|launch|closure|regulation|adoption|rejection|delay|recall|lawsuit|partnership|investment|policy|other",
+  "confidence": 0.0,
+  "reasoning": "короткое объяснение до 160 символов"
+}
+
+Правила:
+- positive: рост, запуск, adoption, инвестиции, расширение, партнёрство, breakthrough
+- negative: закрытие, провал, откат, запрет, lawsuits, recalls, rejection, delays, layoffs
+- neutral: неоднозначные, смешанные или чисто описательные сигналы
+- signal_type должен отражать главное событие, а не общий тон текста
+- если текст не даёт уверенной классификации, используй valence=neutral и signal_type=other
+
+Текст:
+{{content}}

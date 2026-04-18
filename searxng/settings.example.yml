@@ -1,0 +1,19 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - bing news
+      - brave
+server:
+  limiter: false
+  public_instance: false
+  # Required by SearXNG. Do not commit the real value from the server.
+  # On the server run: bash scripts/server-ensure-searxng-secret.sh
+  secret_key: "CHANGE_ME_GENERATE_ON_SERVER"
+  method: "GET"
+  bind_address: "0.0.0.0"
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json

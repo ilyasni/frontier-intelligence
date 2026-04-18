@@ -1,0 +1,21 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: blackhole
+  group_by: ['alertname', 'severity', 'service']
+  group_wait: 30s
+  group_interval: 10m
+  repeat_interval: 6h
+  routes:
+    - receiver: telegram-admin
+      matchers:
+        - notify="telegram"
+
+receivers:
+  - name: blackhole
+  - name: telegram-admin
+    webhook_configs:
+      - url: 'http://admin:8101/api/monitoring/alertmanager/webhook?token=__ALERTMANAGER_WEBHOOK_TOKEN__'
+        send_resolved: true
+        max_alerts: 10

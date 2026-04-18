@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: Frontier
+    folder: Frontier Intelligence
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

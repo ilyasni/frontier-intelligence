@@ -1,0 +1,2 @@
+# Скрипты для Linux-сервера — только LF (иначе bash: pipefail\r invalid)
+*.sh text eol=lf

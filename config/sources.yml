@@ -1,0 +1,789 @@
+# Starter source bundles for workspace bootstrap.
+# These entries are safe to import manually via Admin UI or API.
+sources:
+  - id: rss_techcrunch
+    workspace_id: disruption
+    source_type: rss
+    name: TechCrunch
+    url: https://techcrunch.com/feed/
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: techcrunch
+      quality_tier: trusted
+      expected_signal_types: [ai, startups, product]
+      source_authority: 0.82
+      parse:
+        full_content: true
+
+  - id: rss_wired_ai
+    workspace_id: disruption
+    source_type: rss
+    name: WIRED AI
+    url: https://www.wired.com/feed/tag/ai/latest/rss
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: wired_ai
+      quality_tier: trusted
+      expected_signal_types: [ai, research, product]
+      source_authority: 0.85
+      parse:
+        full_content: true
+
+  - id: rss_medium_future
+    workspace_id: disruption
+    source_type: rss
+    name: Medium Future
+    url: https://medium.com/feed/tag/future
+    schedule_cron: "*/60 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      preset: medium_future
+      quality_tier: exploratory
+      expected_signal_types: [future_of_work, emergent, essays]
+      source_authority: 0.46
+      parse:
+        full_content: false
+
+  - id: rss_medium_design
+    workspace_id: disruption
+    source_type: rss
+    name: Medium Design
+    url: https://medium.com/feed/tag/design
+    schedule_cron: "*/60 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      preset: medium_design
+      quality_tier: exploratory
+      expected_signal_types: [design, ux, visual_culture]
+      source_authority: 0.44
+      parse:
+        full_content: false
+
+  - id: rss_medium_mobility
+    workspace_id: disruption
+    source_type: rss
+    name: Medium Mobility
+    url: https://medium.com/feed/tag/mobility
+    schedule_cron: "*/60 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      preset: medium_mobility
+      quality_tier: exploratory
+      expected_signal_types: [mobility, future, strategy]
+      source_authority: 0.42
+      parse:
+        full_content: false
+
+  - id: rss_arxiv_cs_ai
+    workspace_id: disruption
+    source_type: rss
+    name: arXiv cs.AI
+    url: https://rss.arxiv.org/rss/cs.AI
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: arxiv_cs_ai
+      quality_tier: research
+      expected_signal_types: [research, ai, papers]
+      source_authority: 0.92
+
+  - id: rss_arxiv_cs_hc
+    workspace_id: disruption
+    source_type: rss
+    name: arXiv cs.HC
+    url: https://rss.arxiv.org/rss/cs.HC
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: arxiv_cs_hc
+      quality_tier: research
+      expected_signal_types: [research, hci, ux]
+      source_authority: 0.9
+
+  - id: rss_insideevs_all
+    workspace_id: disruption
+    source_type: rss
+    name: InsideEVs All
+    url: https://insideevs.com/rss/articles/all/
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: insideevs_all
+      quality_tier: trusted
+      expected_signal_types: [ev, mobility, industry]
+      source_authority: 0.74
+      parse:
+        full_content: false
+
+  - id: rss_insideevs_autonomous
+    workspace_id: disruption
+    source_type: rss
+    name: InsideEVs Autonomous Vehicles
+    url: https://insideevs.com/rss/category/autonomous-vehicles/
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: insideevs_autonomous
+      quality_tier: trusted
+      expected_signal_types: [autonomous, mobility, safety]
+      source_authority: 0.76
+      parse:
+        full_content: false
+
+  - id: rss_electrek
+    workspace_id: disruption
+    source_type: rss
+    name: Electrek
+    url: https://electrek.co/feed
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: electrek
+      quality_tier: trusted
+      expected_signal_types: [ev, energy, mobility]
+      source_authority: 0.78
+      parse:
+        full_content: true
+
+  - id: rss_wired_business
+    workspace_id: disruption
+    source_type: rss
+    name: WIRED Business
+    url: https://www.wired.com/feed/category/business/latest/rss
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: wired_business
+      quality_tier: trusted
+      expected_signal_types: [business_models, ai, platforms]
+      source_authority: 0.8
+      parse:
+        full_content: true
+
+  - id: rss_mit_tech_review
+    workspace_id: disruption
+    source_type: rss
+    name: MIT Technology Review
+    url: https://www.technologyreview.com/feed/
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: mit_tech_review
+      quality_tier: research
+      expected_signal_types: [research, ai, strategy]
+      source_authority: 0.9
+      parse:
+        full_content: true
+
+  - id: rss_arxiv_cs_lg
+    workspace_id: disruption
+    source_type: rss
+    name: arXiv cs.LG
+    url: https://rss.arxiv.org/rss/cs.LG
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: arxiv_cs_lg
+      quality_tier: research
+      expected_signal_types: [research, ml, ai]
+      source_authority: 0.92
+
+  - id: rss_arxiv_cs_ro
+    workspace_id: disruption
+    source_type: rss
+    name: arXiv cs.RO
+    url: https://rss.arxiv.org/rss/cs.RO
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: arxiv_cs_ro
+      quality_tier: research
+      expected_signal_types: [research, robotics, autonomy]
+      source_authority: 0.91
+
+  - id: web_waymo_blog
+    workspace_id: disruption
+    source_type: web
+    name: Waymo Blog
+    url: https://waymo.com/blog/
+    schedule_cron: "*/60 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [autonomous, mobility, safety]
+      source_authority: 0.74
+      filters:
+        include_keywords: [waymo, autonomous, robotaxi, mobility, safety, driver]
+      parse:
+        full_content: true
+        listing_selector: "article, [data-testid='blog-card'], .blog-card, .card, li"
+        link_selector: "a[href^='/blog/']"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: web_nvidia_autonomous_vehicles
+    workspace_id: disruption
+    source_type: web
+    name: NVIDIA Autonomous Vehicles
+    url: https://blogs.nvidia.com/blog/category/auto/
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [autonomous, ai, chips]
+      source_authority: 0.66
+      parse:
+        full_content: true
+        listing_selector: "h3"
+        link_selector: "a[href]"
+        title_selector: "a[href]"
+        date_selector: ""
+        article_selector: "article, main"
+
+  - id: web_bosch_software_driven_mobility
+    workspace_id: disruption
+    source_type: web
+    name: Bosch Software-Driven Mobility
+    url: https://www.bosch.com/stories/topics/software-driven-mobility/
+    schedule_cron: "*/120 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [mobility, software_defined_vehicle, automotive]
+      source_authority: 0.62
+      parse:
+        full_content: false
+        listing_selector: "article, .card, .post, .item, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3, a[href]"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: web_mobilityhouse_newsroom
+    workspace_id: disruption
+    source_type: web
+    name: Mobility House Newsroom
+    url: https://www.mobilityhouse.com/usa_en/our-company/newsroom
+    schedule_cron: "*/120 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [mobility, charging, energy]
+      source_authority: 0.58
+      parse:
+        full_content: false
+        listing_selector: "article, .card, .post, .item, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3, a[href]"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: web_nngroup_articles
+    workspace_id: disruption
+    source_type: web
+    name: NNGroup Articles
+    url: https://www.nngroup.com/articles/
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [ux, usability, interaction_design]
+      source_authority: 0.82
+      filters:
+        include_keywords: [ux, usability, user, interface, design, research]
+      parse:
+        full_content: true
+        listing_selector: "h2, h3"
+        link_selector: "a[href]"
+        title_selector: "a[href]"
+        date_selector: ""
+        article_selector: "article, main"
+
+  - id: web_ux_journal
+    workspace_id: disruption
+    source_type: web
+    name: UX Journal
+    url: https://ux-journal.ru
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: exploratory
+      expected_signal_types: [ux, product_design, interfaces]
+      source_authority: 0.56
+      parse:
+        full_content: true
+        listing_selector: "article, .card, .post, .item, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3, a[href]"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: api_hn_topstories
+    workspace_id: disruption
+    source_type: api
+    name: Hacker News Top Stories
+    url: https://hacker-news.firebaseio.com/v0/topstories.json
+    schedule_cron: "*/30 * * * *"
+    extra:
+      fetch:
+        item_url_template: "https://hacker-news.firebaseio.com/v0/item/{id}.json"
+        max_items_per_run: 30
+      parse:
+        field_map:
+          id: id
+          url: url
+          title: title
+          content: text
+          summary: text
+          author: by
+          published_at: time
+
+  - id: ai_rss_techcrunch
+    workspace_id: ai_trends
+    source_type: rss
+    name: TechCrunch AI Trends
+    url: https://techcrunch.com/feed/
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: techcrunch
+      quality_tier: trusted
+      expected_signal_types: [ai, startups, agents]
+      source_authority: 0.76
+      filters:
+        include_keywords: [ai, llm, agent, inference, transformer, reasoning]
+        exclude_keywords: [funding, ipo, acquisition, hiring]
+      parse:
+        full_content: true
+
+  - id: ai_rss_wired_ai
+    workspace_id: ai_trends
+    source_type: rss
+    name: WIRED AI Trends
+    url: https://www.wired.com/feed/tag/ai/latest/rss
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: wired_ai
+      quality_tier: trusted
+      expected_signal_types: [ai, research, product]
+      source_authority: 0.78
+      filters:
+        include_keywords: [ai, llm, agent, inference, model, robotics]
+        exclude_keywords: [gear, review, gadget]
+      parse:
+        full_content: true
+
+  - id: ai_rss_mit_tech_review
+    workspace_id: ai_trends
+    source_type: rss
+    name: MIT Technology Review AI
+    url: https://www.technologyreview.com/feed/
+    schedule_cron: "*/90 * * * *"
+    extra:
+      preset: mit_tech_review
+      quality_tier: research
+      expected_signal_types: [research, ai, policy]
+      source_authority: 0.9
+      filters:
+        include_keywords: [ai, model, llm, agent, robotics, chip]
+      parse:
+        full_content: true
+
+  - id: ai_rss_arxiv_cs_ai
+    workspace_id: ai_trends
+    source_type: rss
+    name: arXiv cs.AI Trends
+    url: https://rss.arxiv.org/rss/cs.AI
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_ai
+      quality_tier: research
+      expected_signal_types: [research, ai, papers]
+      source_authority: 0.92
+
+  - id: ai_rss_arxiv_cs_lg
+    workspace_id: ai_trends
+    source_type: rss
+    name: arXiv cs.LG Trends
+    url: https://rss.arxiv.org/rss/cs.LG
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_lg
+      quality_tier: research
+      expected_signal_types: [research, ml, ai]
+      source_authority: 0.92
+
+  - id: ai_rss_habr_ai_hub
+    workspace_id: ai_trends
+    source_type: rss
+    name: Habr AI Hub
+    url: https://habr.com/ru/hubs/artificial_intelligence/
+    schedule_cron: "*/90 * * * *"
+    extra:
+      preset: habr_ai_hub
+      quality_tier: exploratory
+      expected_signal_types: [ai, applied_ai, tooling]
+      source_authority: 0.58
+      parse:
+        full_content: false
+
+  - id: ai_api_hn_topstories
+    workspace_id: ai_trends
+    source_type: api
+    name: Hacker News AI Signals
+    url: https://hacker-news.firebaseio.com/v0/topstories.json
+    schedule_cron: "*/45 * * * *"
+    extra:
+      quality_tier: exploratory
+      expected_signal_types: [ai, devtools, inference]
+      source_authority: 0.42
+      fetch:
+        item_url_template: "https://hacker-news.firebaseio.com/v0/item/{id}.json"
+        max_items_per_run: 25
+      filters:
+        include_keywords: [ai, llm, agent, inference, transformer, benchmark]
+        exclude_keywords: [hiring, who is hiring, show hn, ask hn]
+      parse:
+        field_map:
+          id: id
+          url: url
+          title: title
+          content: text
+          summary: text
+          author: by
+          published_at: time
+
+  - id: ai_research_rss_arxiv_cs_ai
+    workspace_id: ai_research
+    source_type: rss
+    name: arXiv cs.AI Research
+    url: https://rss.arxiv.org/rss/cs.AI
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_ai
+      quality_tier: research
+      expected_signal_types: [research, ai, papers]
+      source_authority: 0.94
+
+  - id: ai_research_rss_arxiv_cs_lg
+    workspace_id: ai_research
+    source_type: rss
+    name: arXiv cs.LG Research
+    url: https://rss.arxiv.org/rss/cs.LG
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_lg
+      quality_tier: research
+      expected_signal_types: [research, ml, ai]
+      source_authority: 0.94
+
+  - id: ai_research_rss_mit_tech_review
+    workspace_id: ai_research
+    source_type: rss
+    name: MIT Technology Review AI Research
+    url: https://www.technologyreview.com/feed/
+    schedule_cron: "*/90 * * * *"
+    extra:
+      preset: mit_tech_review
+      quality_tier: research
+      expected_signal_types: [research, ai, policy]
+      source_authority: 0.88
+      filters:
+        include_keywords: [ai, model, benchmark, reasoning, robotics, inference, research]
+        exclude_keywords: [startup, funding, acquisition, gadget]
+      parse:
+        full_content: true
+
+  - id: ai_products_rss_techcrunch
+    workspace_id: ai_products_media
+    source_type: rss
+    name: TechCrunch AI Products
+    url: https://techcrunch.com/feed/
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: techcrunch
+      quality_tier: trusted
+      expected_signal_types: [ai, startups, agents]
+      source_authority: 0.76
+      filters:
+        include_keywords: [ai, llm, agent, inference, model, copilot]
+        exclude_keywords: [ipo, acquisition, hiring]
+      parse:
+        full_content: true
+
+  - id: ai_products_rss_wired_ai
+    workspace_id: ai_products_media
+    source_type: rss
+    name: WIRED AI Products
+    url: https://www.wired.com/feed/tag/ai/latest/rss
+    schedule_cron: "*/60 * * * *"
+    extra:
+      preset: wired_ai
+      quality_tier: trusted
+      expected_signal_types: [ai, product, media]
+      source_authority: 0.78
+      filters:
+        include_keywords: [ai, llm, agent, product, app, platform, robotics]
+        exclude_keywords: [gear, review, gadget]
+      parse:
+        full_content: true
+
+  - id: ai_products_rss_habr_ai_hub
+    workspace_id: ai_products_media
+    source_type: rss
+    name: Habr AI Products
+    url: https://habr.com/ru/hubs/artificial_intelligence/
+    schedule_cron: "*/90 * * * *"
+    extra:
+      preset: habr_ai_hub
+      quality_tier: exploratory
+      expected_signal_types: [ai, applied_ai, tooling]
+      source_authority: 0.58
+      filters:
+        include_keywords: [ai, llm, agent, tooling, inference, model, open source]
+      parse:
+        full_content: false
+
+  - id: ai_products_api_hn_topstories
+    workspace_id: ai_products_media
+    source_type: api
+    name: Hacker News AI Products
+    url: https://hacker-news.firebaseio.com/v0/topstories.json
+    schedule_cron: "*/45 * * * *"
+    extra:
+      quality_tier: exploratory
+      expected_signal_types: [ai, devtools, product]
+      source_authority: 0.42
+      fetch:
+        item_url_template: "https://hacker-news.firebaseio.com/v0/item/{id}.json"
+        max_items_per_run: 25
+      filters:
+        include_keywords: [ai, llm, agent, inference, benchmark, copilot, open source]
+        exclude_keywords: [hiring, who is hiring, ask hn]
+      parse:
+        field_map:
+          id: id
+          url: url
+          title: title
+          content: text
+          summary: text
+          author: by
+          published_at: time
+
+  - id: design_rss_medium_design
+    workspace_id: design
+    source_type: rss
+    name: Medium Design Signals
+    url: https://medium.com/feed/tag/design
+    schedule_cron: "*/90 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      preset: medium_design
+      quality_tier: exploratory
+      expected_signal_types: [design, ux, visual_culture]
+      source_authority: 0.36
+      filters:
+        include_keywords: [ux, product design, interaction, interface, design system, figma, usability, hci, service design]
+      parse:
+        full_content: false
+
+  - id: design_rss_arxiv_cs_hc
+    workspace_id: design
+    source_type: rss
+    name: arXiv cs.HC Design Signals
+    url: https://rss.arxiv.org/rss/cs.HC
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_hc
+      quality_tier: research
+      expected_signal_types: [research, hci, ux]
+      source_authority: 0.9
+
+  - id: design_rss_habr_design_articles
+    workspace_id: design
+    source_type: rss
+    name: Habr Design Articles
+    url: https://habr.com/ru/flows/design/articles/
+    schedule_cron: "*/90 * * * *"
+    extra:
+      preset: habr_design_articles
+      quality_tier: exploratory
+      expected_signal_types: [design, ux, product_design]
+      source_authority: 0.5
+      filters:
+        include_keywords: [ux, ui, интерфейс, дизайн-система, product design, исследование, usability, figma]
+      parse:
+        full_content: false
+
+  - id: design_rss_insideevs_design
+    workspace_id: design
+    source_type: rss
+    name: InsideEVs Design
+    url: https://insideevs.com/rss/category/design/
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: insideevs_design
+      quality_tier: trusted
+      expected_signal_types: [mobility_design, industrial_design, interfaces]
+      source_authority: 0.62
+      filters:
+        include_keywords: [cockpit, interface, hmi, ux, user experience, display, design]
+      parse:
+        full_content: false
+
+  - id: design_rss_insideevs_ux
+    workspace_id: design
+    source_type: rss
+    name: InsideEVs UX
+    url: https://insideevs.com/rss/category/user-experience/
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: insideevs_ux
+      quality_tier: trusted
+      expected_signal_types: [ux, hmi, in_vehicle_experience]
+      source_authority: 0.66
+      filters:
+        include_keywords: [ux, hmi, user experience, cockpit, interface, driver display]
+      parse:
+        full_content: false
+
+  - id: tg_ru_russianev
+    workspace_id: disruption
+    source_type: telegram
+    name: Russian EV
+    tg_channel: "@russianev"
+    schedule_cron: "*/30 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ev, used_ev, charging, auto_market]
+      source_authority: 0.72
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+        include_keywords: [электромобиль, ev, электрокар, батарея, зарядка, пробег, рынок, вторичный рынок, used ev]
+        exclude_keywords: [путешествие, маршрут выходного дня, викторина, конкурс]
+      fetch:
+        lookback_hours: 168
+
+  - id: tg_ru_avtovaz_official
+    workspace_id: disruption
+    source_type: telegram
+    name: АвтоВАЗ Official
+    tg_channel: "@avtovaz_official"
+    schedule_cron: "*/30 * * * *"
+    extra:
+      quality_tier: primary
+      expected_signal_types: [oem, production, regulation, market]
+      source_authority: 0.8
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+        include_keywords: [автоваз, lada, производство, конвейер, завод, модель, продажи, электромобиль, ev]
+        exclude_keywords: [конкурс, розыгрыш, мерч, поздравляем]
+      fetch:
+        lookback_hours: 168
+
+  - id: tg_ru_nami_russia
+    workspace_id: disruption
+    source_type: telegram
+    name: НАМИ
+    tg_channel: "@fgupnami"
+    schedule_cron: "*/30 * * * *"
+    extra:
+      quality_tier: primary
+      expected_signal_types: [regulation, standards, automotive, policy]
+      source_authority: 0.78
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+        include_keywords: [нами, стандарт, сертификация, беспилот, транспорт, автопром, электромобиль, regulation]
+        exclude_keywords: [викторина, конкурс, музей, история, поздравляем]
+      fetch:
+        lookback_hours: 168
+
+  - id: tg_ru_yandex_auto
+    workspace_id: disruption
+    source_type: telegram
+    name: Yandex Auto
+    tg_channel: "@yandex_auto"
+    schedule_cron: "*/30 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [connected_car, platforms, navigation, software]
+      source_authority: 0.76
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+        include_keywords: [авто, автомобиль, yandex auto, навигация, мультимедиа, carplay, android auto, connected car, telematics]
+        exclude_keywords: [такси скидка, путешествие, подборка музыки]
+      fetch:
+        lookback_hours: 168
+
+  - id: tg_ru_sber_auto
+    workspace_id: disruption
+    source_type: telegram
+    name: Sber Auto
+    tg_channel: "@sberbank_auto"
+    schedule_cron: "*/30 * * * *"
+    extra:
+      quality_tier: primary
+      expected_signal_types: [used_ev, auto_market, finance, mobility_services]
+      source_authority: 0.82
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+        include_keywords: [авто, автомобиль, пробег, вторичный рынок, цена, кредит, лизинг, электромобиль, рынок]
+        exclude_keywords: [маршрут выходного дня, путешествие, подборка мест, тест личности]
+      fetch:
+        lookback_hours: 168
+
+      parse:
+        full_content: true
+
+  - id: tg_ru_izvestia_auto
+    workspace_id: disruption
+    source_type: telegram
+    name: Izvestia Auto
+    tg_channel: "@izvestia_auto"
+    schedule_cron: "*/30 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [auto_market, regulation, oem, industry]
+      source_authority: 0.68
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+        include_keywords: [авто, автомобиль, рынок, продаж, электромобиль, штраф, закон, зарядка, автопром]
+        exclude_keywords: [дтп без рынка, криминал, пробки]
+      fetch:
+        lookback_hours: 168
+
+  - id: tg_ru_rbc_auto
+    workspace_id: disruption
+    source_type: telegram
+    name: RBC Auto
+    tg_channel: "@rbc_auto"
+    schedule_cron: "*/30 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [auto_market, business_models, regulation]
+      source_authority: 0.7
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+        include_keywords: [авто, автомобиль, рынок, продажи, электромобиль, зарядка, regulation, автопром]
+        exclude_keywords: [пробки, путешествие, lifestyle]
+      fetch:
+        lookback_hours: 168

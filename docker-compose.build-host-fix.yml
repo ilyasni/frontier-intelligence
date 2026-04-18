@@ -1,0 +1,32 @@
+# build.privileged требует entitlement security.insecure у BuildKit. Если демон отвечает
+# «granting entitlement security.insecure is not allowed» — НЕ используй этот файл;
+# вместо этого: DOCKER_BUILDKIT=0 docker compose ... build (см. scripts/server-build-ingest-fix.sh).
+#
+# При согласованной настройке buildkitd:
+#   docker compose -f docker-compose.yml -f docker-compose.build-host-fix.yml build ingest
+# См. docs/server-docker-apparmor.md
+
+services:
+  gpt2giga-proxy:
+    build:
+      privileged: true
+
+  ingest:
+    build:
+      privileged: true
+
+  worker:
+    build:
+      privileged: true
+
+  mcp:
+    build:
+      privileged: true
+
+  admin:
+    build:
+      privileged: true
+
+  crawl4ai:
+    build:
+      privileged: true

@@ -1,0 +1,30 @@
+[project]
+name = "frontier-intelligence"
+version = "0.1.0"
+description = "Personal trend monitoring and synthesis system"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.isort]
+known-first-party = ["shared", "worker", "ingest", "mcp", "admin"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict = false
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "unit: fast tests, no external services",
+    "integration: require running Docker services (redis, neo4j, postgres)",
+]
