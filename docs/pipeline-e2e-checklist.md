@@ -74,6 +74,16 @@ curl -s "http://localhost:6333/collections/frontier_docs" | jq .
 
 Production snapshot на 2026-04-17: `frontier_docs` green, dense 2560d + sparse, `points_count` > 17k. `trend_clusters` is a secondary Qdrant index for stable PostgreSQL trend clusters. If it is empty after rollout, run `python scripts/sync_trend_clusters_to_qdrant.py` from the app container or trigger semantic/signal analysis from Admin.
 
+## 4.1. Urgent trend alerts
+
+Urgent Telegram alerts are not a daily digest. They are a rare notification layer over confirmed `trend_clusters`:
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:8101/api/pipeline/run-urgent-trend-alerts?dry_run=true' | jq .
+```
+
+Expected production defaults: `TREND_ALERT_MIN_SIGNAL_SCORE=0.80`, `TREND_ALERT_MIN_DOC_COUNT=5`, `TREND_ALERT_MIN_SOURCE_COUNT=3`, `TREND_ALERT_MAX_PER_7D=2`. Sent/deduped alerts are stored in PostgreSQL table `trend_alerts`.
+
 ## 5. Порог релевантности
 
 В Admin API / БД: `workspaces.relevance_weights` (в т.ч. `threshold`). Временно снизь порог для проверки, что события перестают уходить в ветку dropped.

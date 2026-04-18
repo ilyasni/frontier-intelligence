@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from shared.config import get_settings
+
+# Telegram Bot API puts the bot token in the request path, and httpx INFO logs include URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def telegram_alerts_enabled() -> bool:

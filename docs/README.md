@@ -45,6 +45,16 @@ curl -sS http://127.0.0.1:8100/metrics        # метрики MCP (Prometheus)
 
 Прочие сервисы: PaddleOCR `http://127.0.0.1:8008/readyz`, Prometheus `9090`, Grafana `3000` — см. `docs/security-git-preflight.md` и `docker compose ps`.
 
+### Urgent Trend Alerts
+
+Daily digests are intentionally disabled. The admin scheduler only sends Telegram alerts for rare, confirmed stable trend spikes:
+
+- `ADMIN_TREND_ALERT_CRON=25 * * * *` checks once per hour.
+- `TREND_ALERT_MIN_SIGNAL_SCORE=0.80`, `TREND_ALERT_MIN_DOC_COUNT=5`, `TREND_ALERT_MIN_SOURCE_COUNT=3` select strong confirmed clusters.
+- `TREND_ALERT_MAX_PER_7D=2` caps delivery to roughly 0-2 urgent messages per week.
+- `trend_alerts` in PostgreSQL stores sent alerts and deduplicates by `workspace_id + cluster_key + alert_kind`.
+- Manual check: `POST http://127.0.0.1:8101/api/pipeline/run-urgent-trend-alerts?dry_run=true`.
+
 Персональная система мониторинга и синтеза трендов.  
 Собирает сигналы из множества источников, обрабатывает через LangChain/GigaChat,
 хранит в векторной базе и графе знаний, отдаёт через MCP в Codex/Claude-проекты.
@@ -98,6 +108,7 @@ curl -sS http://127.0.0.1:8100/metrics        # метрики MCP (Prometheus)
 | Vision pipeline (S3, GigaChat Vision, PaddleOCR) | ✅ Работает | `stream:posts:vision`; media albums are collapsed in ingest, no separate album assembler |
 | Semantic/trend/emerging clusters | ✅ Работает | PostgreSQL is canonical; stable trend clusters are mirrored to Qdrant `trend_clusters` as a secondary vector index |
 | Missing signals | ✅ Работает | SearXNG gap analysis persists `missing_signals` |
+| Urgent trend alerts | Работает | Telegram-only urgent alerts for confirmed stable trend spikes; no daily digest; capped by `TREND_ALERT_MAX_PER_7D` |
 | Prometheus + Grafana dashboards | ✅ Работает | Runtime dashboard provisioned |
 
 ---

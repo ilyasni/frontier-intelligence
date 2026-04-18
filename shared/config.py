@@ -1,6 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices, Field
 from functools import lru_cache
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from shared.embedding_models import expected_embedding_dim
 
@@ -149,6 +150,10 @@ class Settings(BaseSettings):
         "*/5 * * * *",
         alias="ADMIN_GIGACHAT_BALANCE_REFRESH_CRON",
     )
+    admin_trend_alert_cron: str = Field(
+        "25 * * * *",
+        alias="ADMIN_TREND_ALERT_CRON",
+    )
     admin_scheduler_misfire_grace_seconds: int = Field(
         1800,
         alias="ADMIN_SCHEDULER_MISFIRE_GRACE_SECONDS",
@@ -190,6 +195,21 @@ class Settings(BaseSettings):
     trend_cluster_stable_threshold: float = Field(0.58, alias="TREND_CLUSTER_STABLE_THRESHOLD")
     trend_cluster_emerging_threshold: float = Field(0.42, alias="TREND_CLUSTER_EMERGING_THRESHOLD")
     trend_cluster_min_source_diversity: float = Field(0.2, alias="TREND_CLUSTER_MIN_SOURCE_DIVERSITY")
+    trend_alerts_enabled: bool = Field(True, alias="TREND_ALERTS_ENABLED")
+    trend_alert_window_hours: int = Field(48, alias="TREND_ALERT_WINDOW_HOURS")
+    trend_alert_min_signal_score: float = Field(0.8, alias="TREND_ALERT_MIN_SIGNAL_SCORE")
+    trend_alert_change_point_min_signal_score: float = Field(
+        0.74,
+        alias="TREND_ALERT_CHANGE_POINT_MIN_SIGNAL_SCORE",
+    )
+    trend_alert_min_change_point_strength: float = Field(
+        0.7,
+        alias="TREND_ALERT_MIN_CHANGE_POINT_STRENGTH",
+    )
+    trend_alert_min_doc_count: int = Field(5, alias="TREND_ALERT_MIN_DOC_COUNT")
+    trend_alert_min_source_count: int = Field(3, alias="TREND_ALERT_MIN_SOURCE_COUNT")
+    trend_alert_max_per_run: int = Field(2, alias="TREND_ALERT_MAX_PER_RUN")
+    trend_alert_max_per_7d: int = Field(2, alias="TREND_ALERT_MAX_PER_7D")
     cluster_min_evidence_count: int = Field(2, alias="CLUSTER_MIN_EVIDENCE_COUNT")
     signal_short_window_hours: int = Field(24, alias="SIGNAL_SHORT_WINDOW_HOURS")
     signal_analysis_window_days: int = Field(3, alias="SIGNAL_ANALYSIS_WINDOW_DAYS")

@@ -8,18 +8,23 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from admin.backend.db import get_engine
-from admin.backend.scheduler import get_manual_job
-from admin.backend.scheduler import launch_manual_job
-from admin.backend.scheduler import list_manual_jobs
-from admin.backend.scheduler import scheduler_status
+from admin.backend.scheduler import (
+    get_manual_job,
+    launch_manual_job,
+    list_manual_jobs,
+    scheduler_status,
+)
 from admin.backend.services.pipeline_jobs import (
     refresh_source_scores as refresh_source_scores_job,
+)
+from admin.backend.services.pipeline_jobs import (
     run_semantic_cluster_job,
     run_signal_analysis_job,
 )
+from admin.backend.services.trend_alerts import run_urgent_trend_alerts
 from shared.config import get_settings
-from shared.redis_streams import collect_redis_stream_snapshot
 from shared.linked_urls import extract_urls_from_plain_text, finalize_linked_urls
+from shared.redis_streams import collect_redis_stream_snapshot
 
 router = APIRouter()
 
@@ -287,3 +292,8 @@ async def trigger_signal_analysis(
         workspace_id=target_workspace,
         runner=run_signal_analysis_job,
     )
+
+
+@router.post("/run-urgent-trend-alerts")
+async def trigger_urgent_trend_alerts(dry_run: bool = False):
+    return await run_urgent_trend_alerts(dry_run=dry_run)

@@ -5,11 +5,9 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from datetime import UTC
-from datetime import datetime
-from datetime import timezone
-from uuid import uuid4
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -17,13 +15,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from admin.backend.db import get_engine
+from admin.backend.services.gigachat_balance import fetch_gigachat_balance
 from admin.backend.services.pipeline_jobs import (
     list_active_workspace_ids,
     refresh_source_scores,
     run_semantic_cluster_job,
     run_signal_analysis_job,
 )
-from admin.backend.services.gigachat_balance import fetch_gigachat_balance
+from admin.backend.services.trend_alerts import run_urgent_trend_alerts
 from shared.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -32,11 +31,12 @@ _scheduler: AsyncIOScheduler | None = None
 _source_score_lock = asyncio.Lock()
 _cluster_lock = asyncio.Lock()
 _gigachat_balance_lock = asyncio.Lock()
+_trend_alert_lock = asyncio.Lock()
 _manual_jobs_table_ready = False
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -513,6 +513,27 @@ async def scheduled_refresh_gigachat_balance() -> dict[str, Any]:
         }
 
 
+async def scheduled_urgent_trend_alerts() -> dict[str, Any]:
+    if _trend_alert_lock.locked():
+        logger.warning("Skipping urgent_trend_alerts: previous run is still in progress")
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "job_name": "urgent_trend_alerts",
+        }
+
+    async with _trend_alert_lock:
+        result = await run_urgent_trend_alerts()
+        logger.info(
+            "Completed urgent_trend_alerts status=%s sent=%s candidates=%s skipped=%s",
+            result.get("status"),
+            result.get("sent"),
+            result.get("candidates"),
+            result.get("skipped"),
+        )
+        return result
+
+
 def get_scheduler() -> AsyncIOScheduler | None:
     return _scheduler
 
@@ -594,6 +615,16 @@ def _build_scheduler() -> AsyncIOScheduler:
         jitter=min(10, settings.admin_scheduler_max_jitter_seconds),
         **common_kwargs,
     )
+    scheduler.add_job(
+        scheduled_urgent_trend_alerts,
+        CronTrigger.from_crontab(
+            settings.admin_trend_alert_cron,
+            timezone=timezone,
+        ),
+        id="urgent_trend_alerts",
+        jitter=min(60, settings.admin_scheduler_max_jitter_seconds),
+        **common_kwargs,
+    )
     return scheduler
 
 
@@ -611,12 +642,13 @@ async def scheduler_lifespan():
     await reconcile_running_manual_jobs()
     await scheduled_refresh_gigachat_balance()
     logger.info(
-        "Admin scheduler started with timezone=%s, refresh_cron=%s, cluster_cron=%s, signal_cron=%s, gigachat_balance_cron=%s",
+        "Admin scheduler started with timezone=%s, refresh_cron=%s, cluster_cron=%s, signal_cron=%s, gigachat_balance_cron=%s, trend_alert_cron=%s",
         settings.admin_scheduler_timezone,
         settings.admin_source_score_refresh_cron,
         settings.admin_semantic_cluster_cron,
         settings.admin_signal_cluster_cron,
         settings.admin_gigachat_balance_refresh_cron,
+        settings.admin_trend_alert_cron,
     )
     try:
         yield
