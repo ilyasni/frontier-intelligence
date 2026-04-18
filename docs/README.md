@@ -2,6 +2,7 @@
 
 ## Recent Docs
 
+- Актуализация health-эндпоинтов и формулировок (reindex, workspace vs MCP-клиент): этот файл, `CLAUDE.md`, `AGENTS.md`, `docs/security-git-preflight.md`, `docs/server-git-workflow.md` (2026-04-18).
 - Rollout summary for the multi-connector production upgrade:
   [CHANGELOG-2026-03-28.md](./CHANGELOG-2026-03-28.md)
 - Source connector model, runtime tables, proxy rules, and live starter bundle:
@@ -29,17 +30,20 @@
 - `GigaChat-2-Lite` must not be used in runtime config until it appears in `GET /v1/models` on the active proxy/upstream.
 - `X-Session-ID` and `/tokens/count` are best-effort optimizations. If the current SDK/proxy pair rejects them, the pipeline should continue working without cache or token-count support.
 - For Balanced rollout keep `INDEXING_MAX_CONCURRENCY=1` on this contour unless live metrics show enough headroom.
-- Server snapshot on 2026-04-18: the live server tree under
-  `/opt/frontier-intelligence` is the first git baseline/source of truth.
-  Runtime-only files stay untracked (`.env`, `sessions/`,
-  `searxng/settings.yml`, Docker volume data). Qdrant `frontier_docs`
-  is green with dense+sparse config and live points; `trend_clusters` is
-  used as a secondary vector index for PostgreSQL trend clusters.
-- A historical crawl/vision reindex backfill was queued on 2026-04-18.
-  Monitor it with `docker compose exec -T redis redis-cli XINFO GROUPS stream:posts:reindex`.
-  During this backfill, worker-side GigaChat calls are intentionally
-  throttled with `GIGACHAT_MIN_REQUEST_INTERVAL_MS=5000` to keep MCP
-  searches from hitting upstream embedding rate limits.
+- **Git / сервер (2026-04-18):** рабочее дерево на сервере `/opt/frontier-intelligence` — первая зафиксированная база; общая история — в Git remote после push. В git не попадают только рантайм-пути (`.env`, `sessions/`, `searxng/settings.yml`, данные Docker volumes). Qdrant: `frontier_docs` (dense + sparse), `trend_clusters` — вторичный индекс для стабильных trend-кластеров из PostgreSQL.
+- **Crawl/Vision → `stream:posts:reindex`:** полностью в коде (`shared/reindex.py`, `worker/tasks/reindex_task.py`, публикация из `vision_task` и `crawl4ai`). Массовый догон — операция (`scripts/enqueue_reindex_enriched_posts.py`); при работе смотри `XLEN stream:posts:reindex` и `XINFO GROUPS`. Под нагрузку можно **временно** поднять `GIGACHAT_MIN_REQUEST_INTERVAL_MS` (например `5000`) — параметр уже читается из `shared/config.py` / compose, это тюнинг окружения, а не «недореализованная фича».
+
+### Быстрая проверка HTTP (на хосте с проброшенными портами compose)
+
+В текущем `docker-compose.yml` **нет** единого публичного «монолитного» API на `:8000` (в отличие от старых стеков). Типовые проверки:
+
+```bash
+curl -sS http://127.0.0.1:8100/healthz        # MCP
+curl -sS http://127.0.0.1:8101/api/health    # Admin
+curl -sS http://127.0.0.1:8100/metrics        # метрики MCP (Prometheus)
+```
+
+Прочие сервисы: PaddleOCR `8008/readyz`, Prometheus `9090`, Grafana `3000` — см. `docs/security-git-preflight.md` и `docker compose ps`.
 
 Персональная система мониторинга и синтеза трендов.  
 Собирает сигналы из множества источников, обрабатывает через LangChain/GigaChat,
@@ -60,11 +64,13 @@
     │   └── Codex Project: visionary-designer
     │
     ├── workspace: ai_trends     → LLM, agents, AI tools, research, inference
-    │   └── Codex Project: ai-researcher (будущий)
+    │   └── Внешний MCP-клиент: ai-researcher (по желанию; данные и конфиг уже в стеке)
     │
     └── workspace: design        → design systems, UX patterns, visual culture
-        └── Codex Project: design-director (будущий)
+        └── Внешний MCP-клиент: design-director (по желанию; данные и конфиг уже в стеке)
 ```
+
+> **Уточнение:** `ai_trends`, `design`, а также `ai_research` / `ai_products_media` заданы в `config/workspaces.yml` и привязаны к источникам в `config/sources.yml` (`workspace_id`, мосты, веса). «Будущий» во внешних гайдах означал только **отдельный Codex/Claude-проект**, подключаемый к этому MCP, а не отсутствие бэкенда.
 
 **Изоляция на уровне данных, не инфраструктуры:**
 - Каждый документ, тренд, концепт помечен `workspace_id`

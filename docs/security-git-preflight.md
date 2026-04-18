@@ -4,9 +4,11 @@ Last audit: 2026-04-18.
 
 Goal: prepare the repository for the first git init/publish without leaking server-only secrets or runtime data.
 
-Current decision: the live server tree under `/opt/frontier-intelligence` is
-the first git baseline/source of truth. The older local Windows workspace must
-not overwrite the server baseline.
+After the first server-backed commit and push to `origin`, the **shared**
+history lives in git. The Windows workspace should follow **`git pull
+--ff-only`** (or re-clone) before large edits so it does not diverge from the
+server branch. Treating an unsynced local tree as authoritative over `origin`
+is unsafe.
 
 ## What Was Checked
 

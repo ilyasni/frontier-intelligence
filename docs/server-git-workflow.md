@@ -15,12 +15,12 @@ secrets, sessions, database volumes, or local editor/agent tooling.
 
 ## Source Of Truth
 
-- Server working tree: canonical baseline for the initial git commit.
-- Git remote: canonical source after the first push.
-- Local Windows workspace: development checkout after cloning/pulling from git.
+- Server working tree: canonical baseline for the **initial** git commit (done).
+- Git remote (`origin`): shared history after the first push (ongoing).
+- Local Windows workspace: development checkout; keep it aligned with **`git pull --ff-only`** after server-side commits.
 
-Do not make the local workspace authoritative until it has been refreshed from
-the server-backed git history.
+Do not treat an outdated local tree as authoritative over `origin`; refresh
+from git before large edits or rsync pushes.
 
 ## Server-Only Files
 
@@ -132,7 +132,9 @@ Useful checks after deploy or hotfix:
 
 ```bash
 curl http://localhost:8100/healthz
+curl http://localhost:8101/api/health
 curl http://localhost:8100/tools
+docker compose exec -T redis redis-cli XLEN stream:posts:reindex
 docker compose exec -T redis redis-cli XINFO GROUPS stream:posts:reindex
 docker compose exec -T redis redis-cli XINFO GROUPS stream:posts:vision
 ```
