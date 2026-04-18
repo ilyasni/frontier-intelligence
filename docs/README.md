@@ -43,7 +43,7 @@ curl -sS http://127.0.0.1:8101/api/health    # Admin
 curl -sS http://127.0.0.1:8100/metrics        # метрики MCP (Prometheus)
 ```
 
-Прочие сервисы: PaddleOCR `8008/readyz`, Prometheus `9090`, Grafana `3000` — см. `docs/security-git-preflight.md` и `docker compose ps`.
+Прочие сервисы: PaddleOCR `http://127.0.0.1:8008/readyz`, Prometheus `9090`, Grafana `3000` — см. `docs/security-git-preflight.md` и `docker compose ps`.
 
 Персональная система мониторинга и синтеза трендов.  
 Собирает сигналы из множества источников, обрабатывает через LangChain/GigaChat,
