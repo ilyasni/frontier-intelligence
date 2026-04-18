@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     neo4j_password: str = Field("", alias="NEO4J_PASSWORD")
 
     # GigaChat / gpt2giga-proxy
+    runtime_mode: str = Field("custom", alias="FRONTIER_RUNTIME_MODE")
+    gpt2giga_enable_images: bool = Field(True, alias="GPT2GIGA_ENABLE_IMAGES")
     openai_api_base: str = Field("http://gpt2giga-proxy:8090/v1", alias="OPENAI_API_BASE")
     gigachat_proxy_url: str = Field("http://gpt2giga-proxy:8090", alias="GIGACHAT_PROXY_URL")
     gigachat_base_url: str = Field(

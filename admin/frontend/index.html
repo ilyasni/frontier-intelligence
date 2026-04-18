@@ -960,6 +960,45 @@ function renderSettingsPanel(title, description, statusLabel, statusTone, conten
   `;
 }
 
+function renderRuntimeModePanel(runtimeModes) {
+  const payload = runtimeModes || {};
+  const mode = String(payload.mode || 'custom');
+  const options = Array.isArray(payload.options) ? payload.options : [];
+  const active = options.find((item) => item.id === mode) || {};
+  const source = String(payload.source || 'env');
+  const updatedAt = payload.updated_at ? formatTime(payload.updated_at) : '-';
+  return renderSettingsPanel(
+    'Runtime mode',
+    'Live pipeline routing for Vision and GigaChat model tiers.',
+    mode,
+    mode === 'full-vision' ? 'ok' : (mode === 'gigachat-2-only' ? 'warn' : 'pending'),
+    `
+      <div class="settings-stack">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <div class="form-row" style="min-width:240px;margin:0">
+            <label>Mode</label>
+            <select id="runtime-mode-select">
+              ${options.map((item) => `
+                <option value="${escapeHtml(item.id)}" ${item.id === mode ? 'selected' : ''}>
+                  ${escapeHtml(item.label || item.id)}
+                </option>
+              `).join('')}
+            </select>
+          </div>
+          <button class="btn btn-primary btn-sm" id="runtime-mode-apply-btn" type="button" onclick="applyRuntimeMode()">Apply</button>
+          <button class="btn btn-outline btn-sm" type="button" onclick="loadSettings()">Refresh</button>
+        </div>
+        ${renderSettingsCells([
+          { label: 'Active mode', value: mode, meta: active.description || 'Current runtime mode.' },
+          { label: 'Source', value: source, meta: source === 'env' ? 'No DB override is stored.' : 'Stored in Postgres and mirrored to Redis.' },
+          { label: 'Updated', value: updatedAt, meta: 'Last DB write for the runtime override.' },
+        ])}
+        ${renderSettingsRawDetails(payload.effective || {}, 'Effective mode settings')}
+      </div>
+    `,
+  );
+}
+
 function renderGigaChatBalance(balancePayload) {
   const items = balancePayload?.balance || [];
   const threshold = Number(balancePayload?.alert_threshold || 100000);
@@ -1162,8 +1201,8 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
     <div class="settings-layout">
       <div class="settings-hero" role="status" aria-live="polite">
         <div class="settings-metric">
-          <strong>${escapeHtml(String(runtime.environment || 'production'))}</strong>
-          <span>Runtime environment</span>
+          <strong>${escapeHtml(String(runtime.runtime_mode || runtime.environment || 'custom'))}</strong>
+          <span>Runtime mode</span>
         </div>
         <div class="settings-metric">
           <strong>${configuredSecrets}/${totalSecrets}</strong>
@@ -1174,6 +1213,7 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
           <span>Total tracked GigaChat tokens</span>
         </div>
       </div>
+      ${renderRuntimeModePanel(data.runtime_modes)}
       ${renderGigaChatBalance(balancePayload)}
       ${renderWeeklyGigaChatReport(weeklyReport)}
       ${renderRedisStreamQueues(streamPayload)}
@@ -1202,11 +1242,20 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
         `
           <div class="settings-stack">
             ${renderSettingsCells([
+              { label: 'Runtime mode', value: String(runtime.runtime_mode || 'custom'), meta: 'Deployment overlay currently passed to services.' },
+              { label: 'Vision enabled', value: runtime.vision_enabled ? 'enabled' : 'disabled', meta: 'Worker starts or skips the VisionTask consumer.' },
+              { label: 'Image proxy', value: runtime.gpt2giga_enable_images ? 'enabled' : 'disabled', meta: 'gpt2giga image payload support flag.' },
               { label: 'Indexing concurrency', value: String(runtime.indexing_max_concurrency ?? '-'), meta: 'Keep this at 1 for your current GigaChat simultaneous request limit.' },
               { label: 'Batch size', value: String(runtime.indexing_batch_size ?? '-'), meta: 'Redis read batch for enrichment loop.' },
               { label: 'Max retries', value: String(runtime.indexing_max_retries ?? '-'), meta: 'Retries before an event becomes error/DLQ.' },
               { label: 'Vision claim idle', value: `${String(runtime.vision_claim_idle_ms ?? '-')} ms`, meta: 'How long a vision message can stay idle before reclaim.' },
               { label: 'Vision max delivery', value: String(runtime.vision_max_delivery_count ?? '-'), meta: 'Requeue budget before DLQ handoff.' },
+              { label: 'Text model', value: String(runtime.gigachat_model || '-'), meta: 'Default chat model for generic text work.' },
+              { label: 'Relevance model', value: String(runtime.gigachat_model_relevance || runtime.gigachat_model_lite || '-'), meta: 'Primary relevance classification model.' },
+              { label: 'Concepts model', value: String(runtime.gigachat_model_concepts || runtime.gigachat_model_lite || '-'), meta: 'Primary concept extraction model.' },
+              { label: 'Valence model', value: String(runtime.gigachat_model_valence || runtime.gigachat_model_lite || '-'), meta: 'Primary signal valence model.' },
+              { label: 'Vision model', value: String(runtime.gigachat_model_vision || runtime.gigachat_model_pro || '-'), meta: 'Image analysis model when VisionTask is enabled.' },
+              { label: 'Escalation', value: runtime.gigachat_escalation_enabled ? 'enabled' : 'disabled', meta: 'Fallback from primary models to the configured Pro/Max route.' },
               { label: 'Joint RC canary', value: runtime.gigachat_rc_joint_enabled ? 'enabled' : 'disabled', meta: `workspaces=${runtime.gigachat_rc_joint_workspaces || 'all'} | sources=${runtime.gigachat_rc_joint_sources || 'all'}` },
             ])}
             ${renderSettingsRawDetails(runtime, 'Raw runtime config')}
@@ -2143,6 +2192,41 @@ async function loadSettings() {
       refreshBtn.disabled = false;
       refreshBtn.setAttribute('aria-disabled', 'false');
       refreshBtn.textContent = 'Refresh';
+    }
+  }
+}
+
+async function applyRuntimeMode() {
+  const select = document.getElementById('runtime-mode-select');
+  const button = document.getElementById('runtime-mode-apply-btn');
+  if (!select) return;
+  const mode = select.value;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-disabled', 'true');
+    button.textContent = 'Applying...';
+  }
+  try {
+    const resp = await fetch(API + '/api/settings/runtime-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    if (!resp.ok) {
+      let msg = 'Failed to apply runtime mode';
+      try {
+        const err = await resp.json();
+        msg = err.detail || JSON.stringify(err);
+      } catch (e) {}
+      alert(msg);
+      return;
+    }
+    await loadSettings();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.setAttribute('aria-disabled', 'false');
+      button.textContent = 'Apply';
     }
   }
 }

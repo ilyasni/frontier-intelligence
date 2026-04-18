@@ -15,6 +15,8 @@
   [security-git-preflight.md](./security-git-preflight.md)
 - Server-first git workflow:
   [server-git-workflow.md](./server-git-workflow.md)
+- Runtime mode overlays:
+  [runtime-modes.md](./runtime-modes.md)
 
 ## Current Runtime
 
@@ -24,6 +26,7 @@
   - `GIGACHAT_MODEL_LITE=GigaChat-2`
   - `GIGACHAT_MODEL_RELEVANCE=GigaChat-2`
   - `GIGACHAT_MODEL_CONCEPTS=GigaChat-2`
+  - `GIGACHAT_MODEL_VALENCE=GigaChat-2`
   - `GIGACHAT_MODEL_MCP_SYNTHESIS=GigaChat-2`
   - `GIGACHAT_MODEL_PRO=GigaChat-2-Pro`
   - `GIGACHAT_VISION_MODEL=GigaChat-2-Pro`

@@ -292,6 +292,27 @@ class VisionTask:
             await self.redis.xack(STREAM_IN, GROUP, msg_id)
             return
 
+        if self.gigachat and hasattr(self.gigachat, "refresh_runtime_overrides"):
+            await self.gigachat.refresh_runtime_overrides()
+            if not self.gigachat.setting_bool("vision_enabled", self.settings.vision_enabled):
+                await self._save_enrichment(event.post_id, "vision", {
+                    "items": [],
+                    "all_labels": [],
+                    "ocr_text": "",
+                    "vision_mode": "skip",
+                    "vision_skip_reason": "runtime_mode_no_vision",
+                    "runtime_mode": self.gigachat.runtime_mode,
+                })
+                await self._update_vision_status(event.post_id, "skipped")
+                await self.redis.xack(STREAM_IN, GROUP, msg_id)
+                logger.info(
+                    "Vision skipped post=%s source=%s runtime_mode=%s",
+                    event.post_id[:8],
+                    event.source_id,
+                    self.gigachat.runtime_mode,
+                )
+                return
+
         if event.vision_mode == "skip":
             await self._save_enrichment(event.post_id, "vision", {
                 "items": [],
@@ -312,6 +333,11 @@ class VisionTask:
         items = []
         all_labels: list[str] = []
         all_ocr_parts: list[str] = []
+        paddleocr_url = (
+            self.gigachat.setting_str("paddleocr_url", self.settings.paddleocr_url)
+            if self.gigachat and hasattr(self.gigachat, "setting_str")
+            else self.settings.paddleocr_url
+        )
 
         for s3_key in event.media_s3_keys:
             image_bytes = await self._download_from_s3(s3_key)
@@ -354,7 +380,7 @@ class VisionTask:
                         )
 
             if _should_run_paddle_ocr(event.vision_mode, mime):
-                paddle_txt = await paddle_ocr_upload(self.settings.paddleocr_url, image_bytes)
+                paddle_txt = await paddle_ocr_upload(paddleocr_url, image_bytes)
                 if paddle_txt:
                     gc_ocr = (result.get("ocr_text") or "").strip()
                     result = {

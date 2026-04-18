@@ -21,21 +21,16 @@ async def main():
     start_metrics_server(9090)
     enrichment = EnrichmentTask()
     reindex = ReindexTask()
-    vision = VisionTask() if enrichment.settings.vision_enabled else None
+    vision = VisionTask()
     try:
-        tasks = [enrichment.run_loop(), reindex.run_loop()]
-        if vision is not None:
-            tasks.append(vision.run_loop())
-        else:
-            logger.warning("VisionTask disabled via VISION_ENABLED=false")
+        tasks = [enrichment.run_loop(), reindex.run_loop(), vision.run_loop()]
         await asyncio.gather(*tasks)
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
         await enrichment.close()
         await reindex.close()
-        if vision is not None:
-            await vision.close()
+        await vision.close()
 
 
 if __name__ == "__main__":

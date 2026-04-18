@@ -21,6 +21,11 @@ from shared.metrics import (
     note_gigachat_usage,
     note_rate_limit_event,
 )
+from shared.runtime_modes import (
+    RUNTIME_MODE_REDIS_KEY,
+    normalize_runtime_mode,
+    runtime_overrides_for_mode,
+)
 from worker.token_budget import BudgetedText, fit_text_to_token_budget
 
 logger = logging.getLogger(__name__)
@@ -167,6 +172,10 @@ class GigaChatClient:
         settings = get_settings()
         self._settings = settings
         self._redis = redis
+        self._runtime_redis = None
+        self._runtime_mode = normalize_runtime_mode(getattr(settings, "runtime_mode", "custom"))
+        self._runtime_overrides: dict[str, Any] = runtime_overrides_for_mode(self._runtime_mode)
+        self._runtime_overrides_loaded_at = 0.0
         self._service_name = service_name
         self._tokens_count_supported = True
         self._session_headers_supported = True
@@ -189,7 +198,74 @@ class GigaChatClient:
         )
 
     async def close(self) -> None:
+        if self._runtime_redis is not None:
+            await self._runtime_redis.aclose()
         await self._client.close()
+
+    @property
+    def runtime_mode(self) -> str:
+        return self._runtime_mode
+
+    @property
+    def runtime_overrides(self) -> dict[str, Any]:
+        return self._runtime_overrides
+
+    async def refresh_runtime_overrides(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._runtime_overrides_loaded_at < 15:
+            return
+        self._runtime_overrides_loaded_at = now
+
+        mode = normalize_runtime_mode(getattr(self._settings, "runtime_mode", "custom"))
+        redis_client = self._redis
+        if redis_client is None:
+            try:
+                import redis.asyncio as aioredis
+
+                self._runtime_redis = self._runtime_redis or aioredis.from_url(
+                    self._settings.redis_url,
+                    decode_responses=True,
+                )
+                redis_client = self._runtime_redis
+            except Exception as exc:
+                logger.debug("runtime_mode_redis_unavailable err=%s", exc)
+                redis_client = None
+
+        if redis_client is not None:
+            try:
+                raw_mode = await redis_client.get(RUNTIME_MODE_REDIS_KEY)
+                if isinstance(raw_mode, bytes):
+                    raw_mode = raw_mode.decode("utf-8", errors="replace")
+                if raw_mode:
+                    mode = normalize_runtime_mode(str(raw_mode))
+            except Exception as exc:
+                logger.debug("runtime_mode_refresh_failed err=%s", exc)
+
+        self._runtime_mode = mode
+        self._runtime_overrides = runtime_overrides_for_mode(mode)
+
+    def setting_value(self, name: str, default: Any = None) -> Any:
+        if name in self._runtime_overrides:
+            return self._runtime_overrides[name]
+        return getattr(self._settings, name, default)
+
+    def setting_bool(self, name: str, default: bool = False) -> bool:
+        value = self.setting_value(name, default)
+        if isinstance(value, FieldInfo):
+            return default
+        return bool(value)
+
+    def setting_str(self, name: str, default: str = "") -> str:
+        value = self.setting_value(name, default)
+        if isinstance(value, FieldInfo) or value is None:
+            return default
+        return str(value)
+
+    def setting_int(self, name: str, default: int) -> int:
+        value = self.setting_value(name, default)
+        if isinstance(value, FieldInfo):
+            return default
+        return int(value or default)
 
     async def _acquire_request_slot(self) -> None:
         await self._request_sem.acquire()
@@ -213,16 +289,10 @@ class GigaChatClient:
             note_rate_limit_event("worker", "gigachat", operation)
 
     def _setting_str(self, name: str, default: str = "") -> str:
-        value = getattr(self._settings, name, default)
-        if isinstance(value, FieldInfo) or value is None:
-            return default
-        return str(value)
+        return self.setting_str(name, default)
 
     def _setting_bool(self, name: str, default: bool = False) -> bool:
-        value = getattr(self._settings, name, default)
-        if isinstance(value, FieldInfo):
-            return default
-        return bool(value)
+        return self.setting_bool(name, default)
 
     def _session_id(self, task: str, system: str, model: str) -> str | None:
         if not self._setting_bool("gigachat_session_cache_enabled", True):
@@ -337,10 +407,11 @@ class GigaChatClient:
 
     async def embed(self, text: str) -> list[float]:
         """Return embedding vector, using Redis cache and token-aware trimming."""
+        await self.refresh_runtime_overrides()
         budgeted = await self.budget_text(
             text,
             self._settings.gigachat_embeddings_model,
-            int(getattr(self._settings, "gigachat_token_budget_embed", 1200) or 1200),
+            self.setting_int("gigachat_token_budget_embed", 1200),
         )
         embed_text = budgeted.text
         key = EMBED_CACHE_PREFIX + hashlib.sha256(embed_text.encode("utf-8")).hexdigest()
@@ -416,6 +487,13 @@ class GigaChatClient:
         max_tokens: int = 1024,
     ) -> GigaChatResponse:
         """Chat completion with usage metadata and optional session caching."""
+        await self.refresh_runtime_overrides()
+        if (
+            self._runtime_mode == "gigachat-2-only"
+            and task in {"relevance", "concepts", "valence", "mcp_synthesis", "chat"}
+        ):
+            model_override = self._setting_str("gigachat_model", "GigaChat-2")
+            pro = False
         model = self._resolve_chat_model(task=task, pro=pro, model_override=model_override)
         session_id = self._session_id(task, system, model)
         client = self._with_session_headers(session_id)
@@ -536,6 +614,7 @@ class GigaChatClient:
         prompt: str = VISION_PROMPT,
     ) -> GigaChatResponse:
         """Analyze image via GigaChat Vision. Returns parsed JSON and usage metadata."""
+        await self.refresh_runtime_overrides()
         b64 = base64.b64encode(image_bytes).decode()
         mime = "image/jpeg"
         if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
@@ -552,7 +631,7 @@ class GigaChatClient:
         budgeted_prompt = await self.budget_text(
             prompt,
             primary_model,
-            int(getattr(self._settings, "gigachat_token_budget_vision_prompt", 600) or 600),
+            self.setting_int("gigachat_token_budget_vision_prompt", 600),
         )
 
         primary_response: GigaChatResponse | None = None

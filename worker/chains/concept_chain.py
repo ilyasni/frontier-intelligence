@@ -25,19 +25,31 @@ class ConceptChain:
         self.last_meta: dict = {}
 
     def _setting_str(self, name: str, default: str = "") -> str:
-        value = getattr(self._settings, name, default)
+        value = self.client.setting_value(name, default) if hasattr(self.client, "setting_value") else getattr(
+            self._settings,
+            name,
+            default,
+        )
         if isinstance(value, FieldInfo) or value is None:
             return default
         return str(value)
 
     def _setting_bool(self, name: str, default: bool = False) -> bool:
-        value = getattr(self._settings, name, default)
+        value = self.client.setting_value(name, default) if hasattr(self.client, "setting_value") else getattr(
+            self._settings,
+            name,
+            default,
+        )
         if isinstance(value, FieldInfo):
             return default
         return bool(value)
 
     def _setting_int(self, name: str, default: int) -> int:
-        value = getattr(self._settings, name, default)
+        value = self.client.setting_value(name, default) if hasattr(self.client, "setting_value") else getattr(
+            self._settings,
+            name,
+            default,
+        )
         if isinstance(value, FieldInfo):
             return default
         return int(value or default)
@@ -66,6 +78,8 @@ class ConceptChain:
         """Returns list of {name, category, weight} dicts."""
         if not content.strip():
             return []
+        if hasattr(self.client, "refresh_runtime_overrides"):
+            await self.client.refresh_runtime_overrides()
 
         prompt_model = (
             self._setting_str("gigachat_model_concepts").strip()

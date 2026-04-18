@@ -357,6 +357,12 @@ class EnrichmentTask:
             return True
         return event.workspace_id in workspace_allow or event.source_id in source_allow
 
+    async def _runtime_vision_enabled(self) -> bool:
+        if self.gigachat and hasattr(self.gigachat, "refresh_runtime_overrides"):
+            await self.gigachat.refresh_runtime_overrides()
+            return self.gigachat.setting_bool("vision_enabled", self.settings.vision_enabled)
+        return bool(self.settings.vision_enabled)
+
     async def _update_indexing_status(self, post_id: str, status: str,
                                        error: str = "", qdrant_id: str = "",
                                        graph_status: str = ""):
@@ -501,7 +507,7 @@ class EnrichmentTask:
         # Publish vision event before relevance check — vision is independent
         if event.has_media and event.media_urls:
             try:
-                if self.settings.vision_enabled:
+                if await self._runtime_vision_enabled():
                     vision_mode, max_media_bytes = self._source_vision_policy(source)
                     vision_event = PostVisionEvent(
                         post_id=post_id,
@@ -515,7 +521,13 @@ class EnrichmentTask:
                     )
                     await self.redis.xadd(STREAM_VISION, vision_event.model_dump(mode="json"))
                 else:
-                    await self._mark_vision_skipped(post_id, "vision_disabled")
+                    runtime_mode = getattr(self.gigachat, "runtime_mode", "custom")
+                    reason = (
+                        "runtime_mode_no_vision"
+                        if runtime_mode in {"no-vision", "gigachat-2-only"}
+                        else "vision_disabled"
+                    )
+                    await self._mark_vision_skipped(post_id, reason)
             except Exception as exc:
                 logger.warning("Failed to publish vision event for %s: %s", post_id[:8], exc)
 

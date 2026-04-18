@@ -108,25 +108,41 @@ class RelevanceChain:
         self._system = "Ты аналитик трендов. Верни только валидный JSON."
 
     def _setting_str(self, name: str, default: str = "") -> str:
-        value = getattr(self._settings, name, default)
+        value = self.client.setting_value(name, default) if hasattr(self.client, "setting_value") else getattr(
+            self._settings,
+            name,
+            default,
+        )
         if isinstance(value, FieldInfo) or value is None:
             return default
         return str(value)
 
     def _setting_bool(self, name: str, default: bool = False) -> bool:
-        value = getattr(self._settings, name, default)
+        value = self.client.setting_value(name, default) if hasattr(self.client, "setting_value") else getattr(
+            self._settings,
+            name,
+            default,
+        )
         if isinstance(value, FieldInfo):
             return default
         return bool(value)
 
     def _setting_int(self, name: str, default: int) -> int:
-        value = getattr(self._settings, name, default)
+        value = self.client.setting_value(name, default) if hasattr(self.client, "setting_value") else getattr(
+            self._settings,
+            name,
+            default,
+        )
         if isinstance(value, FieldInfo):
             return default
         return int(value or default)
 
     def _setting_float(self, name: str, default: float) -> float:
-        value = getattr(self._settings, name, default)
+        value = self.client.setting_value(name, default) if hasattr(self.client, "setting_value") else getattr(
+            self._settings,
+            name,
+            default,
+        )
         if isinstance(value, FieldInfo) or value is None:
             return default
         return float(value)
@@ -181,6 +197,8 @@ class RelevanceChain:
         """Returns {"score": float, "category": str, "reasoning": str, "relevant": bool}."""
         if not content.strip():
             return {"score": 0.0, "category": "other", "reasoning": "empty content", "relevant": False}
+        if hasattr(self.client, "refresh_runtime_overrides"):
+            await self.client.refresh_runtime_overrides()
 
         prompt_model = (
             self._setting_str("gigachat_model_relevance").strip()
