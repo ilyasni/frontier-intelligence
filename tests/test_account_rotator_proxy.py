@@ -183,7 +183,7 @@ async def test_get_client_recreates_stale_client(monkeypatch):
         client = await rotator.get_client(0, None)
 
     assert client is fresh
-    stale.disconnect.assert_not_awaited()
+    stale.disconnect.assert_awaited_once()
     fresh.connect.assert_awaited_once()
     tc.assert_called_once()
 
@@ -199,6 +199,23 @@ async def test_reset_client_disconnects_and_clears_reference():
     rotator = AccountRotator([account])
 
     reset = await rotator.reset_client(0, "test reset")
+
+    assert reset is True
+    client.disconnect.assert_awaited_once()
+    assert account.client is None
+
+
+@pytest.mark.asyncio
+async def test_reset_client_disconnects_even_if_client_reports_disconnected():
+    client = MagicMock()
+    client.is_connected.return_value = False
+    client.disconnect = AsyncMock()
+
+    account = TelegramAccount(1, "hash", "/tmp/x")
+    account.client = client
+    rotator = AccountRotator([account])
+
+    reset = await rotator.reset_client(0, "stale/disconnected client")
 
     assert reset is True
     client.disconnect.assert_awaited_once()

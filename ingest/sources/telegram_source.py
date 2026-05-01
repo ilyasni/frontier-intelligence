@@ -239,12 +239,12 @@ class TelegramSource(AbstractSource):
             canonical = msgs_sorted[0]
 
             had_tg_media = any(self._has_media(m) for m in msgs_sorted)
-            # Upload all media in parallel
-            media_keys = await asyncio.gather(
-                *[self._upload_media(client, m) for m in msgs_sorted],
-                return_exceptions=True,
-            )
-            media_urls = [k for k in media_keys if isinstance(k, str)]
+            # Keep Telethon media transfers serialized for a single client.
+            media_urls: list[str] = []
+            for album_msg in msgs_sorted:
+                s3_key = await self._upload_media(client, album_msg)
+                if s3_key:
+                    media_urls.append(s3_key)
             if had_tg_media and not media_urls:
                 logger.warning(
                     "[%s] album grouped_id=%s: в Telegram есть медиа, "

@@ -23,10 +23,6 @@ from shared.metrics import start_metrics_server
 from shared.redis_client import RedisClient
 from shared.source_definitions import apply_source_preset, canonical_source_type
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 # Tracks config hash per job_id to detect source config changes between reloads
@@ -41,6 +37,20 @@ try:
 except ImportError:
     HAS_TELETHON = False
     logger.warning("Telethon not installed — Telegram sources disabled")
+
+def configure_logging(log_level: str) -> None:
+    level_name = (log_level or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        force=True,
+    )
+    # Keep our application-level errors, but suppress Telethon's noisy
+    # background reconnect tracebacks that can fill the host disk.
+    logging.getLogger("telethon").setLevel(logging.WARNING)
+    logging.getLogger("telethon.network.mtprotosender").setLevel(logging.CRITICAL)
+    logging.getLogger("telethon.network.connection.connection").setLevel(logging.CRITICAL)
 
 
 def build_rotator(settings) -> "AccountRotator | None":
@@ -195,6 +205,7 @@ def _tg_require_proxy_enforced() -> bool:
 
 async def main():
     settings = get_settings()
+    configure_logging(settings.log_level)
     start_metrics_server(9091)
     redis = RedisClient(settings.redis_url)
     await redis.connect()

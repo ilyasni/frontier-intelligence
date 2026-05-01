@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Р РЋР В±Р С•РЎР‚Р С”Р В° Р С•Р В±РЎР‚Р В°Р В·Р С•Р Р† Р Р…Р В° РЎРѓР ВµРЎР‚Р Р†Р ВµРЎР‚Р Вµ Р С—РЎР‚Р С‘ РЎРѓР В±Р С•РЎРЏРЎвЂ¦ BuildKit/AppArmor (РЎРѓР С. docs/ops-server-troubleshooting.md).
+# Р В Р Р‹Р В Р’В±Р В РЎвЂўР РЋР вЂљР В РЎвЂќР В Р’В° Р В РЎвЂўР В Р’В±Р РЋР вЂљР В Р’В°Р В Р’В·Р В РЎвЂўР В Р вЂ  Р В Р вЂ¦Р В Р’В° Р РЋР С“Р В Р’ВµР РЋР вЂљР В Р вЂ Р В Р’ВµР РЋР вЂљР В Р’Вµ Р В РЎвЂ”Р РЋР вЂљР В РЎвЂ Р РЋР С“Р В Р’В±Р В РЎвЂўР РЋР РЏР РЋРІР‚В¦ BuildKit/AppArmor (Р РЋР С“Р В РЎВ. docs/ops-server-troubleshooting.md).
 set -euo pipefail
 cd /opt/frontier-intelligence
 
@@ -27,4 +27,4 @@ docker compose -f docker-compose.yml \
   --profile mcp \
   --profile admin \
   build "${SERVICES[@]}"
-echo "OK build. Р вЂќР В°Р В»РЎРЉРЎв‚¬Р Вµ: docker compose -f docker-compose.yml up -d --force-recreate <РЎРѓР ВµРЎР‚Р Р†Р С‘РЎРѓРЎвЂ№>"
+echo "OK build. Р В РІР‚СњР В Р’В°Р В Р’В»Р РЋР Р‰Р РЋРІвЂљВ¬Р В Р’Вµ: docker compose -f docker-compose.yml up -d --force-recreate <Р РЋР С“Р В Р’ВµР РЋР вЂљР В Р вЂ Р В РЎвЂР РЋР С“Р РЋРІР‚в„–>"

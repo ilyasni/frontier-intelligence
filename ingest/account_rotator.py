@@ -1,4 +1,5 @@
 """Telegram account rotator — switches accounts on FloodWait/SessionRevoked."""
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -196,8 +197,10 @@ class AccountRotator:
             return
         note_telegram_client_reset("ingest", _normalize_reset_reason(reason))
         try:
-            if client.is_connected():
-                await client.disconnect()
+            # Always disconnect explicitly. A broken Telethon client may report
+            # itself as disconnected while its background reconnect tasks still
+            # run and keep spamming container logs.
+            await asyncio.wait_for(client.disconnect(), timeout=10)
         except Exception as exc:
             logger.warning("Failed to disconnect Telegram client (%s): %s", reason, exc)
         else:
