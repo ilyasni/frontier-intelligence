@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic.fields import FieldInfo
@@ -26,6 +25,7 @@ from shared.runtime_modes import (
     normalize_runtime_mode,
     runtime_overrides_for_mode,
 )
+from worker.llm_types import GigaChatResponse, GigaChatUsage, usage_from_openai_response
 from worker.token_budget import BudgetedText, fit_text_to_token_budget
 
 logger = logging.getLogger(__name__)
@@ -45,44 +45,8 @@ VISION_PROMPT = (
 )
 
 
-@dataclass(frozen=True)
-class GigaChatUsage:
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    precached_prompt_tokens: int = 0
-    total_tokens: int = 0
-
-    @property
-    def billable_tokens(self) -> int:
-        return self.total_tokens
-
-
-@dataclass(frozen=True)
-class GigaChatResponse:
-    content: str
-    model: str
-    usage: GigaChatUsage = field(default_factory=GigaChatUsage)
-    parsed: dict[str, Any] | None = None
-
-
 def _usage_from_response(resp: Any) -> GigaChatUsage:
-    usage = getattr(resp, "usage", None)
-    if usage is None:
-        return GigaChatUsage()
-
-    def _coerce(name: str) -> int:
-        value = getattr(usage, name, 0)
-        try:
-            return int(value or 0)
-        except Exception:
-            return 0
-
-    return GigaChatUsage(
-        prompt_tokens=_coerce("prompt_tokens"),
-        completion_tokens=_coerce("completion_tokens"),
-        precached_prompt_tokens=_coerce("precached_prompt_tokens"),
-        total_tokens=_coerce("total_tokens"),
-    )
+    return usage_from_openai_response(resp)
 
 
 def _parse_vision_payload(raw: str) -> dict[str, Any] | None:
@@ -330,7 +294,7 @@ class GigaChatClient:
 
         if model in configured_candidates and model != default_chat_model:
             return default_chat_model
-        if task in {"relevance", "concepts", "mcp_synthesis"} and model != default_chat_model:
+        if task in {"relevance", "relevance_concepts", "concepts", "mcp_synthesis"} and model != default_chat_model:
             return default_chat_model
         if model != default_pro_model:
             return default_pro_model
@@ -346,6 +310,10 @@ class GigaChatClient:
         if model_override and model_override.strip():
             return model_override.strip()
 
+        if task == "relevance_concepts":
+            return self._setting_str("gigachat_model_relevance").strip() or self._setting_str(
+                "gigachat_model_lite", "GigaChat-2"
+            )
         if task == "relevance":
             return self._setting_str("gigachat_model_relevance").strip() or self._setting_str(
                 "gigachat_model_lite", "GigaChat-2"
@@ -365,6 +333,18 @@ class GigaChatClient:
         if pro:
             return self._setting_str("gigachat_model_pro", "GigaChat-2-Pro")
         return self._setting_str("gigachat_model", "GigaChat-2")
+
+    def route_model_for_task(
+        self,
+        task: str,
+        *,
+        pro: bool = False,
+        model_override: str | None = None,
+    ) -> str:
+        return self._resolve_chat_model(task=task, pro=pro, model_override=model_override)
+
+    def route_fallback_for_task(self, task: str) -> tuple[str, str]:
+        return ("gigachat", self._setting_str("gigachat_model_pro", "GigaChat-2-Pro"))
 
     async def count_tokens(self, model: str, text: str) -> int | None:
         if not self._tokens_count_supported:
@@ -431,16 +411,19 @@ class GigaChatClient:
             finally:
                 self._release_request_slot()
             usage = _usage_from_response(resp)
+            actual_model = getattr(resp, "model", self._settings.gigachat_embeddings_model)
             note_gigachat_request(
                 self._service_name,
                 "embed",
                 self._settings.gigachat_embeddings_model,
                 "ok",
+                actual_model=actual_model,
             )
             note_gigachat_usage(
                 self._service_name,
                 "embed",
                 self._settings.gigachat_embeddings_model,
+                actual_model=actual_model,
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
                 precached_prompt_tokens=usage.precached_prompt_tokens,
@@ -484,13 +467,14 @@ class GigaChatClient:
         task: str = "chat",
         pro: bool = False,
         model_override: str | None = None,
+        provider_override: str | None = None,
         max_tokens: int = 1024,
     ) -> GigaChatResponse:
         """Chat completion with usage metadata and optional session caching."""
         await self.refresh_runtime_overrides()
         if (
             self._runtime_mode == "gigachat-2-only"
-            and task in {"relevance", "concepts", "valence", "mcp_synthesis", "chat"}
+            and task in {"relevance", "relevance_concepts", "concepts", "valence", "mcp_synthesis", "chat"}
         ):
             model_override = self._setting_str("gigachat_model", "GigaChat-2")
             pro = False
@@ -513,11 +497,19 @@ class GigaChatClient:
             finally:
                 self._release_request_slot()
             usage = _usage_from_response(resp)
-            note_gigachat_request(self._service_name, task, model, "ok")
+            actual_model = getattr(resp, "model", model)
+            note_gigachat_request(
+                self._service_name,
+                task,
+                model,
+                "ok",
+                actual_model=actual_model,
+            )
             note_gigachat_usage(
                 self._service_name,
                 task,
                 model,
+                actual_model=actual_model,
                 prompt_tokens=usage.prompt_tokens,
                 completion_tokens=usage.completion_tokens,
                 precached_prompt_tokens=usage.precached_prompt_tokens,
@@ -547,11 +539,19 @@ class GigaChatClient:
                     finally:
                         self._release_request_slot()
                     usage = _usage_from_response(resp)
-                    note_gigachat_request(self._service_name, task, fallback_model, "ok")
+                    actual_model = getattr(resp, "model", fallback_model)
+                    note_gigachat_request(
+                        self._service_name,
+                        task,
+                        fallback_model,
+                        "ok",
+                        actual_model=actual_model,
+                    )
                     note_gigachat_usage(
                         self._service_name,
                         task,
                         fallback_model,
+                        actual_model=actual_model,
                         prompt_tokens=usage.prompt_tokens,
                         completion_tokens=usage.completion_tokens,
                         precached_prompt_tokens=usage.precached_prompt_tokens,
@@ -559,7 +559,9 @@ class GigaChatClient:
                     )
                     return GigaChatResponse(
                         content=resp.choices[0].message.content or "",
-                        model=getattr(resp, "model", fallback_model),
+                        model=actual_model,
+                        requested_model=fallback_model,
+                        provider="gigachat",
                         usage=usage,
                     )
             self._observe_rate_limit(exc, task)
@@ -568,7 +570,9 @@ class GigaChatClient:
 
         return GigaChatResponse(
             content=resp.choices[0].message.content or "",
-            model=getattr(resp, "model", model),
+            model=actual_model,
+            requested_model=model,
+            provider="gigachat",
             usage=usage,
         )
 
@@ -604,6 +608,8 @@ class GigaChatClient:
         return GigaChatResponse(
             content=raw,
             model=getattr(resp, "model", model),
+            requested_model=model,
+            provider="gigachat",
             usage=usage,
             parsed=parsed,
         )
@@ -642,11 +648,18 @@ class GigaChatClient:
                 b64=b64,
                 prompt_text=budgeted_prompt.text,
             )
-            note_gigachat_request(self._service_name, "vision", primary_model, "ok")
+            note_gigachat_request(
+                self._service_name,
+                "vision",
+                primary_model,
+                "ok",
+                actual_model=primary_response.actual_model,
+            )
             note_gigachat_usage(
                 self._service_name,
                 "vision",
                 primary_model,
+                actual_model=primary_response.actual_model,
                 prompt_tokens=primary_response.usage.prompt_tokens,
                 completion_tokens=primary_response.usage.completion_tokens,
                 precached_prompt_tokens=primary_response.usage.precached_prompt_tokens,
@@ -666,11 +679,18 @@ class GigaChatClient:
                 b64=b64,
                 prompt_text=budgeted_prompt.text,
             )
-            note_gigachat_request(self._service_name, "vision", fallback_model, "ok")
+            note_gigachat_request(
+                self._service_name,
+                "vision",
+                fallback_model,
+                "ok",
+                actual_model=fallback_response.actual_model,
+            )
             note_gigachat_usage(
                 self._service_name,
                 "vision",
                 fallback_model,
+                actual_model=fallback_response.actual_model,
                 prompt_tokens=fallback_response.usage.prompt_tokens,
                 completion_tokens=fallback_response.usage.completion_tokens,
                 precached_prompt_tokens=fallback_response.usage.precached_prompt_tokens,
@@ -700,11 +720,18 @@ class GigaChatClient:
                     b64=b64,
                     prompt_text=budgeted_prompt.text,
                 )
-                note_gigachat_request(self._service_name, "vision", fallback_model, "ok")
+                note_gigachat_request(
+                    self._service_name,
+                    "vision",
+                    fallback_model,
+                    "ok",
+                    actual_model=fallback_response.actual_model,
+                )
                 note_gigachat_usage(
                     self._service_name,
                     "vision",
                     fallback_model,
+                    actual_model=fallback_response.actual_model,
                     prompt_tokens=fallback_response.usage.prompt_tokens,
                     completion_tokens=fallback_response.usage.completion_tokens,
                     precached_prompt_tokens=fallback_response.usage.precached_prompt_tokens,

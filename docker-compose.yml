@@ -231,6 +231,9 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       OPENAI_API_BASE: http://gpt2giga-proxy:8090/v1
       GIGACHAT_PROXY_URL: http://gpt2giga-proxy:8090
+      WORMSOFT_API_BASE: ${WORMSOFT_API_BASE:-https://ai.wormsoft.ru/api/gpt}
+      WORMSOFT_API_KEY: ${WORMSOFT_API_KEY:-}
+      WORMSOFT_MODEL_DEFAULT: ${WORMSOFT_MODEL_DEFAULT:-wormsoft/agent/medium}
       GIGACHAT_EMBEDDINGS_MODEL: ${GIGACHAT_EMBEDDINGS_MODEL:-EmbeddingsGigaR}
       GIGACHAT_MODEL_LITE: ${GIGACHAT_MODEL_LITE:-GigaChat-2}
       GIGACHAT_MODEL: ${GIGACHAT_MODEL:-GigaChat-2}
@@ -351,6 +354,9 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       OPENAI_API_BASE: http://gpt2giga-proxy:8090/v1
       GIGACHAT_PROXY_URL: http://gpt2giga-proxy:8090
+      WORMSOFT_API_BASE: ${WORMSOFT_API_BASE:-https://ai.wormsoft.ru/api/gpt}
+      WORMSOFT_API_KEY: ${WORMSOFT_API_KEY:-}
+      WORMSOFT_MODEL_DEFAULT: ${WORMSOFT_MODEL_DEFAULT:-wormsoft/agent/medium}
       GIGACHAT_EMBEDDINGS_MODEL: ${GIGACHAT_EMBEDDINGS_MODEL:-EmbeddingsGigaR}
       GIGACHAT_MODEL_LITE: ${GIGACHAT_MODEL_LITE:-GigaChat-2}
       GIGACHAT_MODEL: ${GIGACHAT_MODEL:-GigaChat-2}
@@ -422,6 +428,9 @@ services:
       S3_REGION: ${S3_REGION:-ru-central-1}
       PADDLEOCR_URL: ${PADDLEOCR_URL:-}
       GIGACHAT_CREDENTIALS: ${GIGACHAT_CREDENTIALS}
+      WORMSOFT_API_BASE: ${WORMSOFT_API_BASE:-https://ai.wormsoft.ru/api/gpt}
+      WORMSOFT_API_KEY: ${WORMSOFT_API_KEY:-}
+      WORMSOFT_MODEL_DEFAULT: ${WORMSOFT_MODEL_DEFAULT:-wormsoft/agent/medium}
       GIGACHAT_SCOPE: ${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
       GIGACHAT_BASE_URL: ${GIGACHAT_BASE_URL:-https://gigachat.devices.sberbank.ru/api/v1}
       GIGACHAT_AUTH_URL: ${GIGACHAT_AUTH_URL:-https://ngw.devices.sberbank.ru:9443/api/v2/oauth}

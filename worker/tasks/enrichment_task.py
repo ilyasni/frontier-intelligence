@@ -14,7 +14,7 @@ from shared.redis_client import RedisClient
 from shared.events.posts_parsed_v1 import PostParsedEvent
 from shared.events.posts_vision_v1 import PostVisionEvent
 from shared.source_quality import source_quality_payload
-from worker.gigachat_client import GigaChatClient
+from worker.llm_router_client import LLMRouterClient
 from worker.chains.relevance_chain import RelevanceChain
 from worker.chains.concept_chain import ConceptChain
 from worker.chains.relevance_concepts_chain import RelevanceConceptsChain
@@ -58,7 +58,7 @@ class EnrichmentTask:
     async def setup(self):
         await self.redis.connect()
         await self.redis.ensure_consumer_group(STREAM_IN, GROUP)
-        self.gigachat = GigaChatClient(redis=self.redis.redis)
+        self.gigachat = LLMRouterClient(redis=self.redis.redis)
         self.relevance = RelevanceChain(self.gigachat)
         self.concept = ConceptChain(self.gigachat)
         self.relevance_concepts = RelevanceConceptsChain(self.gigachat)
@@ -543,6 +543,7 @@ class EnrichmentTask:
             threshold = float(rw.get("threshold", self.settings.default_relevance_threshold))
 
             concepts = None
+            concept_meta: dict = {}
             if self._use_joint_relevance_concepts(event):
                 rel, concepts = await self.relevance_concepts.run(
                     content=event.content,
@@ -551,11 +552,14 @@ class EnrichmentTask:
                     threshold=threshold,
                 )
                 joint_meta = getattr(self.relevance_concepts, "last_meta", {}) or {}
+                concept_meta = dict(joint_meta)
                 logger.info(
-                    "gigachat_task task=relevance_concepts post=%s model=%s prompt_tokens=%s completion_tokens=%s "
-                    "precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
+                    "llm_task task=relevance_concepts post=%s provider=%s requested_model=%s actual_model=%s "
+                    "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
                     post_id[:8],
-                    joint_meta.get("model", ""),
+                    joint_meta.get("provider", ""),
+                    joint_meta.get("requested_model", ""),
+                    joint_meta.get("actual_model", joint_meta.get("model", "")),
                     getattr(joint_meta.get("usage"), "prompt_tokens", 0),
                     getattr(joint_meta.get("usage"), "completion_tokens", 0),
                     getattr(joint_meta.get("usage"), "precached_prompt_tokens", 0),
@@ -570,10 +574,12 @@ class EnrichmentTask:
                     threshold=threshold,
                 )
                 logger.info(
-                    "gigachat_task task=relevance post=%s model=%s prompt_tokens=%s completion_tokens=%s "
-                    "precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
+                    "llm_task task=relevance post=%s provider=%s requested_model=%s actual_model=%s "
+                    "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
                     post_id[:8],
-                    rel.get("_model", ""),
+                    rel.get("_provider", ""),
+                    rel.get("_requested_model", ""),
+                    rel.get("_actual_model", rel.get("_model", "")),
                     getattr(rel.get("_usage"), "prompt_tokens", 0),
                     getattr(rel.get("_usage"), "completion_tokens", 0),
                     getattr(rel.get("_usage"), "precached_prompt_tokens", 0),
@@ -622,10 +628,12 @@ class EnrichmentTask:
                 concepts = await self.concept.run(event.content)
                 concept_meta = getattr(self.concept, "last_meta", {}) or {}
                 logger.info(
-                    "gigachat_task task=concepts post=%s model=%s prompt_tokens=%s completion_tokens=%s "
-                    "precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
+                    "llm_task task=concepts post=%s provider=%s requested_model=%s actual_model=%s "
+                    "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
                     post_id[:8],
-                    concept_meta.get("model", ""),
+                    concept_meta.get("provider", ""),
+                    concept_meta.get("requested_model", ""),
+                    concept_meta.get("actual_model", concept_meta.get("model", "")),
                     getattr(concept_meta.get("usage"), "prompt_tokens", 0),
                     getattr(concept_meta.get("usage"), "completion_tokens", 0),
                     getattr(concept_meta.get("usage"), "precached_prompt_tokens", 0),
@@ -638,10 +646,12 @@ class EnrichmentTask:
             valence = await self.valence.run(event.content)
             valence_meta = getattr(self.valence, "last_meta", {}) or {}
             logger.info(
-                "gigachat_task task=valence post=%s model=%s prompt_tokens=%s completion_tokens=%s "
-                "precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
+                "llm_task task=valence post=%s provider=%s requested_model=%s actual_model=%s "
+                "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
                 post_id[:8],
-                valence_meta.get("model", ""),
+                valence_meta.get("provider", ""),
+                valence_meta.get("requested_model", ""),
+                valence_meta.get("actual_model", valence_meta.get("model", "")),
                 getattr(valence_meta.get("usage"), "prompt_tokens", 0),
                 getattr(valence_meta.get("usage"), "completion_tokens", 0),
                 getattr(valence_meta.get("usage"), "precached_prompt_tokens", 0),
@@ -681,11 +691,33 @@ class EnrichmentTask:
                 await self.neo4j.upsert_concepts(event.workspace_id, post_id, concepts)
 
             # Persist enrichments
-            await self._save_enrichment(post_id, "concepts", {"items": concepts})
+            await self._save_enrichment(
+                post_id,
+                "concepts",
+                {
+                    "items": concepts,
+                    "_llm": {
+                        "provider": concept_meta.get("provider", "") if concepts is not None else "",
+                        "requested_model": concept_meta.get("requested_model", "") if concepts is not None else "",
+                        "actual_model": concept_meta.get("actual_model", concept_meta.get("model", "")) if concepts is not None else "",
+                    },
+                },
+            )
             if tags:
                 await self._save_enrichment(post_id, "tags", {"tags": tags})
                 await self._update_post_tags(post_id, tags)
-            await self._save_enrichment(post_id, "valence", valence)
+            await self._save_enrichment(
+                post_id,
+                "valence",
+                {
+                    **valence,
+                    "_llm": {
+                        "provider": valence_meta.get("provider", ""),
+                        "requested_model": valence_meta.get("requested_model", ""),
+                        "actual_model": valence_meta.get("actual_model", valence_meta.get("model", "")),
+                    },
+                },
+            )
 
             await self._update_post_enrichment(post_id, rel["score"], rel["category"])
             await self._update_indexing_status(

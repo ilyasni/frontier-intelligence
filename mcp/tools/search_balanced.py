@@ -11,7 +11,7 @@ from fastapi import APIRouter
 
 from shared.config import get_settings
 from shared.search_contracts import COUNTER_SIGNAL_TYPES, BalancedSearchRequest, SearchRequest
-from worker.gigachat_client import GigaChatClient
+from worker.llm_router_client import LLMRouterClient
 from worker.llm_json import parse_llm_json_object
 from worker.services.searxng_client import SearXNGClient
 
@@ -201,7 +201,7 @@ async def _synthesize_balanced(
     }
 
     settings = get_settings()
-    client = GigaChatClient(service_name="mcp")
+    client = LLMRouterClient(service_name="mcp")
     try:
         response = await client.chat(
             system=(

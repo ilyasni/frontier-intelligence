@@ -7,7 +7,7 @@ from typing import Any
 from pydantic.fields import FieldInfo
 
 from shared.config import get_settings
-from shared.metrics import note_gigachat_escalation
+from shared.metrics import note_llm_fallback
 from worker.gigachat_client import GigaChatClient, GigaChatResponse
 from worker.llm_json import parse_llm_json_object
 
@@ -71,12 +71,19 @@ class ValenceChain:
             return default
         return int(value or default)
 
-    async def _call(self, prompt: str, *, model_override: str | None = None) -> GigaChatResponse:
+    async def _call(
+        self,
+        prompt: str,
+        *,
+        model_override: str | None = None,
+        provider_override: str | None = None,
+    ) -> GigaChatResponse:
         return await self.client.chat(
             system=self._system,
             user=prompt,
             task="valence",
             model_override=model_override,
+            provider_override=provider_override,
         )
 
     @staticmethod
@@ -112,9 +119,16 @@ class ValenceChain:
             await self.client.refresh_runtime_overrides()
 
         prompt_model = (
-            self._setting_str("gigachat_model_valence").strip()
-            or self._setting_str("gigachat_model_lite", "GigaChat-2")
+            self.client.route_model_for_task("valence")
+            if hasattr(self.client, "route_model_for_task")
+            else (
+                self._setting_str("gigachat_model_valence").strip()
+                or self._setting_str("gigachat_model_lite", "GigaChat-2")
+            )
         )
+        prompt_provider = "gigachat"
+        if hasattr(self.client, "routing_settings"):
+            prompt_provider = self.client.routing_settings.route_for_task("valence").provider
         budgeted = await self.client.budget_text(
             content,
             prompt_model,
@@ -127,6 +141,9 @@ class ValenceChain:
             result = self._normalize_result(parse_llm_json_object(response.content))
             self.last_meta = {
                 "model": response.model,
+                "provider": response.provider,
+                "requested_model": response.requested_model or prompt_model,
+                "actual_model": response.actual_model,
                 "usage": response.usage,
                 "escalated": False,
                 "budget_truncated": budgeted.truncated,
@@ -143,13 +160,33 @@ class ValenceChain:
                     "reasoning": str(exc)[:160],
                 }
 
-        fallback_model = self._setting_str("gigachat_model_pro", "GigaChat-2-Pro")
-        note_gigachat_escalation("worker", "valence", prompt_model, fallback_model)
+        fallback_provider, fallback_model = (
+            self.client.route_fallback_for_task("valence")
+            if hasattr(self.client, "route_fallback_for_task")
+            else ("gigachat", self._setting_str("gigachat_model_pro", "GigaChat-2-Pro"))
+        )
+        note_llm_fallback(
+            "worker",
+            "valence",
+            from_provider=prompt_provider,
+            from_requested_model=prompt_model,
+            from_actual_model="",
+            to_provider=fallback_provider,
+            to_model=fallback_model,
+            reason="chain_escalation",
+        )
         try:
-            response = await self._call(prompt, model_override=fallback_model)
+            response = await self._call(
+                prompt,
+                model_override=fallback_model,
+                provider_override=fallback_provider,
+            )
             result = self._normalize_result(parse_llm_json_object(response.content))
             self.last_meta = {
                 "model": response.model,
+                "provider": response.provider,
+                "requested_model": response.requested_model or fallback_model,
+                "actual_model": response.actual_model,
                 "usage": response.usage,
                 "escalated": True,
                 "budget_truncated": budgeted.truncated,

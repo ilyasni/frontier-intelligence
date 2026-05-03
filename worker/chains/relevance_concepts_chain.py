@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic.fields import FieldInfo
 
 from shared.config import get_settings
-from shared.metrics import note_gigachat_escalation
+from shared.metrics import note_llm_fallback
 from worker.chains.concept_chain import ConceptChain
 from worker.chains.relevance_chain import normalize_relevance_category
 from worker.gigachat_client import GigaChatClient
@@ -66,12 +66,19 @@ class RelevanceConceptsChain:
             return default
         return float(value)
 
-    async def _call(self, prompt: str, *, model_override: str | None = None):
+    async def _call(
+        self,
+        prompt: str,
+        *,
+        model_override: str | None = None,
+        provider_override: str | None = None,
+    ):
         return await self.client.chat(
             system=self._system,
             user=prompt,
-            task="relevance",
+            task="relevance_concepts",
             model_override=model_override,
+            provider_override=provider_override,
         )
 
     async def run(
@@ -90,9 +97,16 @@ class RelevanceConceptsChain:
             await self.client.refresh_runtime_overrides()
 
         prompt_model = (
-            self._setting_str("gigachat_model_relevance").strip()
-            or self._setting_str("gigachat_model_lite", "GigaChat-2")
+            self.client.route_model_for_task("relevance_concepts")
+            if hasattr(self.client, "route_model_for_task")
+            else (
+                self._setting_str("gigachat_model_relevance").strip()
+                or self._setting_str("gigachat_model_lite", "GigaChat-2")
+            )
         )
+        prompt_provider = "gigachat"
+        if hasattr(self.client, "routing_settings"):
+            prompt_provider = self.client.routing_settings.route_for_task("relevance_concepts").provider
         budgeted = await self.client.budget_text(
             content,
             prompt_model,
@@ -111,6 +125,9 @@ class RelevanceConceptsChain:
             rel, concepts = self._normalize_payload(parsed, categories, threshold)
             self.last_meta = {
                 "model": response.model,
+                "provider": response.provider,
+                "requested_model": response.requested_model or prompt_model,
+                "actual_model": response.actual_model,
                 "usage": response.usage,
                 "escalated": False,
                 "budget_truncated": budgeted.truncated,
@@ -130,14 +147,34 @@ class RelevanceConceptsChain:
                     [],
                 )
 
-        fallback_model = self._setting_str("gigachat_model_pro", "GigaChat-2-Pro")
-        note_gigachat_escalation("worker", "relevance_concepts", prompt_model, fallback_model)
+        fallback_provider, fallback_model = (
+            self.client.route_fallback_for_task("relevance_concepts")
+            if hasattr(self.client, "route_fallback_for_task")
+            else ("gigachat", self._setting_str("gigachat_model_pro", "GigaChat-2-Pro"))
+        )
+        note_llm_fallback(
+            "worker",
+            "relevance_concepts",
+            from_provider=prompt_provider,
+            from_requested_model=prompt_model,
+            from_actual_model="",
+            to_provider=fallback_provider,
+            to_model=fallback_model,
+            reason="chain_escalation",
+        )
         try:
-            response = await self._call(prompt, model_override=fallback_model)
+            response = await self._call(
+                prompt,
+                model_override=fallback_model,
+                provider_override=fallback_provider,
+            )
             parsed = parse_llm_json_object(response.content)
             rel, concepts = self._normalize_payload(parsed, categories, threshold)
             self.last_meta = {
                 "model": response.model,
+                "provider": response.provider,
+                "requested_model": response.requested_model or fallback_model,
+                "actual_model": response.actual_model,
                 "usage": response.usage,
                 "escalated": True,
                 "budget_truncated": budgeted.truncated,

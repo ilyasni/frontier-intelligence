@@ -999,6 +999,138 @@ function renderRuntimeModePanel(runtimeModes) {
   );
 }
 
+const LLM_ROUTE_TASKS = [
+  { id: 'relevance_concepts', label: 'Relevance + Concepts' },
+  { id: 'relevance', label: 'Relevance' },
+  { id: 'concepts', label: 'Concepts' },
+  { id: 'valence', label: 'Valence' },
+  { id: 'mcp_synthesis', label: 'MCP synthesis' },
+];
+
+function llmRouteTaskLabel(taskId) {
+  return (LLM_ROUTE_TASKS.find((item) => item.id === taskId) || {}).label || taskId;
+}
+
+function collectKnownLlmModels(runtime, wormsoftCatalog, selected) {
+  const values = [
+    runtime?.gigachat_model,
+    runtime?.gigachat_model_lite,
+    runtime?.gigachat_model_pro,
+    runtime?.gigachat_model_max,
+    runtime?.gigachat_model_relevance,
+    runtime?.gigachat_model_concepts,
+    runtime?.gigachat_model_valence,
+    runtime?.gigachat_model_mcp_synthesis,
+    runtime?.gigachat_model_vision,
+    ...(Array.isArray(wormsoftCatalog?.models) ? wormsoftCatalog.models.map((item) => item.id || item.name || item.label) : []),
+    selected,
+  ]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  const unique = [];
+  const seen = new Set();
+  values.forEach((item) => {
+    if (seen.has(item)) return;
+    seen.add(item);
+    unique.push(item);
+  });
+  return unique;
+}
+
+function renderModelSelect(id, runtime, wormsoftCatalog, selected) {
+  const current = String(selected || '').trim();
+  const options = collectKnownLlmModels(runtime, wormsoftCatalog, current);
+  if (!options.length) options.push(current || '');
+  return `
+    <select id="${escapeHtml(id)}">
+      ${options.map((value) => `
+        <option value="${escapeHtml(value)}" ${value === current ? 'selected' : ''}>${escapeHtml(value)}</option>
+      `).join('')}
+    </select>
+  `;
+}
+
+function renderProviderSelect(id, providers, selected) {
+  const current = String(selected || 'gigachat');
+  return `
+    <select id="${escapeHtml(id)}">
+      ${providers.map((item) => `
+        <option value="${escapeHtml(item.id)}" ${item.id === current ? 'selected' : ''}>${escapeHtml(item.label || item.id)}</option>
+      `).join('')}
+    </select>
+  `;
+}
+
+function renderLLMRoutingPanel(payload, runtime, wormsoftCatalog) {
+  const routing = payload || {};
+  const effective = routing.effective || {};
+  const configured = routing.configured || {};
+  const providers = Array.isArray(routing.providers) && routing.providers.length
+    ? routing.providers
+    : [
+        { id: 'gigachat', label: 'GigaChat' },
+        { id: 'wormsoft', label: 'Wormsoft' },
+      ];
+  const source = String(routing.source || 'env');
+  const updatedAt = routing.updated_at ? formatTime(routing.updated_at) : '-';
+  const keyPresent = Boolean(wormsoftCatalog?.key_present);
+  const catalogReachable = Boolean(wormsoftCatalog?.available);
+  const statusLabel = !keyPresent ? 'No key' : (catalogReachable ? 'Catalog ready' : 'Key only');
+  const statusTone = !keyPresent ? 'error' : (catalogReachable ? 'ok' : 'warn');
+  const editorRows = LLM_ROUTE_TASKS.map((task) => {
+    const value = configured[task.id] || effective[task.id] || {};
+    return [
+      escapeHtml(task.label),
+      renderProviderSelect(`llm-route-${task.id}-provider`, providers, value.provider || 'gigachat'),
+      renderModelSelect(`llm-route-${task.id}-model`, runtime, wormsoftCatalog, value.model || ''),
+      renderProviderSelect(`llm-route-${task.id}-fallback-provider`, providers, value.fallback_provider || 'gigachat'),
+      renderModelSelect(`llm-route-${task.id}-fallback-model`, runtime, wormsoftCatalog, value.fallback_model || ''),
+    ];
+  });
+  const effectiveRows = LLM_ROUTE_TASKS.map((task) => {
+    const value = effective[task.id] || {};
+    return [
+      escapeHtml(task.label),
+      escapeHtml(String(value.provider || '-')),
+      `<span class="mono">${escapeHtml(String(value.model || '-'))}</span>`,
+      escapeHtml(String(value.fallback_provider || '-')),
+      `<span class="mono">${escapeHtml(String(value.fallback_model || '-'))}</span>`,
+    ];
+  });
+  return renderSettingsPanel(
+    'LLM routing',
+    'Task-level routing between Wormsoft and GigaChat with live runtime overrides.',
+    statusLabel,
+    statusTone,
+    `
+      <div class="settings-stack">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" id="llm-routing-apply-btn" type="button" onclick="applyLLMRouting()">Save routing</button>
+          <button class="btn btn-outline btn-sm" type="button" onclick="loadSettings()">Refresh</button>
+        </div>
+        ${renderSettingsCells([
+          { label: 'Source', value: source, meta: source === 'env' ? 'Using code/env defaults; no DB override stored yet.' : 'Stored in Postgres and mirrored to Redis.' },
+          { label: 'Updated', value: updatedAt, meta: 'Last DB write for the routing override.' },
+          { label: 'Wormsoft key', value: keyPresent ? 'present' : 'missing', meta: 'Secrets remain in .env and are not editable here.' },
+          { label: 'Catalog status', value: String(wormsoftCatalog?.status || 'unavailable'), meta: catalogReachable ? `Loaded ${Number(wormsoftCatalog?.count || 0)} models from Wormsoft.` : 'Model catalog could not be loaded right now.' },
+        ])}
+        ${renderSettingsTable(
+          ['Task', 'Provider', 'Model', 'Fallback provider', 'Fallback model'],
+          editorRows,
+          'No routing data available yet.',
+        )}
+        <div class="settings-note">Effective routing snapshot</div>
+        ${renderSettingsTable(
+          ['Task', 'Provider', 'Model', 'Fallback provider', 'Fallback model'],
+          effectiveRows,
+          'No effective routing data yet.',
+        )}
+        ${renderSettingsRawDetails({ routing, wormsoftCatalog }, 'Raw routing payload')}
+      </div>
+    `,
+  );
+}
+
 function renderGigaChatBalance(balancePayload) {
   const items = balancePayload?.balance || [];
   const threshold = Number(balancePayload?.alert_threshold || 100000);
@@ -1185,7 +1317,7 @@ function renderWeeklyGigaChatReport(reportPayload) {
   );
 }
 
-function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyReport) {
+function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyReport, wormsoftCatalog) {
   const runtime = data.runtime || {};
   const integrations = data.integrations || {};
   const secrets = data.secrets || {};
@@ -1214,6 +1346,7 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
         </div>
       </div>
       ${renderRuntimeModePanel(data.runtime_modes)}
+      ${renderLLMRoutingPanel(data.llm_routing, runtime, wormsoftCatalog || {})}
       ${renderGigaChatBalance(balancePayload)}
       ${renderWeeklyGigaChatReport(weeklyReport)}
       ${renderRedisStreamQueues(streamPayload)}
@@ -2170,11 +2303,12 @@ async function loadSettings() {
   }
   settingsDetail.innerHTML = '<div class="empty" role="status" aria-live="polite">Loading settings...</div>';
   try {
-    const [data, balanceData, streamData, weeklyReport] = await Promise.all([
+    const [data, balanceData, streamData, weeklyReport, wormsoftCatalog] = await Promise.all([
       apiGet('/api/settings').catch(() => null),
       apiGet('/api/settings/gigachat-balance').catch(() => null),
       apiGet('/api/pipeline/streams').catch(() => null),
       apiGet('/api/settings/gigachat-weekly-report').catch(() => null),
+      apiGet('/api/settings/providers/wormsoft/models').catch(() => null),
     ]);
     if (!data) {
       settingsDetail.innerHTML = '<div class="empty" role="alert" aria-live="assertive">Failed to load settings.</div>';
@@ -2186,12 +2320,58 @@ async function loadSettings() {
       balancePayload,
       streamData || { streams: [] },
       weeklyReport || {},
+      wormsoftCatalog || { available: false, status: 'unavailable', key_present: false, models: [] },
     );
   } finally {
     if (refreshBtn) {
       refreshBtn.disabled = false;
       refreshBtn.setAttribute('aria-disabled', 'false');
       refreshBtn.textContent = 'Refresh';
+    }
+  }
+}
+
+function collectLLMRoutingPayload() {
+  const payload = {};
+  LLM_ROUTE_TASKS.forEach((task) => {
+    payload[task.id] = {
+      provider: document.getElementById(`llm-route-${task.id}-provider`)?.value || 'gigachat',
+      model: document.getElementById(`llm-route-${task.id}-model`)?.value || '',
+      fallback_provider: document.getElementById(`llm-route-${task.id}-fallback-provider`)?.value || 'gigachat',
+      fallback_model: document.getElementById(`llm-route-${task.id}-fallback-model`)?.value || '',
+    };
+  });
+  return payload;
+}
+
+async function applyLLMRouting() {
+  const button = document.getElementById('llm-routing-apply-btn');
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-disabled', 'true');
+    button.textContent = 'Saving...';
+  }
+  try {
+    const resp = await fetch(API + '/api/settings/llm-routing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectLLMRoutingPayload()),
+    });
+    if (!resp.ok) {
+      let msg = 'Failed to save LLM routing';
+      try {
+        const err = await resp.json();
+        msg = err.detail || JSON.stringify(err);
+      } catch (e) {}
+      alert(msg);
+      return;
+    }
+    await loadSettings();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.setAttribute('aria-disabled', 'false');
+      button.textContent = 'Save routing';
     }
   }
 }

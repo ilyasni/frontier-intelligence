@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import get_settings
-from worker.gigachat_client import GigaChatClient
+from worker.llm_router_client import LLMRouterClient
 from worker.llm_json import parse_llm_json_object
 
 from .searxng_client import SearXNGClient
@@ -178,7 +178,7 @@ async def _generate_candidate_topics(
         "max_topics": topic_limit,
     }
 
-    client = GigaChatClient(service_name="worker")
+    client = LLMRouterClient(service_name="worker")
     try:
         response = await client.chat(
             system=(
@@ -262,7 +262,7 @@ async def _generate_opportunities(
         for item in items
     ]
 
-    client = GigaChatClient(service_name="worker")
+    client = LLMRouterClient(service_name="worker")
     try:
         response = await client.chat(
             system=(

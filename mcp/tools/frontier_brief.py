@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
 from shared.config import get_settings
-from worker.gigachat_client import GigaChatClient
+from worker.llm_router_client import LLMRouterClient
 from worker.llm_json import parse_llm_json_object
 
 from .observability import (
@@ -111,7 +111,7 @@ async def _synthesize_brief(
     missing: dict[str, Any],
 ) -> dict[str, Any] | None:
     settings = get_settings()
-    client = GigaChatClient(service_name="mcp")
+    client = LLMRouterClient(service_name="mcp")
     try:
         response = await client.chat(
             system=(

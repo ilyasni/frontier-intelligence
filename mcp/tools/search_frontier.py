@@ -20,7 +20,7 @@ from shared.db import get_engine
 from shared.qdrant_sparse import HAS_SPARSE
 from shared.search_contracts import SearchRequest
 from shared.source_quality import normalize_source_authority
-from worker.gigachat_client import GigaChatClient
+from worker.llm_router_client import LLMRouterClient
 from worker.integrations.qdrant_client import QdrantFrontierClient
 from worker.llm_json import parse_llm_json_object
 from worker.services.searxng_client import SearXNGClient
@@ -216,7 +216,7 @@ async def _synthesize_results(req: SearchRequest, hits: list[dict[str, Any]], se
         return None
     combined = _hits_snippet(hits)
     prefer_pro = len(hits) > 3 or len(combined) > 1800
-    client = GigaChatClient(service_name="mcp")
+    client = LLMRouterClient(service_name="mcp")
     try:
         response = await client.chat(
             system="Ты аналитик. Синтезируй только факты и сигналы из найденных документов. Верни только валидный JSON.",

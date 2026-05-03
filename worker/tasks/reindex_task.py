@@ -17,7 +17,7 @@ from shared.redis_client import RedisClient
 from shared.reindex import GROUP_POSTS_REINDEX, STREAM_POSTS_REINDEX
 from shared.sqlalchemy_pool import ASYNC_ENGINE_POOL_KWARGS
 from worker.chains.concept_chain import ConceptChain
-from worker.gigachat_client import GigaChatClient
+from worker.llm_router_client import LLMRouterClient
 from worker.integrations.neo4j_client import Neo4jFrontierClient
 from worker.integrations.qdrant_client import QdrantFrontierClient
 
@@ -169,7 +169,7 @@ class ReindexTask:
     async def setup(self) -> None:
         await self.redis.connect()
         await self.redis.ensure_consumer_group(STREAM_POSTS_REINDEX, GROUP_POSTS_REINDEX)
-        self.gigachat = GigaChatClient(redis=self.redis.redis)
+        self.gigachat = LLMRouterClient(redis=self.redis.redis)
         self.concept = ConceptChain(self.gigachat)
         self.qdrant = QdrantFrontierClient()
         self.neo4j = Neo4jFrontierClient()

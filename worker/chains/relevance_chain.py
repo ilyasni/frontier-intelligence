@@ -11,7 +11,7 @@ from typing import Any
 from pydantic.fields import FieldInfo
 
 from shared.config import get_settings
-from shared.metrics import note_gigachat_escalation
+from shared.metrics import note_llm_fallback
 from worker.gigachat_client import GigaChatClient, GigaChatResponse
 from worker.llm_json import parse_llm_json_object
 
@@ -152,6 +152,7 @@ class RelevanceChain:
         prompt: str,
         *,
         model_override: str | None = None,
+        provider_override: str | None = None,
         pro: bool = False,
     ) -> GigaChatResponse:
         return await self.client.chat(
@@ -160,6 +161,7 @@ class RelevanceChain:
             task="relevance",
             pro=pro,
             model_override=model_override,
+            provider_override=provider_override,
         )
 
     def _needs_escalation(
@@ -201,9 +203,16 @@ class RelevanceChain:
             await self.client.refresh_runtime_overrides()
 
         prompt_model = (
-            self._setting_str("gigachat_model_relevance").strip()
-            or self._setting_str("gigachat_model_lite", "GigaChat-2")
+            self.client.route_model_for_task("relevance")
+            if hasattr(self.client, "route_model_for_task")
+            else (
+                self._setting_str("gigachat_model_relevance").strip()
+                or self._setting_str("gigachat_model_lite", "GigaChat-2")
+            )
         )
+        prompt_provider = "gigachat"
+        if hasattr(self.client, "routing_settings"):
+            prompt_provider = self.client.routing_settings.route_for_task("relevance").provider
         budgeted = await self.client.budget_text(
             content,
             prompt_model,
@@ -240,6 +249,9 @@ class RelevanceChain:
                 "reasoning": reasoning,
                 "relevant": self._is_relevant(score, category, threshold),
                 "_usage": response.usage,
+                "_provider": response.provider,
+                "_requested_model": response.requested_model or prompt_model,
+                "_actual_model": response.actual_model,
                 "_model": response.model,
                 "_budget_truncated": budgeted.truncated,
             }
@@ -253,12 +265,28 @@ class RelevanceChain:
             if not self._setting_bool("gigachat_escalation_enabled", True):
                 return {"score": 0.0, "category": "other", "reasoning": str(exc), "relevant": False}
 
-        fallback_model = self._setting_str("gigachat_model_pro", "GigaChat-2-Pro")
-        primary_model = response.model if response else prompt_model
-        note_gigachat_escalation("worker", "relevance", primary_model, fallback_model)
+        fallback_provider, fallback_model = (
+            self.client.route_fallback_for_task("relevance")
+            if hasattr(self.client, "route_fallback_for_task")
+            else ("gigachat", self._setting_str("gigachat_model_pro", "GigaChat-2-Pro"))
+        )
+        note_llm_fallback(
+            "worker",
+            "relevance",
+            from_provider=response.provider if response else prompt_provider,
+            from_requested_model=response.requested_model if response else prompt_model,
+            from_actual_model=response.actual_model if response else "",
+            to_provider=fallback_provider,
+            to_model=fallback_model,
+            reason="chain_escalation",
+        )
 
         try:
-            response = await self._call(prompt, model_override=fallback_model)
+            response = await self._call(
+                prompt,
+                model_override=fallback_model,
+                provider_override=fallback_provider,
+            )
             result = parse_llm_json_object(response.content)
             score = float(result.get("score", 0))
             score = max(0.0, min(1.0, score))
@@ -270,6 +298,9 @@ class RelevanceChain:
                 "reasoning": reasoning,
                 "relevant": self._is_relevant(score, category, threshold),
                 "_usage": response.usage,
+                "_provider": response.provider,
+                "_requested_model": response.requested_model or fallback_model,
+                "_actual_model": response.actual_model,
                 "_model": response.model,
                 "_budget_truncated": budgeted.truncated,
                 "_escalated": True,

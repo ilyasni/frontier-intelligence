@@ -18,7 +18,7 @@ from shared.events.posts_vision_v1 import PostVisionEvent
 from shared.reindex import STREAM_POSTS_REINDEX, build_post_reindex_event
 from shared.redis_client import RedisClient
 from shared.s3 import make_s3_client
-from worker.gigachat_client import GigaChatClient
+from worker.llm_router_client import LLMRouterClient
 from worker.paddle_ocr_client import paddle_ocr_upload
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ class VisionTask:
     async def setup(self):
         await self.redis.connect()
         await self.redis.ensure_consumer_group(STREAM_IN, GROUP)
-        self.gigachat = GigaChatClient(redis=self.redis.redis)
+        self.gigachat = LLMRouterClient(redis=self.redis.redis)
         self._s3, self._s3_bucket = make_s3_client(self.settings)
         logger.info("VisionTask ready, consumer=%s", CONSUMER)
 

@@ -13,7 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from admin.backend.db import get_engine
 from admin.backend.services.gigachat_balance import fetch_gigachat_balance
 from admin.backend.services.gigachat_weekly_report import fetch_gigachat_weekly_report
+from admin.backend.services.wormsoft_models import fetch_wormsoft_models
 from shared.config import get_settings
+from shared.llm_routing import (
+    LLMRoutingSettings,
+    RUNTIME_LLM_ROUTING_DB_KEY,
+    RUNTIME_LLM_ROUTING_REDIS_KEY,
+    effective_llm_routing,
+    llm_provider_options,
+)
 from shared.runtime_modes import (
     RUNTIME_MODE_DB_KEY,
     RUNTIME_MODE_REDIS_KEY,
@@ -29,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 class RuntimeModeRequest(BaseModel):
     mode: str
+
+
+class LLMRoutingRequest(LLMRoutingSettings):
+    pass
 
 
 async def _ensure_runtime_settings_table() -> None:
@@ -48,13 +60,13 @@ async def _ensure_runtime_settings_table() -> None:
         await session.commit()
 
 
-async def _load_runtime_mode_from_db() -> tuple[str | None, str | None]:
+async def _load_json_setting(key: str) -> tuple[dict | None, str | None]:
     await _ensure_runtime_settings_table()
     engine = get_engine()
     async with AsyncSession(engine) as session:
         result = await session.execute(
             text("SELECT value, updated_at FROM admin_runtime_settings WHERE key = :key"),
-            {"key": RUNTIME_MODE_DB_KEY},
+            {"key": key},
         )
         row = result.mappings().first()
         if not row:
@@ -65,38 +77,13 @@ async def _load_runtime_mode_from_db() -> tuple[str | None, str | None]:
                 value = json.loads(value)
             except json.JSONDecodeError:
                 value = {}
-        mode = normalize_runtime_mode((value or {}).get("mode"))
+        if not isinstance(value, dict):
+            value = {}
         updated_at = row["updated_at"]
-        return mode, updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
+        return value, updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
 
 
-async def _runtime_mode_payload(source: str = "db") -> dict:
-    settings = get_settings()
-    db_mode, updated_at = await _load_runtime_mode_from_db()
-    configured_mode = normalize_runtime_mode(settings.runtime_mode)
-    mode = db_mode or configured_mode
-    if db_mode:
-        redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
-        try:
-            await redis_client.set(RUNTIME_MODE_REDIS_KEY, mode)
-        except Exception as exc:
-            logger.warning("runtime_mode_redis_mirror_failed mode=%s err=%s", mode, exc)
-        finally:
-            await redis_client.aclose()
-    overrides = runtime_overrides_for_mode(mode)
-    return {
-        "mode": mode,
-        "configured_mode": configured_mode,
-        "source": source if db_mode else "env",
-        "updated_at": updated_at,
-        "options": runtime_mode_options(),
-        "overrides": overrides,
-        "effective": effective_runtime_snapshot(settings, mode),
-    }
-
-
-async def _store_runtime_mode(mode: str) -> dict:
-    normalized = normalize_runtime_mode(mode)
+async def _store_json_setting(key: str, payload: dict) -> str | None:
     await _ensure_runtime_settings_table()
     engine = get_engine()
     async with AsyncSession(engine) as session:
@@ -111,25 +98,108 @@ async def _store_runtime_mode(mode: str) -> dict:
                 """
             ),
             {
-                "key": RUNTIME_MODE_DB_KEY,
-                "value": json.dumps({"mode": normalized}),
+                "key": key,
+                "value": json.dumps(payload),
             },
         )
         await session.commit()
 
+    async with AsyncSession(engine) as session:
+        result = await session.execute(
+            text("SELECT updated_at FROM admin_runtime_settings WHERE key = :key"),
+            {"key": key},
+        )
+        row = result.mappings().first()
+        updated_at = row["updated_at"] if row else None
+        return updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at or "")
+
+
+async def _mirror_runtime_value(redis_key: str, value: str) -> None:
     settings = get_settings()
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
-        await redis_client.set(RUNTIME_MODE_REDIS_KEY, normalized)
+        await redis_client.set(redis_key, value)
     finally:
         await redis_client.aclose()
+
+
+async def _load_runtime_mode_from_db() -> tuple[str | None, str | None]:
+    value, updated_at = await _load_json_setting(RUNTIME_MODE_DB_KEY)
+    if not value:
+        return None, updated_at
+    mode = normalize_runtime_mode((value or {}).get("mode"))
+    return mode, updated_at
+
+
+async def _runtime_mode_payload(source: str = "db") -> dict:
+    settings = get_settings()
+    db_mode, updated_at = await _load_runtime_mode_from_db()
+    configured_mode = normalize_runtime_mode(settings.runtime_mode)
+    mode = db_mode or configured_mode
+    if db_mode:
+        try:
+            await _mirror_runtime_value(RUNTIME_MODE_REDIS_KEY, mode)
+        except Exception as exc:
+            logger.warning("runtime_mode_redis_mirror_failed mode=%s err=%s", mode, exc)
+    overrides = runtime_overrides_for_mode(mode)
+    return {
+        "mode": mode,
+        "configured_mode": configured_mode,
+        "source": source if db_mode else "env",
+        "updated_at": updated_at,
+        "options": runtime_mode_options(),
+        "overrides": overrides,
+        "effective": effective_runtime_snapshot(settings, mode),
+    }
+
+
+async def _store_runtime_mode(mode: str) -> dict:
+    normalized = normalize_runtime_mode(mode)
+    await _store_json_setting(RUNTIME_MODE_DB_KEY, {"mode": normalized})
+    try:
+        await _mirror_runtime_value(RUNTIME_MODE_REDIS_KEY, normalized)
+    except Exception as exc:
+        logger.warning("runtime_mode_redis_mirror_failed mode=%s err=%s", normalized, exc)
     return await _runtime_mode_payload(source="db+redis")
+
+
+async def _llm_routing_payload(source: str = "db") -> dict:
+    settings = get_settings()
+    runtime_mode = await _runtime_mode_payload()
+    stored_payload, updated_at = await _load_json_setting(RUNTIME_LLM_ROUTING_DB_KEY)
+    effective = effective_llm_routing(settings, runtime_mode["mode"], stored_payload)
+    if stored_payload:
+        try:
+            await _mirror_runtime_value(
+                RUNTIME_LLM_ROUTING_REDIS_KEY,
+                json.dumps(stored_payload),
+            )
+        except Exception as exc:
+            logger.warning("llm_routing_redis_mirror_failed err=%s", exc)
+    return {
+        "source": source if stored_payload else "env",
+        "updated_at": updated_at,
+        "providers": llm_provider_options(),
+        "configured": stored_payload or {},
+        "effective": effective.model_dump(),
+    }
+
+
+async def _store_llm_routing(request: LLMRoutingRequest) -> dict:
+    payload = request.model_dump()
+    await _store_json_setting(RUNTIME_LLM_ROUTING_DB_KEY, payload)
+    try:
+        await _mirror_runtime_value(RUNTIME_LLM_ROUTING_REDIS_KEY, json.dumps(payload))
+    except Exception as exc:
+        logger.warning("llm_routing_redis_mirror_failed err=%s", exc)
+    return await _llm_routing_payload(source="db+redis")
 
 
 @router.get("")
 async def get_admin_settings():
     settings = get_settings()
     runtime_mode = await _runtime_mode_payload()
+    llm_routing = await _llm_routing_payload()
     effective = runtime_mode["effective"]
     return {
         "business": {
@@ -178,6 +248,7 @@ async def get_admin_settings():
         "integrations": {
             "mcp_internal_url": settings.mcp_internal_url,
             "openai_api_base": settings.openai_api_base,
+            "wormsoft_api_base": settings.wormsoft_api_base,
             "qdrant_url": settings.qdrant_url,
             "neo4j_url": settings.neo4j_url,
             "s3_endpoint_url": settings.s3_endpoint_url,
@@ -186,9 +257,17 @@ async def get_admin_settings():
             "prometheus_url": settings.prometheus_url,
         },
         "runtime_modes": runtime_mode,
+        "llm_routing": llm_routing,
+        "providers": {
+            "wormsoft": {
+                "api_base": settings.wormsoft_api_base,
+                "key_present": bool(settings.wormsoft_api_key),
+            }
+        },
         "secrets": {
             "database_url_set": bool(settings.database_url),
             "gigachat_credentials_set": bool(settings.gigachat_credentials),
+            "wormsoft_api_key_set": bool(settings.wormsoft_api_key),
             "neo4j_password_set": bool(settings.neo4j_password),
             "s3_access_key_set": bool(settings.s3_access_key_id),
             "s3_secret_key_set": bool(settings.s3_secret_access_key),
@@ -208,6 +287,21 @@ async def get_runtime_mode():
 @router.post("/runtime-mode")
 async def set_runtime_mode(request: RuntimeModeRequest):
     return await _store_runtime_mode(request.mode)
+
+
+@router.get("/llm-routing")
+async def get_llm_routing():
+    return await _llm_routing_payload()
+
+
+@router.post("/llm-routing")
+async def set_llm_routing(request: LLMRoutingRequest):
+    return await _store_llm_routing(request)
+
+
+@router.get("/providers/wormsoft/models")
+async def get_wormsoft_models():
+    return await fetch_wormsoft_models()
 
 
 @router.get("/gigachat-balance")

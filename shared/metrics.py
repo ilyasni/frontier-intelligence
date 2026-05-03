@@ -27,6 +27,40 @@ try:
         "Total SearXNG requests.",
         ["service", "mode", "status"],
     )
+    LLM_PROMPT_TOKENS_TOTAL = Counter(
+        "frontier_llm_prompt_tokens_total",
+        "Total prompt tokens reported by LLM providers.",
+        ["service", "task", "provider", "requested_model", "actual_model"],
+    )
+    LLM_COMPLETION_TOKENS_TOTAL = Counter(
+        "frontier_llm_completion_tokens_total",
+        "Total completion tokens reported by LLM providers.",
+        ["service", "task", "provider", "requested_model", "actual_model"],
+    )
+    LLM_BILLABLE_TOKENS_TOTAL = Counter(
+        "frontier_llm_billable_tokens_total",
+        "Total billable tokens reported by LLM providers.",
+        ["service", "task", "provider", "requested_model", "actual_model"],
+    )
+    LLM_REQUESTS_TOTAL = Counter(
+        "frontier_llm_requests_total",
+        "Total LLM requests across providers.",
+        ["service", "task", "provider", "requested_model", "actual_model", "status"],
+    )
+    LLM_FALLBACKS_TOTAL = Counter(
+        "frontier_llm_fallbacks_total",
+        "Total LLM provider/model fallbacks.",
+        [
+            "service",
+            "task",
+            "from_provider",
+            "from_requested_model",
+            "from_actual_model",
+            "to_provider",
+            "to_model",
+            "reason",
+        ],
+    )
     GIGACHAT_PROMPT_TOKENS_TOTAL = Counter(
         "frontier_gigachat_prompt_tokens_total",
         "Total prompt tokens reported by GigaChat.",
@@ -119,6 +153,11 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     CRAWL_SESSION_RECREATES_TOTAL = None
     RATE_LIMIT_EVENTS_TOTAL = None
     SEARXNG_REQUESTS_TOTAL = None
+    LLM_PROMPT_TOKENS_TOTAL = None
+    LLM_COMPLETION_TOKENS_TOTAL = None
+    LLM_BILLABLE_TOKENS_TOTAL = None
+    LLM_REQUESTS_TOTAL = None
+    LLM_FALLBACKS_TOTAL = None
     GIGACHAT_PROMPT_TOKENS_TOTAL = None
     GIGACHAT_COMPLETION_TOKENS_TOTAL = None
     GIGACHAT_PRECACHED_PROMPT_TOKENS_TOTAL = None
@@ -172,11 +211,80 @@ def note_searxng_request(service: str, mode: str, status: str) -> None:
         ).inc()
 
 
+def note_llm_usage(
+    service: str,
+    task: str,
+    provider: str,
+    requested_model: str,
+    actual_model: str,
+    *,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    billable_tokens: int = 0,
+) -> None:
+    if LLM_PROMPT_TOKENS_TOTAL is None:
+        return
+    labels = {
+        "service": service,
+        "task": task,
+        "provider": provider,
+        "requested_model": requested_model,
+        "actual_model": actual_model,
+    }
+    LLM_PROMPT_TOKENS_TOTAL.labels(**labels).inc(prompt_tokens)
+    LLM_COMPLETION_TOKENS_TOTAL.labels(**labels).inc(completion_tokens)
+    LLM_BILLABLE_TOKENS_TOTAL.labels(**labels).inc(billable_tokens)
+
+
+def note_llm_request(
+    service: str,
+    task: str,
+    provider: str,
+    requested_model: str,
+    actual_model: str,
+    status: str,
+) -> None:
+    if LLM_REQUESTS_TOTAL is not None:
+        LLM_REQUESTS_TOTAL.labels(
+            service=service,
+            task=task,
+            provider=provider,
+            requested_model=requested_model,
+            actual_model=actual_model,
+            status=status,
+        ).inc()
+
+
+def note_llm_fallback(
+    service: str,
+    task: str,
+    *,
+    from_provider: str,
+    from_requested_model: str,
+    from_actual_model: str,
+    to_provider: str,
+    to_model: str,
+    reason: str,
+) -> None:
+    if LLM_FALLBACKS_TOTAL is not None:
+        LLM_FALLBACKS_TOTAL.labels(
+            service=service,
+            task=task,
+            from_provider=from_provider,
+            from_requested_model=from_requested_model,
+            from_actual_model=from_actual_model,
+            to_provider=to_provider,
+            to_model=to_model,
+            reason=reason,
+        ).inc()
+
+
 def note_gigachat_usage(
     service: str,
     task: str,
     model: str,
     *,
+    actual_model: str | None = None,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     precached_prompt_tokens: int = 0,
@@ -189,13 +297,31 @@ def note_gigachat_usage(
     GIGACHAT_COMPLETION_TOKENS_TOTAL.labels(**labels).inc(completion_tokens)
     GIGACHAT_PRECACHED_PROMPT_TOKENS_TOTAL.labels(**labels).inc(precached_prompt_tokens)
     GIGACHAT_BILLABLE_TOKENS_TOTAL.labels(**labels).inc(billable_tokens)
+    note_llm_usage(
+        service,
+        task,
+        "gigachat",
+        model,
+        actual_model or model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        billable_tokens=billable_tokens,
+    )
 
 
-def note_gigachat_request(service: str, task: str, model: str, status: str) -> None:
+def note_gigachat_request(
+    service: str,
+    task: str,
+    model: str,
+    status: str,
+    *,
+    actual_model: str | None = None,
+) -> None:
     if GIGACHAT_REQUESTS_TOTAL is not None:
         GIGACHAT_REQUESTS_TOTAL.labels(
             service=service, task=task, model=model, status=status
         ).inc()
+    note_llm_request(service, task, "gigachat", model, actual_model or model, status)
 
 
 def note_gigachat_escalation(service: str, task: str, from_model: str, to_model: str) -> None:
