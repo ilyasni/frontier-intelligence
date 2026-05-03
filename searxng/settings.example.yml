@@ -1,9 +1,13 @@
 use_default_settings:
   engines:
     keep_only:
+      # Keep only engines that are stable for our self-hosted LAN/VPN setup.
+      # As of 2026-05-03 these were the engines that consistently returned results
+      # from the production host, while brave hit 429s and bing news produced parser errors.
+      - duckduckgo
+      - startpage
+      - qwant
       - bing
-      - bing news
-      - brave
 server:
   limiter: false
   public_instance: false
