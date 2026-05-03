@@ -798,6 +798,8 @@ let wsEditMode = false;
 let wsEditingId = null;
 let graphCy = null;
 let sourceCatalog = { source_types: [], rss_presets: [] };
+let settingsRuntimeSnapshot = null;
+let wormsoftCatalogSnapshot = null;
 
 // Navigation
 document.querySelectorAll('.nav-link').forEach(link => {
@@ -1011,8 +1013,8 @@ function llmRouteTaskLabel(taskId) {
   return (LLM_ROUTE_TASKS.find((item) => item.id === taskId) || {}).label || taskId;
 }
 
-function collectKnownLlmModels(runtime, wormsoftCatalog, selected) {
-  const values = [
+function collectKnownLlmModels(runtime, wormsoftCatalog, provider, selected, keepUnknown = true) {
+  const gigachatValues = [
     runtime?.gigachat_model,
     runtime?.gigachat_model_lite,
     runtime?.gigachat_model_pro,
@@ -1022,8 +1024,13 @@ function collectKnownLlmModels(runtime, wormsoftCatalog, selected) {
     runtime?.gigachat_model_valence,
     runtime?.gigachat_model_mcp_synthesis,
     runtime?.gigachat_model_vision,
-    ...(Array.isArray(wormsoftCatalog?.models) ? wormsoftCatalog.models.map((item) => item.id || item.name || item.label) : []),
-    selected,
+  ];
+  const wormsoftValues = Array.isArray(wormsoftCatalog?.models)
+    ? wormsoftCatalog.models.map((item) => item.id || item.name || item.label)
+    : [];
+  const values = [
+    ...((provider === 'wormsoft') ? wormsoftValues : gigachatValues),
+    ...(keepUnknown ? [selected] : []),
   ]
     .map((item) => String(item || '').trim())
     .filter(Boolean);
@@ -1037,9 +1044,9 @@ function collectKnownLlmModels(runtime, wormsoftCatalog, selected) {
   return unique;
 }
 
-function renderModelSelect(id, runtime, wormsoftCatalog, selected) {
+function renderModelSelect(id, runtime, wormsoftCatalog, provider, selected, keepUnknown = true) {
   const current = String(selected || '').trim();
-  const options = collectKnownLlmModels(runtime, wormsoftCatalog, current);
+  const options = collectKnownLlmModels(runtime, wormsoftCatalog, provider, current, keepUnknown);
   if (!options.length) options.push(current || '');
   return `
     <select id="${escapeHtml(id)}">
@@ -1050,15 +1057,50 @@ function renderModelSelect(id, runtime, wormsoftCatalog, selected) {
   `;
 }
 
-function renderProviderSelect(id, providers, selected) {
+function renderProviderSelect(id, providers, selected, onChangeExpression = '') {
   const current = String(selected || 'gigachat');
+  const onChangeAttr = onChangeExpression ? ` onchange="${escapeHtml(onChangeExpression)}"` : '';
   return `
-    <select id="${escapeHtml(id)}">
+    <select id="${escapeHtml(id)}"${onChangeAttr}>
       ${providers.map((item) => `
         <option value="${escapeHtml(item.id)}" ${item.id === current ? 'selected' : ''}>${escapeHtml(item.label || item.id)}</option>
       `).join('')}
     </select>
   `;
+}
+
+function syncLLMRouteTask(taskId) {
+  if (!settingsRuntimeSnapshot || !wormsoftCatalogSnapshot) return;
+  const provider = document.getElementById(`llm-route-${taskId}-provider`)?.value || 'gigachat';
+  const fallbackProvider = document.getElementById(`llm-route-${taskId}-fallback-provider`)?.value || 'gigachat';
+  const currentModel = document.getElementById(`llm-route-${taskId}-model`)?.value || '';
+  const currentFallbackModel = document.getElementById(`llm-route-${taskId}-fallback-model`)?.value || '';
+  const allowedModelValues = collectKnownLlmModels(settingsRuntimeSnapshot, wormsoftCatalogSnapshot, provider, '', false);
+  const allowedFallbackValues = collectKnownLlmModels(settingsRuntimeSnapshot, wormsoftCatalogSnapshot, fallbackProvider, '', false);
+  const selectedModel = allowedModelValues.includes(currentModel) ? currentModel : '';
+  const selectedFallbackModel = allowedFallbackValues.includes(currentFallbackModel) ? currentFallbackModel : '';
+  const modelWrap = document.getElementById(`llm-route-${taskId}-model-wrap`);
+  const fallbackModelWrap = document.getElementById(`llm-route-${taskId}-fallback-model-wrap`);
+  if (modelWrap) {
+    modelWrap.innerHTML = renderModelSelect(
+      `llm-route-${taskId}-model`,
+      settingsRuntimeSnapshot,
+      wormsoftCatalogSnapshot,
+      provider,
+      selectedModel,
+      false,
+    );
+  }
+  if (fallbackModelWrap) {
+    fallbackModelWrap.innerHTML = renderModelSelect(
+      `llm-route-${taskId}-fallback-model`,
+      settingsRuntimeSnapshot,
+      wormsoftCatalogSnapshot,
+      fallbackProvider,
+      selectedFallbackModel,
+      false,
+    );
+  }
 }
 
 function renderLLMRoutingPanel(payload, runtime, wormsoftCatalog) {
@@ -1081,10 +1123,10 @@ function renderLLMRoutingPanel(payload, runtime, wormsoftCatalog) {
     const value = configured[task.id] || effective[task.id] || {};
     return [
       escapeHtml(task.label),
-      renderProviderSelect(`llm-route-${task.id}-provider`, providers, value.provider || 'gigachat'),
-      renderModelSelect(`llm-route-${task.id}-model`, runtime, wormsoftCatalog, value.model || ''),
-      renderProviderSelect(`llm-route-${task.id}-fallback-provider`, providers, value.fallback_provider || 'gigachat'),
-      renderModelSelect(`llm-route-${task.id}-fallback-model`, runtime, wormsoftCatalog, value.fallback_model || ''),
+      renderProviderSelect(`llm-route-${task.id}-provider`, providers, value.provider || 'gigachat', `syncLLMRouteTask('${task.id}')`),
+      `<div id="llm-route-${task.id}-model-wrap">${renderModelSelect(`llm-route-${task.id}-model`, runtime, wormsoftCatalog, value.provider || 'gigachat', value.model || '')}</div>`,
+      renderProviderSelect(`llm-route-${task.id}-fallback-provider`, providers, value.fallback_provider || 'gigachat', `syncLLMRouteTask('${task.id}')`),
+      `<div id="llm-route-${task.id}-fallback-model-wrap">${renderModelSelect(`llm-route-${task.id}-fallback-model`, runtime, wormsoftCatalog, value.fallback_provider || 'gigachat', value.fallback_model || '')}</div>`,
     ];
   });
   const effectiveRows = LLM_ROUTE_TASKS.map((task) => {
@@ -1126,6 +1168,72 @@ function renderLLMRoutingPanel(payload, runtime, wormsoftCatalog) {
           'No effective routing data yet.',
         )}
         ${renderSettingsRawDetails({ routing, wormsoftCatalog }, 'Raw routing payload')}
+      </div>
+    `,
+  );
+}
+
+function renderWormsoftLimitsPanel(payload, llmRouting) {
+  const data = payload || {};
+  const plans = Array.isArray(data.plans) ? data.plans : [];
+  const pricing = data.pricing || {};
+  const routing = llmRouting?.effective || {};
+  const wormsoftTasks = LLM_ROUTE_TASKS
+    .map((task) => {
+      const route = routing[task.id] || {};
+      if (route.provider !== 'wormsoft') return null;
+      const model = String(route.model || '').trim();
+      const modelPricing = pricing[model] || null;
+      return {
+        task: task.label,
+        model,
+        pricing: modelPricing,
+      };
+    })
+    .filter(Boolean);
+  const hasError = !data.available && !data.stale;
+  const hasStale = Boolean(data.stale);
+  const label = hasError ? String(data.status || 'Unavailable') : (hasStale ? 'Cached' : 'Ready');
+  const tone = hasError ? 'error' : (hasStale ? 'warn' : 'ok');
+  const planRows = plans.map((item) => [
+    escapeHtml(String(item.id || '')),
+    formatCompactNumber(Number(item.amount || 0)),
+    `${Number(item.window_hours || 0).toFixed(1)} h`,
+    `${formatCompactNumber(Number(item.price || 0))} ₽`,
+  ]);
+  const routePricingRows = wormsoftTasks.map((item) => [
+    escapeHtml(item.task),
+    `<span class="mono">${escapeHtml(item.model || '-')}</span>`,
+    item.pricing ? formatCompactNumber(Number(item.pricing.input || 0)) : 'n/a',
+    item.pricing ? formatCompactNumber(Number(item.pricing.output || 0)) : 'n/a',
+    item.pricing ? formatCompactNumber(Number(item.pricing.cache || 0)) : 'n/a',
+  ]);
+  return renderSettingsPanel(
+    'Wormsoft limits',
+    'Reference view of Wormsoft subscription windows and live pricing for routed models.',
+    label,
+    tone,
+    `
+      <div class="settings-stack">
+        ${renderSettingsCells([
+          { label: 'Key', value: data.key_present ? 'present' : 'missing', meta: 'API key remains server-side in .env.' },
+          { label: 'Status', value: String(data.status || 'unavailable'), meta: data.stale ? 'Showing cached snapshot because the latest refresh failed.' : 'Live fetch from Wormsoft control endpoints.' },
+          { label: 'Plans', value: String(Number(data.plan_count || plans.length || 0)), meta: 'Published subscription windows.' },
+          { label: 'Pricing models', value: String(Number(data.pricing_model_count || Object.keys(pricing).length || 0)), meta: 'Models with published credits per 1M tokens.' },
+        ])}
+        ${renderSettingsTable(
+          ['Plan', 'Credits / window', 'Window', 'Price / month'],
+          planRows,
+          'No Wormsoft plan data available yet.',
+        )}
+        <div class="settings-note">Effective Wormsoft routes</div>
+        ${renderSettingsTable(
+          ['Task', 'Model', 'Input / 1M', 'Output / 1M', 'Cache / 1M'],
+          routePricingRows,
+          'No current tasks are routed to Wormsoft.',
+        )}
+        <div class="settings-note">${escapeHtml(String(data.alerting_note || 'Wormsoft quota pressure is best observed through 429 bursts and fallback spikes.'))}</div>
+        ${renderSettingsRawDetails(data, 'Raw Wormsoft limits payload')}
       </div>
     `,
   );
@@ -1317,7 +1425,7 @@ function renderWeeklyGigaChatReport(reportPayload) {
   );
 }
 
-function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyReport, wormsoftCatalog) {
+function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyReport, wormsoftCatalog, wormsoftLimits) {
   const runtime = data.runtime || {};
   const integrations = data.integrations || {};
   const secrets = data.secrets || {};
@@ -1347,6 +1455,7 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
       </div>
       ${renderRuntimeModePanel(data.runtime_modes)}
       ${renderLLMRoutingPanel(data.llm_routing, runtime, wormsoftCatalog || {})}
+      ${renderWormsoftLimitsPanel(wormsoftLimits || {}, data.llm_routing || {})}
       ${renderGigaChatBalance(balancePayload)}
       ${renderWeeklyGigaChatReport(weeklyReport)}
       ${renderRedisStreamQueues(streamPayload)}
@@ -1359,9 +1468,9 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
           <div class="settings-stack">
             ${renderSettingsCells([
               { label: 'Relevance threshold', value: String((data.business || {}).default_relevance_threshold ?? '-'), meta: 'Default cutoff before a post becomes done vs dropped.' },
-              { label: 'Novelty half-life', value: `${String((data.business || {}).default_half_life_days ?? '-')} days`, meta: 'Recency decay for signal scoring.' },
-              { label: 'Window', value: `${String((data.business || {}).default_window_days ?? '-')} days`, meta: 'Default analysis horizon for clustering/trends.' },
-              { label: 'Min docs per cluster', value: String((data.business || {}).default_min_docs ?? '-'), meta: 'Guardrail against noisy tiny clusters.' },
+              { label: 'Missing-signals min gap', value: String(runtime.missing_signals_min_gap_score ?? '-'), meta: 'Controls when the worker calls out genuine external evidence gaps.' },
+              { label: 'Missing-signals topic cap', value: String(runtime.missing_signals_topic_limit ?? '-'), meta: 'Upper bound for grounded gap topics per run.' },
+              { label: 'SearXNG max results', value: String(runtime.searxng_max_results ?? '-'), meta: 'How much external evidence a single grounding step can fetch.' },
             ])}
             ${renderSettingsRawDetails(data.business || {}, 'Raw business config')}
           </div>
@@ -1383,6 +1492,7 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
               { label: 'Max retries', value: String(runtime.indexing_max_retries ?? '-'), meta: 'Retries before an event becomes error/DLQ.' },
               { label: 'Vision claim idle', value: `${String(runtime.vision_claim_idle_ms ?? '-')} ms`, meta: 'How long a vision message can stay idle before reclaim.' },
               { label: 'Vision max delivery', value: String(runtime.vision_max_delivery_count ?? '-'), meta: 'Requeue budget before DLQ handoff.' },
+              { label: 'Wormsoft limits refresh', value: String(runtime.admin_wormsoft_limits_refresh_cron || '-'), meta: 'Cron for refreshing Wormsoft limits/pricing snapshots and related alerts.' },
               { label: 'Text model', value: String(runtime.gigachat_model || '-'), meta: 'Default chat model for generic text work.' },
               { label: 'Relevance model', value: String(runtime.gigachat_model_relevance || runtime.gigachat_model_lite || '-'), meta: 'Primary relevance classification model.' },
               { label: 'Concepts model', value: String(runtime.gigachat_model_concepts || runtime.gigachat_model_lite || '-'), meta: 'Primary concept extraction model.' },
@@ -2323,24 +2433,28 @@ async function loadSettings() {
   }
   settingsDetail.innerHTML = '<div class="empty" role="status" aria-live="polite">Loading settings...</div>';
   try {
-    const [data, balanceData, streamData, weeklyReport, wormsoftCatalog] = await Promise.all([
+    const [data, balanceData, streamData, weeklyReport, wormsoftCatalog, wormsoftLimits] = await Promise.all([
       apiGet('/api/settings').catch(() => null),
       apiGet('/api/settings/gigachat-balance').catch(() => null),
       apiGet('/api/pipeline/streams').catch(() => null),
       apiGet('/api/settings/gigachat-weekly-report').catch(() => null),
       apiGet('/api/settings/providers/wormsoft/models').catch(() => null),
+      apiGet('/api/settings/providers/wormsoft/limits').catch(() => null),
     ]);
     if (!data) {
       settingsDetail.innerHTML = '<div class="empty" role="alert" aria-live="assertive">Failed to load settings.</div>';
       return;
     }
     const balancePayload = balanceData || { available: false, status: 'unavailable', balance: [] };
+    settingsRuntimeSnapshot = data.runtime || {};
+    wormsoftCatalogSnapshot = wormsoftCatalog || { available: false, status: 'unavailable', key_present: false, models: [] };
     settingsDetail.innerHTML = renderSettingsSnapshot(
       data,
       balancePayload,
       streamData || { streams: [] },
       weeklyReport || {},
-      wormsoftCatalog || { available: false, status: 'unavailable', key_present: false, models: [] },
+      wormsoftCatalogSnapshot,
+      wormsoftLimits || { available: false, status: 'unavailable', plans: [], pricing: {} },
     );
   } finally {
     if (refreshBtn) {

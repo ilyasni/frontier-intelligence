@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from admin.backend.db import get_engine
 from admin.backend.services.gigachat_balance import fetch_gigachat_balance
 from admin.backend.services.gigachat_weekly_report import fetch_gigachat_weekly_report
+from admin.backend.services.wormsoft_limits import fetch_wormsoft_limits
 from admin.backend.services.wormsoft_models import fetch_wormsoft_models
 from shared.config import get_settings
 from shared.llm_routing import (
@@ -236,6 +237,7 @@ async def get_admin_settings():
             "gigachat_rc_joint_enabled": settings.gigachat_rc_joint_enabled,
             "gigachat_rc_joint_workspaces": settings.gigachat_rc_joint_workspaces,
             "gigachat_rc_joint_sources": settings.gigachat_rc_joint_sources,
+            "admin_wormsoft_limits_refresh_cron": settings.admin_wormsoft_limits_refresh_cron,
             "sparse_vectors_enabled": settings.sparse_vectors_enabled,
             "searxng_enabled": settings.searxng_enabled,
             "searxng_timeout_seconds": settings.searxng_timeout_seconds,
@@ -302,6 +304,11 @@ async def set_llm_routing(request: LLMRoutingRequest):
 @router.get("/providers/wormsoft/models")
 async def get_wormsoft_models():
     return await fetch_wormsoft_models()
+
+
+@router.get("/providers/wormsoft/limits")
+async def get_wormsoft_limits():
+    return await fetch_wormsoft_limits()
 
 
 @router.get("/gigachat-balance")

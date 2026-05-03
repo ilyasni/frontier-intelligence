@@ -28,6 +28,17 @@ groups:
           summary: "Frontier is hitting upstream rate limits"
           description: "Rate-limit events for {{ $labels.service }}/{{ $labels.upstream }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes."
 
+      - alert: FrontierWormsoftRateLimitBurst
+        expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="wormsoft"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: critical
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Wormsoft is rate-limiting production traffic"
+          description: "Wormsoft 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. The router may spill text tasks back to Giga and raise monthly cost."
+
       - alert: FrontierGigaChatBalanceLow
         expr: frontier_gigachat_balance_tokens{service="admin"} < 100000
         for: 5m
@@ -49,6 +60,39 @@ groups:
         annotations:
           summary: "GigaChat balance refresh is stale"
           description: "Admin has not refreshed GigaChat balance metrics for more than 30 minutes. Check scheduler health, OAuth, proxy, and GigaChat API reachability."
+
+      - alert: FrontierWormsoftLimitsRefreshStale
+        expr: time() - frontier_wormsoft_limits_refresh_timestamp_seconds{service="admin"} > 3600
+        for: 10m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Wormsoft limits refresh is stale"
+          description: "Admin has not refreshed Wormsoft limits/pricing metrics for more than 60 minutes. Settings may still render from cache, but live routing cost visibility is degraded."
+
+      - alert: FrontierWormsoftLimitsUnavailable
+        expr: frontier_wormsoft_limits_available{service="admin"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Wormsoft limits snapshot is unavailable"
+          description: "Admin could not fetch Wormsoft limits/pricing for more than 15 minutes. Check DNS, outbound access, API key validity, and Wormsoft control endpoints."
+
+      - alert: FrontierWormsoftFallbackBurst
+        expr: sum by (service, task, reason) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft"}[15m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Wormsoft fallback traffic is spiking"
+          description: "Wormsoft fallbacks for {{ $labels.service }}/{{ $labels.task }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Expect quality drift or higher Giga spend until the route stabilizes."
 
       - alert: FrontierRedisStreamLagHigh
         expr: frontier_redis_stream_lag{service="admin"} > 1000

@@ -101,6 +101,36 @@ try:
         "Unix timestamp of the last successful GigaChat balance refresh.",
         ["service"],
     )
+    WORMSOFT_LIMITS_AVAILABLE = Gauge(
+        "frontier_wormsoft_limits_available",
+        "Whether the last Wormsoft limits/pricing refresh completed successfully.",
+        ["service"],
+    )
+    WORMSOFT_LIMITS_REFRESH_TIMESTAMP = Gauge(
+        "frontier_wormsoft_limits_refresh_timestamp_seconds",
+        "Unix timestamp of the last successful Wormsoft limits/pricing refresh.",
+        ["service"],
+    )
+    WORMSOFT_SUBSCRIPTION_LIMIT_CREDITS = Gauge(
+        "frontier_wormsoft_subscription_limit_credits",
+        "Wormsoft subscription credit allowance per refresh window.",
+        ["service", "plan"],
+    )
+    WORMSOFT_SUBSCRIPTION_WINDOW_SECONDS = Gauge(
+        "frontier_wormsoft_subscription_window_seconds",
+        "Wormsoft subscription refresh window in seconds.",
+        ["service", "plan"],
+    )
+    WORMSOFT_SUBSCRIPTION_PRICE_RUB = Gauge(
+        "frontier_wormsoft_subscription_price_rub",
+        "Wormsoft subscription price in RUB per billing period.",
+        ["service", "plan"],
+    )
+    WORMSOFT_MODEL_PRICE_CREDITS_PER_MILLION = Gauge(
+        "frontier_wormsoft_model_price_credits_per_million",
+        "Wormsoft model pricing in credits per 1M tokens.",
+        ["service", "model", "kind"],
+    )
     ADMIN_SCHEDULER_RUNNING = Gauge(
         "frontier_admin_scheduler_running",
         "Whether the admin APScheduler is running.",
@@ -166,6 +196,12 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     GIGACHAT_ESCALATIONS_TOTAL = None
     GIGACHAT_BALANCE_TOKENS = None
     GIGACHAT_BALANCE_REFRESH_TIMESTAMP = None
+    WORMSOFT_LIMITS_AVAILABLE = None
+    WORMSOFT_LIMITS_REFRESH_TIMESTAMP = None
+    WORMSOFT_SUBSCRIPTION_LIMIT_CREDITS = None
+    WORMSOFT_SUBSCRIPTION_WINDOW_SECONDS = None
+    WORMSOFT_SUBSCRIPTION_PRICE_RUB = None
+    WORMSOFT_MODEL_PRICE_CREDITS_PER_MILLION = None
     ADMIN_SCHEDULER_RUNNING = None
     ADMIN_MANUAL_JOBS_RUNNING = None
     ADMIN_MANUAL_JOB_OLDEST_RUNNING_AGE_SECONDS = None
@@ -339,6 +375,42 @@ def set_gigachat_balance(service: str, usage: str, value: int) -> None:
 def note_gigachat_balance_refresh(service: str, timestamp: float) -> None:
     if GIGACHAT_BALANCE_REFRESH_TIMESTAMP is not None:
         GIGACHAT_BALANCE_REFRESH_TIMESTAMP.labels(service=service).set(timestamp)
+
+
+def set_wormsoft_limits_snapshot(service: str, payload: dict) -> None:
+    if WORMSOFT_LIMITS_AVAILABLE is None:
+        return
+    WORMSOFT_LIMITS_AVAILABLE.labels(service=service).set(1 if payload.get("available") else 0)
+    fetched_at = payload.get("fetched_at")
+    if fetched_at:
+        WORMSOFT_LIMITS_REFRESH_TIMESTAMP.labels(service=service).set(float(fetched_at))
+    WORMSOFT_SUBSCRIPTION_LIMIT_CREDITS.clear()
+    WORMSOFT_SUBSCRIPTION_WINDOW_SECONDS.clear()
+    WORMSOFT_SUBSCRIPTION_PRICE_RUB.clear()
+    WORMSOFT_MODEL_PRICE_CREDITS_PER_MILLION.clear()
+    for item in payload.get("plans") or []:
+        plan = str(item.get("id") or "")
+        if not plan:
+            continue
+        WORMSOFT_SUBSCRIPTION_LIMIT_CREDITS.labels(service=service, plan=plan).set(
+            int(item.get("amount") or 0)
+        )
+        WORMSOFT_SUBSCRIPTION_WINDOW_SECONDS.labels(service=service, plan=plan).set(
+            int(item.get("seconds") or 0)
+        )
+        WORMSOFT_SUBSCRIPTION_PRICE_RUB.labels(service=service, plan=plan).set(
+            float(item.get("price") or 0.0)
+        )
+    for model, pricing in (payload.get("pricing") or {}).items():
+        for kind in ("input", "output", "cache"):
+            value = pricing.get(kind)
+            if value is None:
+                continue
+            WORMSOFT_MODEL_PRICE_CREDITS_PER_MILLION.labels(
+                service=service,
+                model=str(model),
+                kind=kind,
+            ).set(float(value))
 
 
 def set_admin_scheduler_running(service: str, is_running: bool) -> None:

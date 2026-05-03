@@ -155,6 +155,10 @@ class Settings(BaseSettings):
         "*/5 * * * *",
         alias="ADMIN_GIGACHAT_BALANCE_REFRESH_CRON",
     )
+    admin_wormsoft_limits_refresh_cron: str = Field(
+        "*/10 * * * *",
+        alias="ADMIN_WORMSOFT_LIMITS_REFRESH_CRON",
+    )
     admin_trend_alert_cron: str = Field(
         "25 * * * *",
         alias="ADMIN_TREND_ALERT_CRON",

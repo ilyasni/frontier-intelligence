@@ -23,6 +23,7 @@ from admin.backend.services.pipeline_jobs import (
     run_signal_analysis_job,
 )
 from admin.backend.services.trend_alerts import run_urgent_trend_alerts
+from admin.backend.services.wormsoft_limits import fetch_wormsoft_limits
 from shared.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ _scheduler: AsyncIOScheduler | None = None
 _source_score_lock = asyncio.Lock()
 _cluster_lock = asyncio.Lock()
 _gigachat_balance_lock = asyncio.Lock()
+_wormsoft_limits_lock = asyncio.Lock()
 _trend_alert_lock = asyncio.Lock()
 _manual_jobs_table_ready = False
 
@@ -50,6 +52,8 @@ def _manual_job_lock(job_name: str) -> asyncio.Lock | None:
         return _cluster_lock
     if job_name == "refresh_gigachat_balance":
         return _gigachat_balance_lock
+    if job_name == "refresh_wormsoft_limits":
+        return _wormsoft_limits_lock
     return None
 
 
@@ -513,6 +517,31 @@ async def scheduled_refresh_gigachat_balance() -> dict[str, Any]:
         }
 
 
+async def scheduled_refresh_wormsoft_limits() -> dict[str, Any]:
+    if _wormsoft_limits_lock.locked():
+        logger.warning("Skipping refresh_wormsoft_limits: previous run is still in progress")
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "job_name": "refresh_wormsoft_limits",
+        }
+
+    async with _wormsoft_limits_lock:
+        result = await fetch_wormsoft_limits()
+        logger.info(
+            "Completed refresh_wormsoft_limits status=%s available=%s plans=%d pricing_models=%d",
+            result.get("status"),
+            result.get("available"),
+            len(result.get("plans") or []),
+            len(result.get("pricing") or {}),
+        )
+        return {
+            "status": "ok",
+            "job_name": "refresh_wormsoft_limits",
+            "result": result,
+        }
+
+
 async def scheduled_urgent_trend_alerts() -> dict[str, Any]:
     if _trend_alert_lock.locked():
         logger.warning("Skipping urgent_trend_alerts: previous run is still in progress")
@@ -616,6 +645,16 @@ def _build_scheduler() -> AsyncIOScheduler:
         **common_kwargs,
     )
     scheduler.add_job(
+        scheduled_refresh_wormsoft_limits,
+        CronTrigger.from_crontab(
+            settings.admin_wormsoft_limits_refresh_cron,
+            timezone=timezone,
+        ),
+        id="refresh_wormsoft_limits",
+        jitter=min(20, settings.admin_scheduler_max_jitter_seconds),
+        **common_kwargs,
+    )
+    scheduler.add_job(
         scheduled_urgent_trend_alerts,
         CronTrigger.from_crontab(
             settings.admin_trend_alert_cron,
@@ -641,13 +680,15 @@ async def scheduler_lifespan():
     _scheduler.start()
     await reconcile_running_manual_jobs()
     await scheduled_refresh_gigachat_balance()
+    await scheduled_refresh_wormsoft_limits()
     logger.info(
-        "Admin scheduler started with timezone=%s, refresh_cron=%s, cluster_cron=%s, signal_cron=%s, gigachat_balance_cron=%s, trend_alert_cron=%s",
+        "Admin scheduler started with timezone=%s, refresh_cron=%s, cluster_cron=%s, signal_cron=%s, gigachat_balance_cron=%s, wormsoft_limits_cron=%s, trend_alert_cron=%s",
         settings.admin_scheduler_timezone,
         settings.admin_source_score_refresh_cron,
         settings.admin_semantic_cluster_cron,
         settings.admin_signal_cluster_cron,
         settings.admin_gigachat_balance_refresh_cron,
+        settings.admin_wormsoft_limits_refresh_cron,
         settings.admin_trend_alert_cron,
     )
     try:
