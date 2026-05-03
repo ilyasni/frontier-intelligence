@@ -5,6 +5,7 @@ import json
 import sys
 
 from admin.backend.services.pipeline_jobs import refresh_source_scores
+from admin.backend.services.pipeline_jobs import run_missing_signals_job
 from admin.backend.services.pipeline_jobs import run_semantic_cluster_job
 from admin.backend.services.pipeline_jobs import run_signal_analysis_job
 
@@ -16,6 +17,8 @@ async def _dispatch(job_name: str, workspace_id: str | None) -> dict:
         return await run_semantic_cluster_job(workspace_id)
     if job_name == "run_signal_analysis":
         return await run_signal_analysis_job(workspace_id)
+    if job_name == "run_missing_signals":
+        return await run_missing_signals_job(workspace_id)
     raise ValueError(f"Unsupported manual job: {job_name}")
 
 

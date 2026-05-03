@@ -48,7 +48,7 @@ def _isoformat(value: datetime | None) -> str | None:
 def _manual_job_lock(job_name: str) -> asyncio.Lock | None:
     if job_name == "refresh_source_scores":
         return _source_score_lock
-    if job_name in {"run_semantic_clusters", "run_signal_analysis"}:
+    if job_name in {"run_semantic_clusters", "run_signal_analysis", "run_missing_signals"}:
         return _cluster_lock
     if job_name == "refresh_gigachat_balance":
         return _gigachat_balance_lock

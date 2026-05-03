@@ -343,6 +343,62 @@ async def _replace_missing_signals(
         )
 
 
+async def _load_current_signal_snapshots(
+    session: AsyncSession,
+    *,
+    workspace_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    semantic_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT title, top_concepts, explainability
+                FROM semantic_clusters
+                WHERE workspace_id = :workspace_id
+                ORDER BY detected_at DESC
+                LIMIT 64
+                """
+            ),
+            {"workspace_id": workspace_id},
+        )
+    ).mappings().all()
+    stable_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT title, keywords, explainability
+                FROM trend_clusters
+                WHERE workspace_id = :workspace_id
+                  AND pipeline = 'stable'
+                ORDER BY detected_at DESC, burst_score DESC
+                LIMIT 32
+                """
+            ),
+            {"workspace_id": workspace_id},
+        )
+    ).mappings().all()
+    emerging_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT title, keywords, explainability
+                FROM emerging_signals
+                WHERE workspace_id = :workspace_id
+                  AND signal_stage = ANY(:stages)
+                ORDER BY detected_at DESC, signal_score DESC
+                LIMIT 32
+                """
+            ),
+            {"workspace_id": workspace_id, "stages": ["weak", "emerging", "stable"]},
+        )
+    ).mappings().all()
+    return (
+        [dict(row) for row in semantic_rows],
+        [dict(row) for row in stable_rows],
+        [dict(row) for row in emerging_rows],
+    )
+
+
 async def run_missing_signals_analysis(
     session: AsyncSession,
     *,
@@ -436,3 +492,23 @@ async def run_missing_signals_analysis(
 
     await _replace_missing_signals(session, workspace_id=workspace_id, items=top_items)
     return top_items
+
+
+async def run_missing_signals_refresh(
+    session: AsyncSession,
+    *,
+    workspace_id: str | None,
+) -> list[dict[str, Any]]:
+    if not workspace_id:
+        return []
+    semantic, stable, emerging = await _load_current_signal_snapshots(
+        session,
+        workspace_id=workspace_id,
+    )
+    return await run_missing_signals_analysis(
+        session,
+        workspace_id=workspace_id,
+        semantic=semantic,
+        stable=stable,
+        emerging=emerging,
+    )

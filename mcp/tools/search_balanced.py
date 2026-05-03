@@ -282,12 +282,7 @@ async def search_balanced(req: BalancedSearchRequest) -> dict[str, Any]:
     )
     main_search, counter_search, ru_search = await asyncio.gather(main_task, counter_task, ru_task)
     external_results: list[dict[str, Any]] = []
-    if get_settings().searxng_enabled and (
-        not main_search["results"]
-        or not ru_search["results"]
-        or not counter_search["results"]
-        or len(main_search["results"]) < max(2, min(req.limit, 3))
-    ):
+    if get_settings().searxng_enabled:
         try:
             external_results = await SearXNGClient(service_name="mcp").search(
                 req.query,

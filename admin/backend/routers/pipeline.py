@@ -18,6 +18,7 @@ from admin.backend.services.pipeline_jobs import (
     refresh_source_scores as refresh_source_scores_job,
 )
 from admin.backend.services.pipeline_jobs import (
+    run_missing_signals_job,
     run_semantic_cluster_job,
     run_signal_analysis_job,
 )
@@ -291,6 +292,23 @@ async def trigger_signal_analysis(
         job_name="run_signal_analysis",
         workspace_id=target_workspace,
         runner=run_signal_analysis_job,
+    )
+
+
+@router.post("/run-missing-signals")
+async def trigger_missing_signals(
+    workspace_id: str | None = None,
+    wait: bool = False,
+    request: JobTriggerRequest | None = Body(default=None),
+):
+    target_workspace = request.workspace_id if request and request.workspace_id else workspace_id
+    should_wait = bool(request.wait) if request is not None else bool(wait)
+    if should_wait:
+        return await run_missing_signals_job(target_workspace)
+    return await launch_manual_job(
+        job_name="run_missing_signals",
+        workspace_id=target_workspace,
+        runner=run_missing_signals_job,
     )
 
 

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from admin.backend.db import get_engine
 from shared.source_quality import source_quality_payload
+from worker.services.missing_signals import run_missing_signals_refresh
 from worker.services.semantic_clustering import run_semantic_clustering, run_signal_analysis
 
 logger = logging.getLogger(__name__)
@@ -180,3 +181,45 @@ async def run_signal_analysis_job(workspace_id: str | None = None) -> dict:
         result.get("missing_signals"),
     )
     return {"status": "ok", **result}
+
+
+async def run_missing_signals_job(workspace_id: str | None = None) -> dict:
+    if workspace_id is None:
+        results = []
+        for active_workspace_id in await list_active_workspace_ids():
+            engine = get_engine()
+            async with AsyncSession(engine) as session:
+                items = await run_missing_signals_refresh(
+                    session,
+                    workspace_id=active_workspace_id,
+                )
+                await session.commit()
+            results.append(
+                {
+                    "workspace_id": active_workspace_id,
+                    "missing_signals": len(items),
+                }
+            )
+        total = sum(int(item.get("missing_signals") or 0) for item in results)
+        logger.info(
+            "Missing signals refresh completed for all workspaces=%s, missing_signals=%s",
+            [item.get("workspace_id") for item in results],
+            total,
+        )
+        return {
+            "status": "ok",
+            "workspace_id": None,
+            "results": results,
+            "missing_signals": total,
+        }
+
+    engine = get_engine()
+    async with AsyncSession(engine) as session:
+        items = await run_missing_signals_refresh(session, workspace_id=workspace_id)
+        await session.commit()
+    logger.info(
+        "Missing signals refresh completed for workspace=%s, missing_signals=%s",
+        workspace_id,
+        len(items),
+    )
+    return {"status": "ok", "workspace_id": workspace_id, "missing_signals": len(items)}
