@@ -87,10 +87,45 @@ class SourceVisionUpdate(BaseModel):
     max_media_bytes: int = Field(default=9_000_000, ge=0, le=100_000_000)
 
 
+class SourceTelegramHandleUpdate(BaseModel):
+    tg_channel: str
+
+
 class SourceCatalogEntry(BaseModel):
     key: str
     name: str
     url: str
+
+
+def _normalize_telegram_channel(raw: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        raise ValueError("Telegram channel is required")
+    if value.startswith("https://t.me/"):
+        value = value[len("https://t.me/") :]
+    elif value.startswith("http://t.me/"):
+        value = value[len("http://t.me/") :]
+    elif value.startswith("t.me/"):
+        value = value[len("t.me/") :]
+    value = value.strip().strip("/")
+    if not value:
+        raise ValueError("Telegram channel is required")
+    if not value.startswith("@"):
+        value = f"@{value}"
+    return value
+
+
+def _update_checkpoint_cursor_for_handle(cursor: dict[str, Any] | None, tg_channel: str) -> dict[str, Any]:
+    payload = dict(cursor or {})
+    peer = payload.get("telegram_peer") or {}
+    if not isinstance(peer, dict):
+        peer = {}
+    if peer.get("entity_id"):
+        payload["telegram_peer"] = {
+            **peer,
+            "username": tg_channel.lstrip("@"),
+        }
+    return payload
 
 
 @router.get("/catalog")
@@ -337,6 +372,94 @@ async def update_source_vision_policy(source_id: str, payload: SourceVisionUpdat
         "status": "ok",
         "id": source_id,
         "vision": normalized_extra.get("vision") or {},
+    }
+
+
+@router.patch("/{source_id}/telegram-handle")
+async def update_source_telegram_handle(source_id: str, payload: SourceTelegramHandleUpdate):
+    try:
+        normalized_channel = _normalize_telegram_channel(payload.tg_channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    engine = get_engine()
+    async with AsyncSession(engine) as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT s.id, s.source_type, s.url, s.tg_channel, s.extra, sc.cursor_json
+                FROM sources s
+                LEFT JOIN source_checkpoints sc ON sc.source_id = s.id
+                WHERE s.id = :id
+                """
+            ),
+            {"id": source_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Source not found")
+        if canonical_source_type(row.get("source_type", "")) != "telegram":
+            raise HTTPException(status_code=400, detail="Source is not a Telegram source")
+
+        try:
+            _, _, tg_channel, _ = validate_source_payload(
+                row["source_type"],
+                row.get("url"),
+                normalized_channel,
+                row.get("extra") or {},
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        checkpoint_cursor = _normalize_checkpoint_cursor(row.get("cursor_json"))
+        updated_cursor = _update_checkpoint_cursor_for_handle(checkpoint_cursor, tg_channel or normalized_channel)
+
+        await session.execute(
+            text(
+                """
+                UPDATE sources
+                SET tg_channel = :tg_channel,
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": source_id, "tg_channel": tg_channel or normalized_channel},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO source_checkpoints (
+                    source_id, cursor_json, last_error, updated_at
+                )
+                VALUES (
+                    :source_id, CAST(:cursor_json AS jsonb), NULL, NOW()
+                )
+                ON CONFLICT (source_id) DO UPDATE SET
+                    cursor_json = CAST(:cursor_json AS jsonb),
+                    last_error = NULL,
+                    updated_at = NOW()
+                """
+            ),
+            {
+                "source_id": source_id,
+                "cursor_json": json.dumps(updated_cursor),
+            },
+        )
+        await session.commit()
+
+    diagnostics = _build_telegram_diagnostics(
+        {
+            "source_type": "telegram",
+            "tg_channel": tg_channel or normalized_channel,
+            "cursor_json": updated_cursor,
+            "last_error": None,
+        }
+    )
+    return {
+        "status": "ok",
+        "id": source_id,
+        "tg_channel": tg_channel or normalized_channel,
+        "telegram_diagnostics": diagnostics,
     }
 
 

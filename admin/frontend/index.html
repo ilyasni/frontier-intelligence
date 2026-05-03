@@ -834,6 +834,12 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;');
 }
 
+function escapeHtmlAttr(value) {
+  return escapeHtml(value)
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function apiGet(url) {
   return fetch(API + url).then(async (r) => {
     if (!r.ok) throw new Error(await r.text());
@@ -1769,6 +1775,9 @@ async function loadSources() {
     const recommendation = src.recommended_content_mode || '-';
     const errorText = src.last_error || src.last_run_error_text || '';
     const telegramDiag = renderTelegramDiagnostics(src.telegram_diagnostics);
+    const telegramActions = src.source_type === 'telegram'
+      ? `<button class="btn btn-outline btn-sm" onclick="editTelegramHandle('${src.id}', '${escapeHtmlAttr(src.tg_channel || '')}', '${escapeHtmlAttr(src.telegram_diagnostics?.resolved_username || '')}')">${src.telegram_diagnostics?.status === 'stable' ? 'Handle' : 'Fix handle'}</button>`
+      : '';
     return `
     <div class="card" style="display:flex;justify-content:space-between;align-items:flex-start">
       <div style="flex:1">
@@ -1784,6 +1793,7 @@ async function loadSources() {
         ${errorText ? `<div style="font-size:11px;color:#ef4444;margin-top:4px">${escapeHtml(errorText)}</div>` : ''}
       </div>
       <div style="display:flex;gap:8px">
+        ${telegramActions}
         <button class="btn btn-outline btn-sm" onclick="editSourceVision('${src.id}', '${vision.mode}', ${vision.max_media_bytes})">Vision</button>
         <button class="btn btn-outline btn-sm" onclick="toggleSource('${src.id}')">
           ${src.is_enabled ? 'Disable' : 'Enable'}
@@ -1968,6 +1978,28 @@ async function editSourceVision(id, currentMode, currentMaxBytes) {
   if (!resp.ok) {
     let msg = 'Failed to update vision policy';
     try { const err = await resp.json(); msg = err.detail || JSON.stringify(err); } catch (e) {}
+    return alert(msg);
+  }
+  loadSources();
+}
+
+async function editTelegramHandle(id, currentChannel, resolvedUsername) {
+  const suggested = resolvedUsername ? '@' + resolvedUsername : (currentChannel || '');
+  const value = prompt('Telegram handle: @channel or t.me/channel', suggested);
+  if (value == null) return;
+  const nextHandle = value.trim();
+  if (!nextHandle) return alert('Telegram handle is required');
+  const resp = await fetch(API + '/api/sources/' + encodeURIComponent(id) + '/telegram-handle', {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ tg_channel: nextHandle }),
+  });
+  if (!resp.ok) {
+    let msg = 'Failed to update Telegram handle';
+    try {
+      const err = await resp.json();
+      msg = err.detail || JSON.stringify(err);
+    } catch (e) {}
     return alert(msg);
   }
   loadSources();
