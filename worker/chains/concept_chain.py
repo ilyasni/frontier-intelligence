@@ -83,11 +83,6 @@ class ConceptChain:
 
     async def run(self, content: str) -> list[dict]:
         """Returns list of {name, category, weight} dicts."""
-        if not content.strip():
-            return []
-        if hasattr(self.client, "refresh_runtime_overrides"):
-            await self.client.refresh_runtime_overrides()
-
         prompt_model = (
             self.client.route_model_for_task("concepts")
             if hasattr(self.client, "route_model_for_task")
@@ -99,6 +94,21 @@ class ConceptChain:
         prompt_provider = "gigachat"
         if hasattr(self.client, "routing_settings"):
             prompt_provider = self.client.routing_settings.route_for_task("concepts").provider
+        if not content.strip():
+            self.last_meta = {
+                "provider": prompt_provider,
+                "requested_model": prompt_model,
+                "actual_model": "",
+                "usage": None,
+                "escalated": False,
+                "budget_truncated": False,
+                "status": "not_called",
+                "skip_reason": "empty_content",
+                "error": "",
+            }
+            return []
+        if hasattr(self.client, "refresh_runtime_overrides"):
+            await self.client.refresh_runtime_overrides()
         budgeted = await self.client.budget_text(
             content,
             prompt_model,
@@ -120,12 +130,25 @@ class ConceptChain:
                 "usage": response.usage,
                 "escalated": False,
                 "budget_truncated": budgeted.truncated,
+                "status": "ok",
+                "skip_reason": "",
+                "error": "",
             }
             return valid
         except Exception as exc:
             logger.info("Concept chain primary attempt failed, escalating: %s", exc)
             if not self._setting_bool("gigachat_escalation_enabled", True):
-                self.last_meta = {}
+                self.last_meta = {
+                    "provider": prompt_provider,
+                    "requested_model": prompt_model,
+                    "actual_model": "",
+                    "usage": None,
+                    "escalated": False,
+                    "budget_truncated": budgeted.truncated,
+                    "status": "failed",
+                    "skip_reason": "",
+                    "error": str(exc)[:200],
+                }
                 return []
 
         fallback_provider, fallback_model = (
@@ -160,9 +183,22 @@ class ConceptChain:
                 "usage": response.usage,
                 "escalated": True,
                 "budget_truncated": budgeted.truncated,
+                "status": "ok",
+                "skip_reason": "",
+                "error": "",
             }
             return valid
         except Exception as exc:
             logger.warning("Concept chain failed after escalation: %s", exc)
-            self.last_meta = {}
+            self.last_meta = {
+                "provider": fallback_provider,
+                "requested_model": fallback_model,
+                "actual_model": "",
+                "usage": None,
+                "escalated": True,
+                "budget_truncated": budgeted.truncated,
+                "status": "failed",
+                "skip_reason": "",
+                "error": str(exc)[:200],
+            }
             return []

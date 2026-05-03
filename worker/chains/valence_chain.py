@@ -108,16 +108,6 @@ class ValenceChain:
         }
 
     async def run(self, content: str) -> dict[str, Any]:
-        if not content.strip():
-            return {
-                "valence": "neutral",
-                "signal_type": "other",
-                "confidence": 0.0,
-                "reasoning": "empty content",
-            }
-        if hasattr(self.client, "refresh_runtime_overrides"):
-            await self.client.refresh_runtime_overrides()
-
         prompt_model = (
             self.client.route_model_for_task("valence")
             if hasattr(self.client, "route_model_for_task")
@@ -129,6 +119,26 @@ class ValenceChain:
         prompt_provider = "gigachat"
         if hasattr(self.client, "routing_settings"):
             prompt_provider = self.client.routing_settings.route_for_task("valence").provider
+        if not content.strip():
+            self.last_meta = {
+                "provider": prompt_provider,
+                "requested_model": prompt_model,
+                "actual_model": "",
+                "usage": None,
+                "escalated": False,
+                "budget_truncated": False,
+                "status": "not_called",
+                "skip_reason": "empty_content",
+                "error": "",
+            }
+            return {
+                "valence": "neutral",
+                "signal_type": "other",
+                "confidence": 0.0,
+                "reasoning": "empty content",
+            }
+        if hasattr(self.client, "refresh_runtime_overrides"):
+            await self.client.refresh_runtime_overrides()
         budgeted = await self.client.budget_text(
             content,
             prompt_model,
@@ -147,12 +157,25 @@ class ValenceChain:
                 "usage": response.usage,
                 "escalated": False,
                 "budget_truncated": budgeted.truncated,
+                "status": "ok",
+                "skip_reason": "",
+                "error": "",
             }
             return result
         except Exception as exc:
             logger.info("Valence chain primary attempt failed, escalating: %s", exc)
             if not self._setting_bool("gigachat_escalation_enabled", True):
-                self.last_meta = {}
+                self.last_meta = {
+                    "provider": prompt_provider,
+                    "requested_model": prompt_model,
+                    "actual_model": "",
+                    "usage": None,
+                    "escalated": False,
+                    "budget_truncated": budgeted.truncated,
+                    "status": "failed",
+                    "skip_reason": "",
+                    "error": str(exc)[:200],
+                }
                 return {
                     "valence": "neutral",
                     "signal_type": "other",
@@ -190,11 +213,24 @@ class ValenceChain:
                 "usage": response.usage,
                 "escalated": True,
                 "budget_truncated": budgeted.truncated,
+                "status": "ok",
+                "skip_reason": "",
+                "error": "",
             }
             return result
         except Exception as exc:
             logger.warning("Valence chain failed after escalation: %s", exc)
-            self.last_meta = {}
+            self.last_meta = {
+                "provider": fallback_provider,
+                "requested_model": fallback_model,
+                "actual_model": "",
+                "usage": None,
+                "escalated": True,
+                "budget_truncated": budgeted.truncated,
+                "status": "failed",
+                "skip_reason": "",
+                "error": str(exc)[:200],
+            }
             return {
                 "valence": "neutral",
                 "signal_type": "other",

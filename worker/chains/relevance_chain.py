@@ -12,7 +12,7 @@ from pydantic.fields import FieldInfo
 
 from shared.config import get_settings
 from shared.metrics import note_llm_fallback
-from worker.gigachat_client import GigaChatClient, GigaChatResponse
+from worker.gigachat_client import GigaChatClient, GigaChatResponse, GigaChatUsage
 from worker.llm_json import parse_llm_json_object
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,48 @@ class RelevanceChain:
             return default
         return float(value)
 
+    def _route_context(self) -> tuple[str, str]:
+        prompt_model = (
+            self.client.route_model_for_task("relevance")
+            if hasattr(self.client, "route_model_for_task")
+            else (
+                self._setting_str("gigachat_model_relevance").strip()
+                or self._setting_str("gigachat_model_lite", "GigaChat-2")
+            )
+        )
+        prompt_provider = "gigachat"
+        if hasattr(self.client, "routing_settings"):
+            prompt_provider = self.client.routing_settings.route_for_task("relevance").provider
+        return prompt_model, prompt_provider
+
+    @staticmethod
+    def _result_meta(
+        *,
+        provider: str,
+        requested_model: str,
+        actual_model: str = "",
+        model: str = "",
+        usage: GigaChatUsage | None = None,
+        status: str = "ok",
+        skip_reason: str = "",
+        error: str = "",
+        escalated: bool = False,
+        budget_truncated: bool = False,
+    ) -> dict[str, Any]:
+        actual = actual_model or model
+        return {
+            "_usage": usage or GigaChatUsage(),
+            "_provider": provider,
+            "_requested_model": requested_model,
+            "_actual_model": actual,
+            "_model": model or actual,
+            "_llm_status": status,
+            "_llm_skip_reason": skip_reason,
+            "_llm_error": error[:200],
+            "_escalated": escalated,
+            "_budget_truncated": budget_truncated,
+        }
+
     async def _call(
         self,
         prompt: str,
@@ -197,22 +239,22 @@ class RelevanceChain:
         threshold: float = 0.6,
     ) -> dict:
         """Returns {"score": float, "category": str, "reasoning": str, "relevant": bool}."""
+        prompt_model, prompt_provider = self._route_context()
         if not content.strip():
-            return {"score": 0.0, "category": "other", "reasoning": "empty content", "relevant": False}
+            return {
+                "score": 0.0,
+                "category": "other",
+                "reasoning": "empty content",
+                "relevant": False,
+                **self._result_meta(
+                    provider=prompt_provider,
+                    requested_model=prompt_model,
+                    status="not_called",
+                    skip_reason="empty_content",
+                ),
+            }
         if hasattr(self.client, "refresh_runtime_overrides"):
             await self.client.refresh_runtime_overrides()
-
-        prompt_model = (
-            self.client.route_model_for_task("relevance")
-            if hasattr(self.client, "route_model_for_task")
-            else (
-                self._setting_str("gigachat_model_relevance").strip()
-                or self._setting_str("gigachat_model_lite", "GigaChat-2")
-            )
-        )
-        prompt_provider = "gigachat"
-        if hasattr(self.client, "routing_settings"):
-            prompt_provider = self.client.routing_settings.route_for_task("relevance").provider
         budgeted = await self.client.budget_text(
             content,
             prompt_model,
@@ -248,12 +290,14 @@ class RelevanceChain:
                 "category": category,
                 "reasoning": reasoning,
                 "relevant": self._is_relevant(score, category, threshold),
-                "_usage": response.usage,
-                "_provider": response.provider,
-                "_requested_model": response.requested_model or prompt_model,
-                "_actual_model": response.actual_model,
-                "_model": response.model,
-                "_budget_truncated": budgeted.truncated,
+                **self._result_meta(
+                    provider=response.provider,
+                    requested_model=response.requested_model or prompt_model,
+                    actual_model=response.actual_model,
+                    model=response.model,
+                    usage=response.usage,
+                    budget_truncated=budgeted.truncated,
+                ),
             }
         except Exception as exc:
             snippet = (raw or "")[:800].replace("\n", " ")
@@ -263,7 +307,22 @@ class RelevanceChain:
                 snippet,
             )
             if not self._setting_bool("gigachat_escalation_enabled", True):
-                return {"score": 0.0, "category": "other", "reasoning": str(exc), "relevant": False}
+                return {
+                    "score": 0.0,
+                    "category": "other",
+                    "reasoning": str(exc),
+                    "relevant": False,
+                    **self._result_meta(
+                        provider=response.provider if response else prompt_provider,
+                        requested_model=response.requested_model if response else prompt_model,
+                        actual_model=response.actual_model if response else "",
+                        model=response.model if response else "",
+                        usage=response.usage if response else None,
+                        status="failed",
+                        error=str(exc),
+                        budget_truncated=budgeted.truncated,
+                    ),
+                }
 
         fallback_provider, fallback_model = (
             self.client.route_fallback_for_task("relevance")
@@ -297,14 +356,29 @@ class RelevanceChain:
                 "category": category,
                 "reasoning": reasoning,
                 "relevant": self._is_relevant(score, category, threshold),
-                "_usage": response.usage,
-                "_provider": response.provider,
-                "_requested_model": response.requested_model or fallback_model,
-                "_actual_model": response.actual_model,
-                "_model": response.model,
-                "_budget_truncated": budgeted.truncated,
-                "_escalated": True,
+                **self._result_meta(
+                    provider=response.provider,
+                    requested_model=response.requested_model or fallback_model,
+                    actual_model=response.actual_model,
+                    model=response.model,
+                    usage=response.usage,
+                    escalated=True,
+                    budget_truncated=budgeted.truncated,
+                ),
             }
         except Exception as exc:
             logger.warning("Relevance chain failed after escalation: %s", exc)
-            return {"score": 0.0, "category": "other", "reasoning": str(exc), "relevant": False}
+            return {
+                "score": 0.0,
+                "category": "other",
+                "reasoning": str(exc),
+                "relevant": False,
+                **self._result_meta(
+                    provider=fallback_provider,
+                    requested_model=fallback_model,
+                    status="failed",
+                    error=str(exc),
+                    escalated=True,
+                    budget_truncated=budgeted.truncated,
+                ),
+            }

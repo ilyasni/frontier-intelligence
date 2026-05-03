@@ -1,4 +1,5 @@
 import sys
+import logging
 from datetime import UTC, datetime
 from importlib.machinery import ModuleSpec
 from types import ModuleType, SimpleNamespace
@@ -160,6 +161,11 @@ async def test_relevant_post_writes_lang_valence_and_region_to_qdrant() -> None:
             "signal_type": "closure",
             "confidence": 0.77,
             "reasoning": "plant pause",
+            "_llm": {
+                "provider": "",
+                "requested_model": "",
+                "actual_model": "",
+            },
         },
     )
 
@@ -253,3 +259,74 @@ async def test_media_post_is_marked_skipped_when_vision_disabled() -> None:
         },
     )
     task._update_vision_status.assert_awaited_once_with("post-vision-off", "skipped")
+
+
+async def test_empty_content_relevance_logs_not_called_status(caplog) -> None:
+    task = EnrichmentTask.__new__(EnrichmentTask)
+    task.settings = SimpleNamespace(
+        default_relevance_threshold=0.6,
+        indexing_max_retries=5,
+        vision_enabled=False,
+    )
+    task.redis = SimpleNamespace(xack=AsyncMock(), xadd=AsyncMock())
+    task.relevance = SimpleNamespace(
+        run=AsyncMock(
+            return_value={
+                "relevant": False,
+                "score": 0.0,
+                "category": "other",
+                "reasoning": "empty content",
+                "_provider": "wormsoft",
+                "_requested_model": "wormsoft/agent/medium",
+                "_actual_model": "",
+                "_usage": None,
+                "_llm_status": "not_called",
+                "_llm_skip_reason": "empty_content",
+                "_llm_error": "",
+            }
+        )
+    )
+    task.concept = SimpleNamespace(run=AsyncMock(), last_meta={})
+    task.valence = SimpleNamespace(run=AsyncMock(), last_meta={})
+    task.gigachat = SimpleNamespace(embed=AsyncMock())
+    task.qdrant = SimpleNamespace(delete_document=AsyncMock())
+    task.neo4j = SimpleNamespace(upsert_concepts=AsyncMock())
+    task._get_workspace = AsyncMock(
+        return_value={
+            "id": "disruption",
+            "name": "Disruption",
+            "categories": ["technology"],
+            "relevance_weights": {"threshold": 0.6},
+        }
+    )
+    task._get_source = AsyncMock(
+        return_value={
+            "id": "rss-source",
+            "is_enabled": True,
+            "source_type": "rss",
+        }
+    )
+    task._validate_source_event = lambda event, source: None
+    task._save_post = AsyncMock(return_value="post-empty")
+    task._update_indexing_status = AsyncMock()
+    task._upsert_media_group = AsyncMock()
+    task._update_post_enrichment = AsyncMock()
+    task._get_existing_qdrant_id = AsyncMock(return_value="")
+
+    with caplog.at_level(logging.INFO, logger="worker.tasks.enrichment_task"):
+        await task.process_event(
+            "5-0",
+            {
+                "workspace_id": "disruption",
+                "source_id": "rss-source",
+                "external_id": "45",
+                "content": "",
+                "has_media": False,
+                "media_urls": [],
+                "linked_urls": [],
+            },
+        )
+
+    assert "task=relevance" in caplog.text
+    assert "status=not_called" in caplog.text
+    assert "skip_reason=empty_content" in caplog.text

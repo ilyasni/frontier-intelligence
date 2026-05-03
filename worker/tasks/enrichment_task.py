@@ -55,6 +55,65 @@ class EnrichmentTask:
         self._workspace_cache_ts = 0
         self._source_cache: dict = {}
 
+    @staticmethod
+    def _relevance_log_meta(rel: dict) -> dict:
+        usage = rel.get("_usage")
+        status = str(rel.get("_llm_status") or "").strip().lower()
+        if not status:
+            status = "ok" if (rel.get("_provider") or rel.get("_requested_model") or rel.get("_actual_model")) else "unknown"
+        return {
+            "provider": rel.get("_provider", ""),
+            "requested_model": rel.get("_requested_model", ""),
+            "actual_model": rel.get("_actual_model", rel.get("_model", "")),
+            "usage": usage,
+            "escalated": bool(rel.get("_escalated")),
+            "status": status,
+            "skip_reason": rel.get("_llm_skip_reason", ""),
+            "error": rel.get("_llm_error", ""),
+        }
+
+    @staticmethod
+    def _chain_log_meta(meta: dict | None) -> dict:
+        payload = dict(meta or {})
+        usage = payload.get("usage")
+        status = str(payload.get("status") or "").strip().lower()
+        if not status:
+            status = "ok" if (payload.get("provider") or payload.get("requested_model") or payload.get("actual_model")) else "unknown"
+        return {
+            "provider": payload.get("provider", ""),
+            "requested_model": payload.get("requested_model", ""),
+            "actual_model": payload.get("actual_model", payload.get("model", "")),
+            "usage": usage,
+            "escalated": bool(payload.get("escalated")),
+            "status": status,
+            "skip_reason": payload.get("skip_reason", ""),
+            "error": payload.get("error", ""),
+        }
+
+    @staticmethod
+    def _log_llm_task(task: str, post_id: str, meta: dict) -> None:
+        usage = meta.get("usage")
+        status = meta.get("status", "unknown")
+        log_fn = logger.warning if status == "failed" else logger.info
+        log_fn(
+            "llm_task task=%s post=%s status=%s provider=%s requested_model=%s actual_model=%s "
+            "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s "
+            "skip_reason=%s error=%s escalation_reason=%s",
+            task,
+            post_id[:8],
+            status,
+            meta.get("provider", ""),
+            meta.get("requested_model", ""),
+            meta.get("actual_model", ""),
+            getattr(usage, "prompt_tokens", 0),
+            getattr(usage, "completion_tokens", 0),
+            getattr(usage, "precached_prompt_tokens", 0),
+            getattr(usage, "billable_tokens", 0),
+            meta.get("skip_reason", ""),
+            meta.get("error", ""),
+            "fallback_to_pro" if meta.get("escalated") else "",
+        )
+
     async def setup(self):
         await self.redis.connect()
         await self.redis.ensure_consumer_group(STREAM_IN, GROUP)
@@ -553,19 +612,7 @@ class EnrichmentTask:
                 )
                 joint_meta = getattr(self.relevance_concepts, "last_meta", {}) or {}
                 concept_meta = dict(joint_meta)
-                logger.info(
-                    "llm_task task=relevance_concepts post=%s provider=%s requested_model=%s actual_model=%s "
-                    "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
-                    post_id[:8],
-                    joint_meta.get("provider", ""),
-                    joint_meta.get("requested_model", ""),
-                    joint_meta.get("actual_model", joint_meta.get("model", "")),
-                    getattr(joint_meta.get("usage"), "prompt_tokens", 0),
-                    getattr(joint_meta.get("usage"), "completion_tokens", 0),
-                    getattr(joint_meta.get("usage"), "precached_prompt_tokens", 0),
-                    getattr(joint_meta.get("usage"), "billable_tokens", 0),
-                    "fallback_to_pro" if joint_meta.get("escalated") else "",
-                )
+                self._log_llm_task("relevance_concepts", post_id, self._chain_log_meta(joint_meta))
             else:
                 rel = await self.relevance.run(
                     content=event.content,
@@ -573,19 +620,7 @@ class EnrichmentTask:
                     categories=categories,
                     threshold=threshold,
                 )
-                logger.info(
-                    "llm_task task=relevance post=%s provider=%s requested_model=%s actual_model=%s "
-                    "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
-                    post_id[:8],
-                    rel.get("_provider", ""),
-                    rel.get("_requested_model", ""),
-                    rel.get("_actual_model", rel.get("_model", "")),
-                    getattr(rel.get("_usage"), "prompt_tokens", 0),
-                    getattr(rel.get("_usage"), "completion_tokens", 0),
-                    getattr(rel.get("_usage"), "precached_prompt_tokens", 0),
-                    getattr(rel.get("_usage"), "billable_tokens", 0),
-                    "fallback_to_pro" if rel.get("_escalated") else "",
-                )
+                self._log_llm_task("relevance", post_id, self._relevance_log_meta(rel))
 
             if not rel["relevant"]:
                 # Не даём исключению из вспомогательных шагов оставить embedding_status=pending без ACK
@@ -627,37 +662,13 @@ class EnrichmentTask:
             if concepts is None:
                 concepts = await self.concept.run(event.content)
                 concept_meta = getattr(self.concept, "last_meta", {}) or {}
-                logger.info(
-                    "llm_task task=concepts post=%s provider=%s requested_model=%s actual_model=%s "
-                    "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
-                    post_id[:8],
-                    concept_meta.get("provider", ""),
-                    concept_meta.get("requested_model", ""),
-                    concept_meta.get("actual_model", concept_meta.get("model", "")),
-                    getattr(concept_meta.get("usage"), "prompt_tokens", 0),
-                    getattr(concept_meta.get("usage"), "completion_tokens", 0),
-                    getattr(concept_meta.get("usage"), "precached_prompt_tokens", 0),
-                    getattr(concept_meta.get("usage"), "billable_tokens", 0),
-                    "fallback_to_pro" if concept_meta.get("escalated") else "",
-                )
+                self._log_llm_task("concepts", post_id, self._chain_log_meta(concept_meta))
 
             # Tags: high-weight concept names (weight >= 3)
             tags = [c["name"] for c in concepts if c.get("weight", 0) >= 3]
             valence = await self.valence.run(event.content)
             valence_meta = getattr(self.valence, "last_meta", {}) or {}
-            logger.info(
-                "llm_task task=valence post=%s provider=%s requested_model=%s actual_model=%s "
-                "prompt_tokens=%s completion_tokens=%s precached_prompt_tokens=%s billable_tokens=%s escalation_reason=%s",
-                post_id[:8],
-                valence_meta.get("provider", ""),
-                valence_meta.get("requested_model", ""),
-                valence_meta.get("actual_model", valence_meta.get("model", "")),
-                getattr(valence_meta.get("usage"), "prompt_tokens", 0),
-                getattr(valence_meta.get("usage"), "completion_tokens", 0),
-                getattr(valence_meta.get("usage"), "precached_prompt_tokens", 0),
-                getattr(valence_meta.get("usage"), "billable_tokens", 0),
-                "fallback_to_pro" if valence_meta.get("escalated") else "",
-            )
+            self._log_llm_task("valence", post_id, self._chain_log_meta(valence_meta))
             source_region, market_scope = self._source_metadata(source)
 
             embed_text = event.content[:2000]

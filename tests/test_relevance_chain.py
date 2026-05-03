@@ -82,3 +82,26 @@ async def test_relevance_chain_keeps_other_category_borderline_dropped():
     assert result["score"] == 0.5
     assert result["category"] == "other"
     assert result["relevant"] is False
+
+
+@pytest.mark.asyncio
+async def test_relevance_chain_empty_content_returns_diagnostic_meta():
+    route = SimpleNamespace(provider="wormsoft")
+    client = SimpleNamespace(
+        chat=AsyncMock(),
+        budget_text=AsyncMock(),
+        route_model_for_task=lambda task: "wormsoft/agent/medium",
+        routing_settings=SimpleNamespace(route_for_task=lambda task: route),
+    )
+
+    chain = RelevanceChain(client)
+    result = await chain.run("", "Disruption", ["technology"], threshold=0.6)
+
+    assert result["relevant"] is False
+    assert result["reasoning"] == "empty content"
+    assert result["_llm_status"] == "not_called"
+    assert result["_llm_skip_reason"] == "empty_content"
+    assert result["_provider"] == "wormsoft"
+    assert result["_requested_model"] == "wormsoft/agent/medium"
+    client.chat.assert_not_awaited()
+    client.budget_text.assert_not_awaited()
