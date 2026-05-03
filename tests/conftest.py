@@ -46,6 +46,12 @@ class _SessionRevokedError(Exception):
 class _UserDeactivatedBanError(Exception):
     pass
 
+class _UsernameNotOccupiedError(Exception):
+    pass
+
+class _UsernameInvalidError(Exception):
+    pass
+
 class _TelegramMessage:
     """Minimal stand-in for telethon.tl.types.Message used in isinstance checks."""
 
@@ -59,6 +65,8 @@ _telethon_errors = MagicMock()
 _telethon_errors.FloodWaitError = _FloodWaitError
 _telethon_errors.SessionRevokedError = _SessionRevokedError
 _telethon_errors.UserDeactivatedBanError = _UserDeactivatedBanError
+_telethon_errors.UsernameNotOccupiedError = _UsernameNotOccupiedError
+_telethon_errors.UsernameInvalidError = _UsernameInvalidError
 
 _telethon_types = MagicMock()
 _telethon_types.Message = _TelegramMessage

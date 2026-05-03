@@ -30,6 +30,10 @@ def _async_iter(items):
     return _gen()
 
 
+def _entity(username: str = "testchannel", entity_id: int = 1001):
+    return MagicMock(username=username, id=entity_id, title=username)
+
+
 @pytest.fixture()
 def source(monkeypatch):
     """Build a TelegramSource with all external deps mocked."""
@@ -66,6 +70,7 @@ async def test_new_album_included_in_events(source):
 
     msg = _make_msg(101, grouped_id=999)
     client_mock = MagicMock()
+    client_mock.get_entity = AsyncMock(return_value=_entity())
     client_mock.iter_messages.return_value = _async_iter([msg])
     client_mock.get_messages = AsyncMock(return_value=[])
     source.rotator.get_client = AsyncMock(return_value=client_mock)
@@ -85,6 +90,7 @@ async def test_cached_album_skipped(source):
 
     msg = _make_msg(102, grouped_id=888)
     client_mock = MagicMock()
+    client_mock.get_entity = AsyncMock(return_value=_entity())
     client_mock.iter_messages.return_value = _async_iter([msg])
     client_mock.get_messages = AsyncMock(return_value=[])
     source.rotator.get_client = AsyncMock(return_value=client_mock)
@@ -103,6 +109,7 @@ async def test_duplicate_album_in_same_batch_deduplicated(source):
     msg1 = _make_msg(201, grouped_id=777)
     msg2 = _make_msg(202, grouped_id=777)  # same album
     client_mock = MagicMock()
+    client_mock.get_entity = AsyncMock(return_value=_entity())
     client_mock.iter_messages.return_value = _async_iter([msg1, msg2])
     client_mock.get_messages = AsyncMock(return_value=[])
     source.rotator.get_client = AsyncMock(return_value=client_mock)
@@ -123,6 +130,7 @@ async def test_setex_called_after_successful_xadd(source):
 
     msg = _make_msg(301, grouped_id=666)
     client_mock = MagicMock()
+    client_mock.get_entity = AsyncMock(return_value=_entity())
     client_mock.iter_messages.return_value = _async_iter([msg])
     client_mock.get_messages = AsyncMock(return_value=[])
     source.rotator.get_client = AsyncMock(return_value=client_mock)
@@ -145,6 +153,7 @@ async def test_setex_not_called_on_xadd_failure(source):
 
     msg = _make_msg(401, grouped_id=555)
     client_mock = MagicMock()
+    client_mock.get_entity = AsyncMock(return_value=_entity())
     client_mock.iter_messages.return_value = _async_iter([msg])
     client_mock.get_messages = AsyncMock(return_value=[])
     source.rotator.get_client = AsyncMock(return_value=client_mock)
@@ -166,7 +175,9 @@ async def test_album_expansion_merges_get_messages(source):
     msg1 = _make_msg(501, grouped_id=333)
     msg_mid = _make_msg(502, grouped_id=333)
     msg3 = _make_msg(503, grouped_id=333)
+    entity = _entity()
     client_mock = MagicMock()
+    client_mock.get_entity = AsyncMock(return_value=entity)
     # iter_messages «пропустил» средний кадр (краевой кейс limit/window)
     client_mock.iter_messages.return_value = _async_iter([msg1, msg3])
     client_mock.get_messages = AsyncMock(return_value=[msg1, msg_mid, msg3])
@@ -178,5 +189,5 @@ async def test_album_expansion_merges_get_messages(source):
     assert events[0].external_id == "501"
     client_mock.get_messages.assert_called_once()
     call_kw = client_mock.get_messages.call_args
-    assert call_kw[0][0] == "@testchannel"
+    assert call_kw[0][0] == entity
     assert call_kw[1]["ids"] == [501, 502, 503]

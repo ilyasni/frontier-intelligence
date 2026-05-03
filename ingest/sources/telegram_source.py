@@ -33,9 +33,27 @@ def _make_s3_client():
 
 
 def _should_reset_client(exc: Exception) -> bool:
+    if isinstance(exc, TelegramSourceFetchError) or _is_semantic_username_error(exc):
+        return False
     if isinstance(exc, (RuntimeError, OSError, ConnectionError, asyncio.TimeoutError)):
         return True
     return "another coroutine is already waiting for incoming data" in str(exc).lower()
+
+
+def _is_semantic_username_error(exc: Exception) -> bool:
+    name = type(exc).__name__
+    if name in {"UsernameNotOccupiedError", "UsernameInvalidError"}:
+        return True
+    text = str(exc).lower()
+    return (
+        "no user has" in text
+        or "nobody is using this username" in text
+        or "username is unacceptable" in text
+    )
+
+
+class TelegramSourceFetchError(RuntimeError):
+    """Raised when a Telegram source cannot be resolved or fetched."""
 
 
 class TelegramSource(AbstractSource):
@@ -62,6 +80,85 @@ class TelegramSource(AbstractSource):
         self._s3, self._s3_bucket = _make_s3_client()
         # Maps album_cache_key → True; populated after successful stream emit
         self._album_cache_keys: dict[str, str] = {}
+
+    def _checkpoint_peer(self) -> dict[str, Any]:
+        cursor = self.checkpoint_cursor()
+        peer = cursor.get("telegram_peer") or {}
+        return peer if isinstance(peer, dict) else {}
+
+    def _remember_resolved_entity(self, entity: Any) -> None:
+        entity_id = getattr(entity, "id", None)
+        if entity_id is None:
+            return
+        username = (getattr(entity, "username", None) or "").strip()
+        title = (getattr(entity, "title", None) or "").strip()
+        current = self.checkpoint_cursor()
+        updates = {
+            **current,
+            **(self._checkpoint_updates.get("cursor_json") or {}),
+            "telegram_peer": {
+                "entity_id": int(entity_id),
+                "username": username,
+                "title": title,
+            },
+        }
+        self._checkpoint_updates["cursor_json"] = updates
+
+    async def _resolve_target(self, client: TelegramClient) -> tuple[Any, str]:
+        configured_clean = str(self.channel or "").lstrip("@").strip()
+        peer = self._checkpoint_peer()
+        peer_id = peer.get("entity_id")
+        peer_username = str(peer.get("username") or "").strip().lstrip("@")
+
+        if peer_id:
+            try:
+                target = await client.get_input_entity(int(peer_id))
+                resolved_clean = peer_username or configured_clean
+                try:
+                    entity = await client.get_entity(target)
+                    self._remember_resolved_entity(entity)
+                    actual_username = str(getattr(entity, "username", None) or "").strip().lstrip("@")
+                    if actual_username:
+                        if configured_clean and configured_clean.lower() != actual_username.lower():
+                            logger.warning(
+                                "[%s] configured Telegram username %s differs from resolved username @%s; using cached entity_id=%s",
+                                self.source_id,
+                                self.channel,
+                                actual_username,
+                                peer_id,
+                            )
+                        resolved_clean = actual_username
+                except Exception as exc:
+                    logger.info(
+                        "[%s] cached Telegram peer refresh failed entity_id=%s err=%s",
+                        self.source_id,
+                        peer_id,
+                        exc,
+                    )
+                return target, resolved_clean or configured_clean
+            except Exception as exc:
+                logger.warning(
+                    "[%s] cached Telegram peer failed entity_id=%s err=%s; falling back to configured username %s",
+                    self.source_id,
+                    peer_id,
+                    exc,
+                    self.channel,
+                )
+
+        try:
+            entity = await client.get_entity(self.channel)
+            self._remember_resolved_entity(entity)
+            resolved_clean = (
+                str(getattr(entity, "username", None) or "").strip().lstrip("@")
+                or configured_clean
+            )
+            return entity, resolved_clean
+        except Exception as exc:
+            if _is_semantic_username_error(exc):
+                raise TelegramSourceFetchError(
+                    f"telegram_username_unresolved source={self.source_id} channel={self.channel}: {exc}"
+                ) from exc
+            raise
 
     def _has_media(self, msg: Message) -> bool:
         return isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument))
@@ -125,6 +222,7 @@ class TelegramSource(AbstractSource):
     async def _expand_album_frames(
         self,
         client: TelegramClient,
+        target: Any,
         grouped_id: str,
         msgs: list[Message],
     ) -> list[Message]:
@@ -146,7 +244,7 @@ class TelegramSource(AbstractSource):
             )
             return msgs_sorted
         try:
-            batch = await client.get_messages(self.channel, ids=list(range(min_id, max_id + 1)))
+            batch = await client.get_messages(target, ids=list(range(min_id, max_id + 1)))
         except Exception as exc:
             logger.warning(
                 "[%s] album grouped_id=%s get_messages failed: %s",
@@ -191,9 +289,13 @@ class TelegramSource(AbstractSource):
         albums: dict[str, list[Message]] = {}   # grouped_id → [msgs]
         singles: list[Message] = []
         seen_album_ids: set[str] = set()         # albums already in Redis cache
+        fetch_error: Exception | None = None
+        target: Any = self.channel
+        channel_clean = self.channel.lstrip("@")
 
         try:
-            async for msg in client.iter_messages(self.channel, limit=self.limit):
+            target, channel_clean = await self._resolve_target(client)
+            async for msg in client.iter_messages(target, limit=self.limit):
                 if not isinstance(msg, Message):
                     continue
                 if msg.date < since:
@@ -204,7 +306,7 @@ class TelegramSource(AbstractSource):
                 if grouped_id:
                     # Check Redis cache once per album group
                     if grouped_id not in albums and grouped_id not in seen_album_ids:
-                        cache_key = f"album_seen:{self.channel}:{grouped_id}"
+                        cache_key = f"album_seen:{self.source_id}:{grouped_id}"
                         already_seen = await self.redis.redis.exists(cache_key)
                         if already_seen:
                             seen_album_ids.add(grouped_id)
@@ -216,9 +318,11 @@ class TelegramSource(AbstractSource):
                     singles.append(msg)
 
         except FloodWaitError as exc:
+            fetch_error = exc
             logger.warning("[%s] FloodWait %ds", self.source_id, exc.seconds)
             await self.rotator.handle_error(exc)
         except Exception as exc:
+            fetch_error = exc
             if _should_reset_client(exc):
                 await self.rotator.reset_client(
                     preferred_idx=self.preferred_account_idx,
@@ -227,12 +331,14 @@ class TelegramSource(AbstractSource):
             logger.exception("[%s] fetch error: %s", self.source_id, exc)
             await self.rotator.handle_error(exc)
 
+        if fetch_error and not albums and not singles:
+            raise fetch_error
+
         events: list[PostParsedEvent] = []
-        channel_clean = self.channel.lstrip("@")
 
         # Process album groups
         for grouped_id, msgs in albums.items():
-            msgs_sorted = await self._expand_album_frames(client, grouped_id, msgs)
+            msgs_sorted = await self._expand_album_frames(client, target, grouped_id, msgs)
             # Pick text from whichever message has it
             text = next((self._text(m) for m in msgs_sorted if self._text(m)), "")
             # Канонический пост — самый ранний id в альбоме
@@ -254,7 +360,7 @@ class TelegramSource(AbstractSource):
                 )
 
             ext_id = str(canonical.id)
-            cache_key = f"album_seen:{self.channel}:{grouped_id}"
+            cache_key = f"album_seen:{self.source_id}:{grouped_id}"
             self._album_cache_keys[ext_id] = cache_key
 
             events.append(PostParsedEvent(
@@ -268,7 +374,7 @@ class TelegramSource(AbstractSource):
                 content=text,
                 linked_urls=build_linked_urls_for_telegram_messages(msgs_sorted, text),
                 url=f"https://t.me/{channel_clean}/{canonical.id}",
-                author=self.channel,
+                author=f"@{channel_clean}" if channel_clean else self.channel,
                 published_at=canonical.date,
             ))
 
@@ -302,7 +408,7 @@ class TelegramSource(AbstractSource):
                 content=txt,
                 linked_urls=build_linked_urls_for_telegram_messages([msg], txt),
                 url=f"https://t.me/{channel_clean}/{msg.id}",
-                author=self.channel,
+                author=f"@{channel_clean}" if channel_clean else self.channel,
                 published_at=msg.date,
             ))
 
