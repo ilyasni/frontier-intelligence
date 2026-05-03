@@ -713,7 +713,7 @@ sources:
     workspace_id: disruption
     source_type: telegram
     name: Yandex Auto
-    tg_channel: "@yandex_auto"
+    tg_channel: "@YandexAvto"
     schedule_cron: "*/30 * * * *"
     extra:
       quality_tier: trusted
@@ -773,7 +773,7 @@ sources:
     workspace_id: disruption
     source_type: telegram
     name: RBC Auto
-    tg_channel: "@rbc_auto"
+    tg_channel: "@anrbc"
     schedule_cron: "*/30 * * * *"
     extra:
       quality_tier: trusted
