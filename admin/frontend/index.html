@@ -1658,6 +1658,7 @@ async function loadSources() {
     const scoreBreakdown = src.score_breakdown || {};
     const recommendation = src.recommended_content_mode || '-';
     const errorText = src.last_error || src.last_run_error_text || '';
+    const telegramDiag = renderTelegramDiagnostics(src.telegram_diagnostics);
     return `
     <div class="card" style="display:flex;justify-content:space-between;align-items:flex-start">
       <div style="flex:1">
@@ -1669,6 +1670,7 @@ async function loadSources() {
         <div style="font-size:11px;color:#718096;margin-top:2px">runtime ${Number(scoreBreakdown.runtime_health || 0).toFixed(2)} · signal ${Number(scoreBreakdown.signal_yield || 0).toFixed(2)} · fresh ${Number(scoreBreakdown.freshness || 0).toFixed(2)}</div>
         <div style="font-size:11px;color:#a0aec0;margin-top:2px">vision: ${escapeHtml(vision.mode)} | max: ${formatSize(vision.max_media_bytes)}</div>
         ${runtime ? `<div style="font-size:11px;color:#718096;margin-top:4px">${runtime}</div>` : ''}
+        ${telegramDiag}
         ${errorText ? `<div style="font-size:11px;color:#ef4444;margin-top:4px">${escapeHtml(errorText)}</div>` : ''}
       </div>
       <div style="display:flex;gap:8px">
@@ -1680,6 +1682,24 @@ async function loadSources() {
       </div>
     </div>`;
   }).join('') || '<div style="color:#718096;padding:20px">No sources yet. Add a Telegram channel or RSS feed.</div>';
+}
+
+function renderTelegramDiagnostics(diag) {
+  if (!diag) return '';
+  const status = String(diag.status || 'pending');
+  const colorByStatus = {
+    stable: '#10b981',
+    drift: '#fbbf24',
+    unresolved: '#ef4444',
+    pending: '#9ca3af',
+    'cached-id': '#60a5fa',
+  };
+  const color = colorByStatus[status] || '#9ca3af';
+  const configured = diag.configured_channel || 'n/a';
+  const resolved = diag.resolved_username ? '@' + diag.resolved_username : 'n/a';
+  const entity = diag.entity_id != null ? ` | peer: ${escapeHtml(String(diag.entity_id))}` : '';
+  const title = diag.title ? ` | title: ${escapeHtml(diag.title)}` : '';
+  return `<div style="font-size:11px;color:${color};margin-top:4px">telegram: ${escapeHtml(status)} | configured: ${escapeHtml(configured)} | resolved: ${escapeHtml(resolved)}${entity}${title}</div>`;
 }
 
 function autoFillSourceId(val) {

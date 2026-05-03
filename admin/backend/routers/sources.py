@@ -22,6 +22,53 @@ from shared.source_definitions import (
 router = APIRouter()
 
 
+def _normalize_checkpoint_cursor(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _build_telegram_diagnostics(item: dict[str, Any]) -> dict[str, Any] | None:
+    if canonical_source_type(item.get("source_type", "")) != "telegram":
+        return None
+
+    configured_channel = str(item.get("tg_channel") or "").strip()
+    configured_username = configured_channel.lstrip("@").strip().lower()
+    checkpoint = _normalize_checkpoint_cursor(item.get("cursor_json"))
+    peer = checkpoint.get("telegram_peer") or {}
+    peer = peer if isinstance(peer, dict) else {}
+
+    resolved_username = str(peer.get("username") or "").strip().lstrip("@").lower()
+    entity_id = peer.get("entity_id")
+    last_error = str(item.get("last_error") or item.get("last_run_error_text") or "").strip()
+
+    status = "unresolved"
+    if entity_id and resolved_username and configured_username:
+        status = "stable" if resolved_username == configured_username else "drift"
+    elif entity_id:
+        status = "cached-id"
+    elif "telegram_username_unresolved" in last_error:
+        status = "unresolved"
+    else:
+        status = "pending"
+
+    return {
+        "status": status,
+        "configured_channel": configured_channel,
+        "configured_username": configured_username or None,
+        "resolved_username": resolved_username or None,
+        "entity_id": int(entity_id) if isinstance(entity_id, int | float) else entity_id,
+        "title": str(peer.get("title") or "").strip() or None,
+        "has_cached_peer": bool(entity_id),
+        "username_mismatch": bool(
+            configured_username and resolved_username and configured_username != resolved_username
+        ),
+    }
+
+
 class SourceCreate(BaseModel):
     id: str
     workspace_id: str
@@ -103,6 +150,7 @@ async def list_sources(workspace_id: str | None = None):
     sql = """
         SELECT
             s.*,
+            sc.cursor_json,
             sc.last_success_at,
             sc.last_error,
             sc.last_seen_published_at,
@@ -157,6 +205,7 @@ async def list_sources(workspace_id: str | None = None):
         for row in result.mappings().all():
             item = dict(row)
             item["source_type"] = canonical_source_type(item.get("source_type", ""))
+            item["telegram_diagnostics"] = _build_telegram_diagnostics(item)
             item.update(source_quality_payload(item))
             rows.append(item)
         return rows
