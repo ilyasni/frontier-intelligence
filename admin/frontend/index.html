@@ -296,14 +296,25 @@
   <!-- Pipeline -->
   <div class="page" id="page-pipeline">
     <h2>Pipeline</h2>
-    <div class="form-row" style="max-width:300px;margin-bottom:20px">
-      <select id="pipe-ws-filter" onchange="loadPipeline()">
-        <option value="">All workspaces</option>
-      </select>
+    <div class="toolbar">
+      <div class="form-row" style="max-width:300px">
+        <label>Workspace</label>
+        <select id="pipe-ws-filter" onchange="loadPipeline()">
+          <option value="">All workspaces</option>
+        </select>
+      </div>
+      <button class="btn btn-outline" onclick="loadPipeline()">Refresh</button>
+      <button class="btn btn-outline" onclick="runSignalAnalysis()">Run Signal Analysis</button>
+      <button class="btn btn-primary" onclick="runMissingSignals()">Run Missing Signals</button>
     </div>
     <div class="card">
       <h3>Scheduler</h3>
       <div id="pipe-scheduler" class="empty">Loading scheduler...</div>
+    </div>
+    <div class="card">
+      <h3>Manual Jobs</h3>
+      <div id="pipe-actions-status" class="empty">No manual job activity yet.</div>
+      <div id="pipe-manual-jobs" class="empty" style="margin-top:12px">Loading manual jobs...</div>
     </div>
     <div class="stats-grid" id="pipe-stats"></div>
     <div class="card">
@@ -2022,8 +2033,10 @@ async function bootstrapSources() {
 async function loadPipeline() {
   const ws = document.getElementById('pipe-ws-filter')?.value || '';
   const url = API + '/api/pipeline/stats' + (ws ? '?workspace_id=' + ws : '');
+  const manualJobsUrl = API + '/api/pipeline/jobs/manual?limit=8' + (ws ? '&workspace_id=' + encodeURIComponent(ws) : '');
   const scheduler = await fetch(API + '/api/pipeline/scheduler').then(r => r.json()).catch(() => ({}));
   const data = await fetch(url).then(r => r.json()).catch(() => ({}));
+  const manualJobs = await fetch(manualJobsUrl).then(r => r.json()).catch(() => ({}));
   const stats = data.stats || {};
 
   document.getElementById('pipe-scheduler').innerHTML = `
@@ -2038,6 +2051,22 @@ async function loadPipeline() {
   document.getElementById('pipe-stats').innerHTML = Object.entries(stats).map(([k, v]) =>
     `<div class="stat-card"><div class="stat-num">${v.count}</div><div class="stat-label">${k}</div></div>`
   ).join('') || '<div style="color:#718096;padding:20px">No data yet</div>';
+
+  const jobs = manualJobs.jobs || [];
+  document.getElementById('pipe-manual-jobs').innerHTML = jobs.length
+    ? `<table>
+        <thead><tr><th>Job</th><th>Status</th><th>Workspace</th><th>Started</th><th>Finished</th></tr></thead>
+        <tbody>${jobs.map(job => `
+          <tr>
+            <td>${escapeHtml(job.job_name || '')}</td>
+            <td>${badgeHtml(job.status || '')}</td>
+            <td>${escapeHtml(job.workspace_id || 'all')}</td>
+            <td>${formatTime(job.started_at)}</td>
+            <td>${formatTime(job.finished_at)}</td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`
+    : '<div class="empty">No manual jobs yet</div>';
 
   const tbody = document.getElementById('pipe-recent');
   tbody.innerHTML = (data.recent || []).map(r =>
@@ -2055,6 +2084,35 @@ async function loadPipeline() {
 async function reprocess(postId) {
   await fetch(API + '/api/pipeline/reprocess/' + postId, { method: 'POST' });
   setTimeout(loadPipeline, 1500);
+}
+
+async function runPipelineJob(route, label) {
+  const ws = document.getElementById('pipe-ws-filter')?.value || '';
+  const status = document.getElementById('pipe-actions-status');
+  status.innerHTML = `<span class="badge badge-pending">${escapeHtml(label)}</span> queued...`;
+  const resp = await fetch(API + route, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ workspace_id: ws || null, wait: true }),
+  });
+  let payload = {};
+  try {
+    payload = await resp.json();
+  } catch (e) {}
+  if (!resp.ok) {
+    status.innerHTML = `<span class="badge badge-error">failed</span> ${escapeHtml(payload.detail || label + ' failed')}`;
+    return;
+  }
+  status.innerHTML = `<span class="badge badge-done">done</span> ${escapeHtml(label)}: ${escapeHtml(JSON.stringify(payload))}`;
+  await loadPipeline();
+}
+
+async function runSignalAnalysis() {
+  await runPipelineJob('/api/pipeline/run-signal-analysis', 'signal analysis');
+}
+
+async function runMissingSignals() {
+  await runPipelineJob('/api/pipeline/run-missing-signals', 'missing signals');
 }
 
 async function loadClusters() {

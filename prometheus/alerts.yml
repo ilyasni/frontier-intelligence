@@ -84,7 +84,7 @@ groups:
           description: "Admin could not fetch Wormsoft limits/pricing for more than 15 minutes. Check DNS, outbound access, API key validity, and Wormsoft control endpoints."
 
       - alert: FrontierWormsoftFallbackBurst
-        expr: sum by (service, task, reason) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft"}[15m])) >= 5
+        expr: sum by (service, task, reason) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason=~"API.*|model_not_found|provider_unavailable"}[15m])) >= 3
         for: 5m
         labels:
           severity: warning
@@ -92,7 +92,28 @@ groups:
           notify: telegram
         annotations:
           summary: "Wormsoft fallback traffic is spiking"
-          description: "Wormsoft fallbacks for {{ $labels.service }}/{{ $labels.task }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Expect quality drift or higher Giga spend until the route stabilizes."
+          description: "Wormsoft provider fallbacks for {{ $labels.service }}/{{ $labels.task }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Check Wormsoft availability, timeout profile, or model routing."
+
+      - alert: FrontierWormsoftChainEscalationBurst
+        expr: |
+          (
+            sum by (service, task) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason="chain_escalation"}[15m]))
+            /
+            clamp_min(
+              sum by (service, task) (increase(frontier_llm_requests_total{service="worker",provider="wormsoft",status="ok"}[15m])),
+              1
+            )
+          ) >= 0.25
+          and
+          sum by (service, task) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason="chain_escalation"}[15m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Wormsoft relevance gray-zone escalations are spiking"
+          description: "Quality escalations from Wormsoft to Giga for {{ $labels.service }}/{{ $labels.task }} exceeded 25% with at least 5 events in 15 minutes. This usually means gray-zone or ambiguous relevance cases, not a provider outage, but it can raise Giga spend."
 
       - alert: FrontierRedisStreamLagHigh
         expr: frontier_redis_stream_lag{service="admin"} > 1000

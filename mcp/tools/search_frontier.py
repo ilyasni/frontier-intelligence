@@ -284,7 +284,7 @@ async def run_search_request(
     hydrated = [_maybe_hydrate_score(hit, score_map) for hit in hits]
     hydrated.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     external_results: list[dict[str, Any]] = []
-    if settings.searxng_enabled and len(hydrated) < max(2, min(req.limit, 3)):
+    if settings.searxng_enabled:
         try:
             external_results = await SearXNGClient(service_name="mcp").search(
                 req.query,
