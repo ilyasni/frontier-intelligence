@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     wormsoft_api_key: str = Field("", alias="WORMSOFT_API_KEY")
     wormsoft_model_default: str = Field("wormsoft/agent/medium", alias="WORMSOFT_MODEL_DEFAULT")
     wormsoft_model_mcp_synthesis: str = Field("", alias="WORMSOFT_MODEL_MCP_SYNTHESIS")
+    wormsoft_max_simultaneous_requests: int = Field(
+        1,
+        alias="WORMSOFT_MAX_SIMULTANEOUS_REQUESTS",
+    )
+    wormsoft_min_request_interval_ms: int = Field(
+        2000,
+        alias="WORMSOFT_MIN_REQUEST_INTERVAL_MS",
+    )
+    wormsoft_max_retries: int = Field(0, alias="WORMSOFT_MAX_RETRIES")
     openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
     openrouter_base_url: str = Field("https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL")
     openrouter_referrer: str = Field(

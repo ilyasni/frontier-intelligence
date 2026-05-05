@@ -23,10 +23,13 @@ class WormsoftTextClient:
         settings = get_settings()
         self._settings = settings
         self._service_name = service_name
-        self._request_sem = asyncio.Semaphore(max(1, int(settings.gigachat_max_simultaneous_requests or 1)))
+        self._request_sem = asyncio.Semaphore(
+            max(1, int(settings.wormsoft_max_simultaneous_requests or 1))
+        )
         self._min_request_interval_s = max(
             0.0,
-            float(int(getattr(settings, "gigachat_min_request_interval_ms", 250) or 250)) / 1000.0,
+            float(int(getattr(settings, "wormsoft_min_request_interval_ms", 2000) or 2000))
+            / 1000.0,
         )
         self._request_gap_lock = asyncio.Lock()
         self._last_request_started_at = 0.0
@@ -35,7 +38,7 @@ class WormsoftTextClient:
             base_url=settings.wormsoft_api_base.rstrip("/"),
             api_key=settings.wormsoft_api_key or "missing",
             http_client=self._http_client,
-            max_retries=2,
+            max_retries=max(0, int(settings.wormsoft_max_retries or 0)),
         )
 
     async def close(self) -> None:

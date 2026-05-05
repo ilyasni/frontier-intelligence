@@ -12,13 +12,20 @@
 
 ### 1. Wormsoft 429 mitigation
 
-Сейчас production всё ещё ловит устойчивые `WormsoftRateLimitBurst` по `relevance`, `concepts`, `valence`.
+Базовый mitigation уже внедрён:
+
+- у `WormsoftTextClient` появились отдельные `WORMSOFT_MAX_SIMULTANEOUS_REQUESTS`,
+  `WORMSOFT_MIN_REQUEST_INTERVAL_MS`, `WORMSOFT_MAX_RETRIES`;
+- production pacing отвязан от `gigachat_*` defaults;
+- SDK retries для Wormsoft отключены, чтобы не умножать `429`.
+
+Сейчас нужно дотюнить и донаблюдать:
 
 Что сделать:
 
-- проверить фактический live RPM / burst profile у `wormsoft/agent/medium`;
-- уменьшить concurrency или поднять inter-request gap именно для wormsoft-text path;
-- если 429 сохраняются, вынести часть text fallback трафика раньше в `OpenRouter/Polza`, а не дожидаться provider failure;
+- проверить фактический live RPM / burst profile у `wormsoft/agent/medium` после нескольких reset окон;
+- при необходимости ещё поднять `WORMSOFT_MIN_REQUEST_INTERVAL_MS`;
+- если 429 сохраняются даже после pacing-tune, вынести часть text fallback трафика раньше в `OpenRouter/Polza`, а не дожидаться provider failure;
 - добавить короткий runbook: какие Prometheus queries смотреть при всплеске `wormsoft` rate-limit.
 
 ### 2. OpenRouter paid credit semantics
