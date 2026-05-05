@@ -19,6 +19,8 @@
   [TODO_MULTI_LLM_ROLLOUT.md](./TODO_MULTI_LLM_ROLLOUT.md)
 - Runtime mode overlays:
   [runtime-modes.md](./runtime-modes.md)
+- Workspace hygiene and temporary-file policy live in:
+  [server-git-workflow.md](./server-git-workflow.md)
 
 ## Current Runtime
 

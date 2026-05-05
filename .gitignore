@@ -86,3 +86,8 @@ desktop.ini
 # Temporary files
 test_write.txt
 *.tmp
+tmp/*
+!tmp/.gitkeep
+tmp_*
+wormsoft_*.js
+wormsoft_*.html

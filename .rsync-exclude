@@ -85,3 +85,7 @@ desktop.ini
 # Temporary files
 test_write.txt
 *.tmp
+tmp/
+tmp_*
+wormsoft_*.js
+wormsoft_*.html

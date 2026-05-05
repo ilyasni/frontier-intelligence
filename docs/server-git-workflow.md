@@ -1,6 +1,6 @@
 # Server-First Git Workflow
 
-Last updated: 2026-04-18.
+Last updated: 2026-05-05.
 
 This project now treats the live server tree as the first git baseline:
 
@@ -17,7 +17,7 @@ secrets, sessions, database volumes, or local editor/agent tooling.
 
 - Server working tree: canonical baseline for the **initial** git commit (done).
 - Git remote (`origin`): shared history after the first push (ongoing).
-- Local Windows workspace: development checkout; keep it aligned with **`git pull --ff-only`** after server-side commits.
+- Local Windows workspace: rsync-synced development tree. In the current setup, git operations happen on the server unless and until the local workspace is recreated from the remote repository.
 
 Do not treat an outdated local tree as authoritative over `origin`; refresh
 from git before large edits or rsync pushes.
@@ -77,7 +77,7 @@ should not be public.
 
 ## Local Development After Baseline
 
-Once the remote exists, recreate or refresh the local workspace from git:
+If you want a full local git checkout, recreate or refresh the local workspace from git:
 
 ```powershell
 cd D:\Workspace
@@ -88,7 +88,21 @@ If reusing the existing local folder, first make a backup, then compare it
 against the freshly cloned tree. Do not push the older local tree over the
 server baseline.
 
-Recommended flow:
+Current operational flow for this project:
+
+```powershell
+# edit locally
+.\scripts\sync-push.ps1
+
+# commit / branch / push on the server
+ssh frontier-intelligence
+cd /opt/frontier-intelligence
+git status --short
+git commit ...
+git push
+```
+
+If the local workspace is later converted into a real git checkout, the recommended flow becomes:
 
 ```powershell
 git checkout -b feature/<name>
@@ -118,8 +132,40 @@ image and recreate the container from the updated server tree.
 
 Important: `rsync` pushes the bytes from the local working tree as-is. It does
 not re-normalize line endings on the server. Keep server-side `*.sh` scripts in
-LF locally, otherwise `bash` on the server can fail with errors such as
+`LF`, otherwise `bash` on the server can fail with errors such as
 `pipefail\r: invalid option name` after sync.
+
+## Workspace Hygiene
+
+Keep the repository root small and predictable.
+
+Allowed in the root:
+
+- project manifests and top-level config (`docker-compose.yml`, `pyproject.toml`, `.env.example`, `.gitignore`);
+- short operator docs and project instructions;
+- stable source directories (`admin/`, `worker/`, `shared/`, `docs/`, `scripts/`, and so on).
+
+Do not leave ad-hoc artifacts in the root:
+
+- temporary images and smoke-test payloads;
+- downloaded vendor bundles or web-inspection dumps such as `wormsoft_*.js`;
+- one-off scratch files like `test_write.txt`;
+- local `.env` copies.
+
+Temporary investigation files should go under:
+
+```text
+tmp/
+```
+
+`tmp/` is intentionally excluded from rsync pushes so ad-hoc local artifacts do
+not leak into the server tree. In git-managed checkouts you may keep a tracked
+placeholder such as `tmp/.gitkeep`, but temporary payloads themselves should
+stay untracked.
+
+Server-only backups such as `.env` snapshots should live **outside** the repo tree,
+for example under `~/frontier-backups/frontier-intelligence/`, not in
+`/opt/frontier-intelligence/`.
 
 If the server has unstable access to Docker Hub, set `PYTHON_BASE_IMAGE` in the
 server `.env` to a reachable mirror/internal registry for Python-based
