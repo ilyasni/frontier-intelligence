@@ -206,22 +206,25 @@ class RelevanceChain:
             provider_override=provider_override,
         )
 
-    def _needs_escalation(
+    def _escalation_reason(
         self,
         result: dict[str, Any],
         category: str,
         threshold: float,
         coerced_from: str | None,
-    ) -> bool:
+    ) -> str | None:
         if not self._setting_bool("gigachat_escalation_enabled", True):
-            return False
+            return None
         score = float(result.get("score", 0))
         gray_zone = max(0.0, self._setting_float("gigachat_relevance_gray_zone", 0.1))
-        if abs(score - threshold) <= gray_zone:
-            return True
         if category == "other" and coerced_from:
-            return True
-        return False
+            return "ambiguous_category"
+
+        lower_bound = max(0.0, threshold - gray_zone)
+        if category != "other" and lower_bound <= score < threshold:
+            return "below_threshold_gray_zone"
+
+        return None
 
     def _is_relevant(self, score: float, category: str, threshold: float) -> bool:
         if score >= threshold:
@@ -282,8 +285,9 @@ class RelevanceChain:
             reasoning = str(result.get("reasoning", ""))[:500]
             category, coerced_from = normalize_relevance_category(result.get("category", "other"), categories)
 
-            if self._needs_escalation(result, category, threshold, coerced_from):
-                raise ValueError("gray_zone_or_ambiguous_category")
+            escalation_reason = self._escalation_reason(result, category, threshold, coerced_from)
+            if escalation_reason:
+                raise ValueError(escalation_reason)
 
             return {
                 "score": score,

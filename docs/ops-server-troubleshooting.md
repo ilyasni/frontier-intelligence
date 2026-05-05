@@ -16,6 +16,7 @@ export COMPOSE_PROFILES=core,ingest,worker,crawl,paddleocr,mcp,admin
 Дальше либо скрипт:
 
 ```bash
+bash scripts/server-prepare-base-images.sh worker crawl4ai
 bash scripts/server-build-stack.sh worker crawl4ai
 bash scripts/server-build-stack.sh   # все перечисленные сервисы с build
 ```
@@ -73,7 +74,7 @@ API при ошибке инференса отдаёт **503** `model_unavailab
 
 Если в логах worker всё ещё «fastembed not available», а в репозитории уже есть `fastembed` в `worker/Dockerfile`, значит **на сервере крутится старый образ**. Нужны **sync кода** и **пересборка** затронутых сервисов.
 
-**Практика (Docker Compose):** `docker compose build [SERVICE…]` пересобирает образы; `up -d --force-recreate` поднимает контейнеры с новым образом ([документация Compose](https://github.com/docker/compose/blob/main/docs/reference/compose_up.md) — recreation при смене конфигурации/образа).
+**Практика (Docker Compose):** `docker compose build [SERVICE…]` пересобирает образы; `up -d --force-recreate --wait` поднимает контейнеры с новым образом и ждёт readiness/health ([документация Compose](https://github.com/docker/compose/blob/main/docs/reference/compose_up.md) — recreation при смене конфигурации/образа).
 
 ```bash
 cd /opt/frontier-intelligence
@@ -85,9 +86,14 @@ bash scripts/server-deploy-rebuild.sh
 
 ```bash
 export COMPOSE_PROFILES=core,worker,mcp,crawl,paddleocr
+bash scripts/server-prepare-base-images.sh worker mcp crawl4ai paddleocr
 docker compose -f docker-compose.yml build --pull worker mcp crawl4ai paddleocr
-docker compose -f docker-compose.yml up -d --force-recreate worker mcp crawl4ai paddleocr
+docker compose -f docker-compose.yml up -d --force-recreate --wait worker mcp crawl4ai paddleocr
 ```
+
+Если build падал именно на `failed to resolve reference ... i/o timeout`, сначала подготовь base images отдельным шагом. Скрипт `server-prepare-base-images.sh` проверяет локальный cache Docker и делает `docker pull` только для отсутствующих base image, с retry и backoff.
+
+Если сам Docker Hub нестабилен для хоста, COPY-based Python services теперь поддерживают server-side override через `PYTHON_BASE_IMAGE` в `.env`. Это позволяет переключить сборку на внутренний registry/mirror без правок Dockerfile.
 
 Проверки:
 

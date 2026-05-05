@@ -13,13 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from admin.backend.db import get_engine
 from admin.backend.services.gigachat_balance import fetch_gigachat_balance
 from admin.backend.services.gigachat_weekly_report import fetch_gigachat_weekly_report
+from admin.backend.services.openrouter_catalog import fetch_openrouter_catalog
+from admin.backend.services.openrouter_health import fetch_openrouter_health_snapshot
+from admin.backend.services.openrouter_key import fetch_openrouter_key
+from admin.backend.services.openrouter_picker import fetch_openrouter_runtime_state
 from admin.backend.services.wormsoft_limits import fetch_wormsoft_limits
 from admin.backend.services.wormsoft_models import fetch_wormsoft_models
 from shared.config import get_settings
 from shared.llm_routing import (
-    LLMRoutingSettings,
     RUNTIME_LLM_ROUTING_DB_KEY,
     RUNTIME_LLM_ROUTING_REDIS_KEY,
+    LLMRoutingSettings,
     effective_llm_routing,
     llm_provider_options,
 )
@@ -81,7 +85,12 @@ async def _load_json_setting(key: str) -> tuple[dict | None, str | None]:
         if not isinstance(value, dict):
             value = {}
         updated_at = row["updated_at"]
-        return value, updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
+        updated_at_str = (
+            updated_at.isoformat()
+            if hasattr(updated_at, "isoformat")
+            else str(updated_at)
+        )
+        return value, updated_at_str
 
 
 async def _store_json_setting(key: str, payload: dict) -> str | None:
@@ -238,6 +247,10 @@ async def get_admin_settings():
             "gigachat_rc_joint_workspaces": settings.gigachat_rc_joint_workspaces,
             "gigachat_rc_joint_sources": settings.gigachat_rc_joint_sources,
             "admin_wormsoft_limits_refresh_cron": settings.admin_wormsoft_limits_refresh_cron,
+            "admin_openrouter_catalog_refresh_cron": settings.admin_openrouter_catalog_refresh_cron,
+            "admin_openrouter_key_refresh_cron": settings.admin_openrouter_key_refresh_cron,
+            "admin_openrouter_health_refresh_cron": settings.admin_openrouter_health_refresh_cron,
+            "admin_openrouter_reconcile_cron": settings.admin_openrouter_reconcile_cron,
             "sparse_vectors_enabled": settings.sparse_vectors_enabled,
             "searxng_enabled": settings.searxng_enabled,
             "searxng_timeout_seconds": settings.searxng_timeout_seconds,
@@ -264,12 +277,32 @@ async def get_admin_settings():
             "wormsoft": {
                 "api_base": settings.wormsoft_api_base,
                 "key_present": bool(settings.wormsoft_api_key),
-            }
+            },
+            "openrouter": {
+                "api_base": settings.openrouter_base_url,
+                "text_model": settings.openrouter_text_model,
+                "vision_model": settings.openrouter_vision_model,
+                "key_present": bool(settings.openrouter_api_key),
+                "free_rpm_throttle": settings.openrouter_free_rpm_throttle,
+                "free_rpd_soft_cap": settings.openrouter_free_rpd_soft_cap,
+                "picker_sticky_sec": settings.openrouter_picker_sticky_sec,
+                "health_probe_timeout_sec": settings.openrouter_health_probe_timeout_sec,
+                "health_probe_max_tokens": settings.openrouter_health_probe_max_tokens,
+            },
+            "polza": {
+                "api_base": settings.polza_base_url,
+                "text_model": settings.polza_text_model,
+                "synthesis_model": settings.polza_synthesis_model,
+                "vision_model": settings.polza_vision_model,
+                "key_present": bool(settings.polza_api_key),
+            },
         },
         "secrets": {
             "database_url_set": bool(settings.database_url),
             "gigachat_credentials_set": bool(settings.gigachat_credentials),
             "wormsoft_api_key_set": bool(settings.wormsoft_api_key),
+            "openrouter_api_key_set": bool(settings.openrouter_api_key),
+            "polza_api_key_set": bool(settings.polza_api_key),
             "neo4j_password_set": bool(settings.neo4j_password),
             "s3_access_key_set": bool(settings.s3_access_key_id),
             "s3_secret_key_set": bool(settings.s3_secret_access_key),
@@ -309,6 +342,26 @@ async def get_wormsoft_models():
 @router.get("/providers/wormsoft/limits")
 async def get_wormsoft_limits():
     return await fetch_wormsoft_limits()
+
+
+@router.get("/providers/openrouter/catalog")
+async def get_openrouter_catalog():
+    return await fetch_openrouter_catalog()
+
+
+@router.get("/providers/openrouter/key")
+async def get_openrouter_key():
+    return await fetch_openrouter_key()
+
+
+@router.get("/providers/openrouter/health")
+async def get_openrouter_health():
+    return await fetch_openrouter_health_snapshot()
+
+
+@router.get("/providers/openrouter/runtime")
+async def get_openrouter_runtime():
+    return await fetch_openrouter_runtime_state(service_name="admin")
 
 
 @router.get("/gigachat-balance")

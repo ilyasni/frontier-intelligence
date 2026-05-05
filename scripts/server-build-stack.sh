@@ -17,6 +17,7 @@ fi
 
 echo "COMPOSE_PROFILES=$COMPOSE_PROFILES"
 echo "build: ${SERVICES[*]}"
+bash scripts/server-prepare-base-images.sh "${SERVICES[@]}"
 docker compose -f docker-compose.yml \
   --profile core \
   --profile ingest \

@@ -576,6 +576,7 @@ class EnrichmentTask:
                         media_s3_keys=event.media_urls,
                         album_total_items=len(event.media_urls),
                         vision_mode=vision_mode,
+                        quality_tier=str(source.get("quality_tier") or "standard").strip().lower() or "standard",
                         max_media_bytes=max_media_bytes,
                     )
                     await self.redis.xadd(STREAM_VISION, vision_event.model_dump(mode="json"))

@@ -16,6 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from admin.backend.db import get_engine
 from admin.backend.services.gigachat_balance import fetch_gigachat_balance
+from admin.backend.services.openrouter_catalog import fetch_openrouter_catalog
+from admin.backend.services.openrouter_health import probe_openrouter_health
+from admin.backend.services.openrouter_key import fetch_openrouter_key
+from admin.backend.services.openrouter_picker import reconcile_openrouter_state
 from admin.backend.services.pipeline_jobs import (
     list_active_workspace_ids,
     refresh_source_scores,
@@ -33,6 +37,10 @@ _source_score_lock = asyncio.Lock()
 _cluster_lock = asyncio.Lock()
 _gigachat_balance_lock = asyncio.Lock()
 _wormsoft_limits_lock = asyncio.Lock()
+_openrouter_catalog_lock = asyncio.Lock()
+_openrouter_key_lock = asyncio.Lock()
+_openrouter_health_lock = asyncio.Lock()
+_openrouter_reconcile_lock = asyncio.Lock()
 _trend_alert_lock = asyncio.Lock()
 _manual_jobs_table_ready = False
 
@@ -54,6 +62,14 @@ def _manual_job_lock(job_name: str) -> asyncio.Lock | None:
         return _gigachat_balance_lock
     if job_name == "refresh_wormsoft_limits":
         return _wormsoft_limits_lock
+    if job_name == "refresh_openrouter_catalog":
+        return _openrouter_catalog_lock
+    if job_name == "refresh_openrouter_key":
+        return _openrouter_key_lock
+    if job_name == "probe_openrouter_health":
+        return _openrouter_health_lock
+    if job_name == "reconcile_openrouter_state":
+        return _openrouter_reconcile_lock
     return None
 
 
@@ -353,8 +369,13 @@ async def launch_manual_job(
                 )
                 stdout, stderr = await process.communicate()
             if process.returncode != 0:
+                err_text = (
+                    stderr
+                    or stdout
+                    or b"manual_job_subprocess_failed"
+                ).decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
-                    (stderr or stdout or b"manual_job_subprocess_failed").decode("utf-8", errors="replace").strip()
+                    err_text
                 )
             result = json.loads((stdout or b"{}").decode("utf-8", errors="replace"))
             status = str(result.get("status") or "ok")
@@ -393,7 +414,11 @@ async def launch_manual_job(
                 )
                 await session.commit()
         except Exception as exc:
-            logger.exception("Manual job failed job_name=%s workspace_id=%s", job_name, workspace_id)
+            logger.exception(
+                "Manual job failed job_name=%s workspace_id=%s",
+                job_name,
+                workspace_id,
+            )
             async with AsyncSession(engine) as session:
                 await session.execute(
                     text(
@@ -542,6 +567,102 @@ async def scheduled_refresh_wormsoft_limits() -> dict[str, Any]:
         }
 
 
+async def scheduled_refresh_openrouter_catalog() -> dict[str, Any]:
+    if _openrouter_catalog_lock.locked():
+        logger.warning("Skipping refresh_openrouter_catalog: previous run is still in progress")
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "job_name": "refresh_openrouter_catalog",
+        }
+
+    async with _openrouter_catalog_lock:
+        result = await fetch_openrouter_catalog()
+        logger.info(
+            "Completed refresh_openrouter_catalog status=%s model_count=%d",
+            result.get("status"),
+            int(result.get("model_count") or 0),
+        )
+        return {
+            "status": "ok",
+            "job_name": "refresh_openrouter_catalog",
+            "result": result,
+        }
+
+
+async def scheduled_refresh_openrouter_key() -> dict[str, Any]:
+    if _openrouter_key_lock.locked():
+        logger.warning("Skipping refresh_openrouter_key: previous run is still in progress")
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "job_name": "refresh_openrouter_key",
+        }
+
+    async with _openrouter_key_lock:
+        result = await fetch_openrouter_key()
+        logger.info(
+            "Completed refresh_openrouter_key status=%s free_tier=%s usage_daily=%.2f",
+            result.get("status"),
+            result.get("is_free_tier"),
+            float(result.get("usage_daily") or 0.0),
+        )
+        return {
+            "status": "ok",
+            "job_name": "refresh_openrouter_key",
+            "result": result,
+        }
+
+
+async def scheduled_probe_openrouter_health() -> dict[str, Any]:
+    if _openrouter_health_lock.locked():
+        logger.warning("Skipping probe_openrouter_health: previous run is still in progress")
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "job_name": "probe_openrouter_health",
+        }
+
+    async with _openrouter_health_lock:
+        result = await probe_openrouter_health()
+        logger.info(
+            "Completed probe_openrouter_health status=%s probed=%d ok=%d skipped=%d",
+            result.get("status"),
+            int(result.get("probed") or 0),
+            int(result.get("ok") or 0),
+            int(result.get("skipped") or 0),
+        )
+        return {
+            "status": "ok",
+            "job_name": "probe_openrouter_health",
+            "result": result,
+        }
+
+
+async def scheduled_reconcile_openrouter_state() -> dict[str, Any]:
+    if _openrouter_reconcile_lock.locked():
+        logger.warning("Skipping reconcile_openrouter_state: previous run is still in progress")
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "job_name": "reconcile_openrouter_state",
+        }
+
+    async with _openrouter_reconcile_lock:
+        result = await reconcile_openrouter_state(service_name="admin")
+        logger.info(
+            "Completed reconcile_openrouter_state usable=%d quarantined=%d near_cap=%d",
+            int(result.get("usable_model_count") or 0),
+            int(result.get("quarantined_model_count") or 0),
+            int(result.get("near_cap_model_count") or 0),
+        )
+        return {
+            "status": "ok",
+            "job_name": "reconcile_openrouter_state",
+            "result": result,
+        }
+
+
 async def scheduled_urgent_trend_alerts() -> dict[str, Any]:
     if _trend_alert_lock.locked():
         logger.warning("Skipping urgent_trend_alerts: previous run is still in progress")
@@ -655,6 +776,46 @@ def _build_scheduler() -> AsyncIOScheduler:
         **common_kwargs,
     )
     scheduler.add_job(
+        scheduled_refresh_openrouter_catalog,
+        CronTrigger.from_crontab(
+            settings.admin_openrouter_catalog_refresh_cron,
+            timezone=timezone,
+        ),
+        id="refresh_openrouter_catalog",
+        jitter=min(30, settings.admin_scheduler_max_jitter_seconds),
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_refresh_openrouter_key,
+        CronTrigger.from_crontab(
+            settings.admin_openrouter_key_refresh_cron,
+            timezone=timezone,
+        ),
+        id="refresh_openrouter_key",
+        jitter=min(15, settings.admin_scheduler_max_jitter_seconds),
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_probe_openrouter_health,
+        CronTrigger.from_crontab(
+            settings.admin_openrouter_health_refresh_cron,
+            timezone=timezone,
+        ),
+        id="probe_openrouter_health",
+        jitter=min(10, settings.admin_scheduler_max_jitter_seconds),
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_reconcile_openrouter_state,
+        CronTrigger.from_crontab(
+            settings.admin_openrouter_reconcile_cron,
+            timezone=timezone,
+        ),
+        id="reconcile_openrouter_state",
+        jitter=min(5, settings.admin_scheduler_max_jitter_seconds),
+        **common_kwargs,
+    )
+    scheduler.add_job(
         scheduled_urgent_trend_alerts,
         CronTrigger.from_crontab(
             settings.admin_trend_alert_cron,
@@ -681,14 +842,28 @@ async def scheduler_lifespan():
     await reconcile_running_manual_jobs()
     await scheduled_refresh_gigachat_balance()
     await scheduled_refresh_wormsoft_limits()
+    await scheduled_refresh_openrouter_catalog()
+    await scheduled_refresh_openrouter_key()
+    await scheduled_probe_openrouter_health()
+    await scheduled_reconcile_openrouter_state()
     logger.info(
-        "Admin scheduler started with timezone=%s, refresh_cron=%s, cluster_cron=%s, signal_cron=%s, gigachat_balance_cron=%s, wormsoft_limits_cron=%s, trend_alert_cron=%s",
+        (
+            "Admin scheduler started with timezone=%s, refresh_cron=%s, "
+            "cluster_cron=%s, signal_cron=%s, gigachat_balance_cron=%s, "
+            "wormsoft_limits_cron=%s, openrouter_catalog_cron=%s, "
+            "openrouter_key_cron=%s, openrouter_health_cron=%s, "
+            "openrouter_reconcile_cron=%s, trend_alert_cron=%s"
+        ),
         settings.admin_scheduler_timezone,
         settings.admin_source_score_refresh_cron,
         settings.admin_semantic_cluster_cron,
         settings.admin_signal_cluster_cron,
         settings.admin_gigachat_balance_refresh_cron,
         settings.admin_wormsoft_limits_refresh_cron,
+        settings.admin_openrouter_catalog_refresh_cron,
+        settings.admin_openrouter_key_refresh_cron,
+        settings.admin_openrouter_health_refresh_cron,
+        settings.admin_openrouter_reconcile_cron,
         settings.admin_trend_alert_cron,
     )
     try:

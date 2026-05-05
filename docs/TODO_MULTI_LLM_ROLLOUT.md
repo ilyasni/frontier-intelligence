@@ -1,0 +1,64 @@
+# TODO: Multi-LLM Rollout Follow-Ups
+
+Статус на **2026-05-05** после Phase 4 и ретюна alerting.
+
+## Closed
+
+- `relevance` chain escalation больше не уходит массово в GigaChat из-за симметричной gray-zone логики.
+- Для `OpenRouter` и `Polza` добавлены provider-specific alerts.
+- Vision и text fallback chain работают через `Wormsoft -> OpenRouter -> Polza -> GigaChat` там, где это предусмотрено текущей стратегией.
+
+## TODO
+
+### 1. Wormsoft 429 mitigation
+
+Сейчас production всё ещё ловит устойчивые `WormsoftRateLimitBurst` по `relevance`, `concepts`, `valence`.
+
+Что сделать:
+
+- проверить фактический live RPM / burst profile у `wormsoft/agent/medium`;
+- уменьшить concurrency или поднять inter-request gap именно для wormsoft-text path;
+- если 429 сохраняются, вынести часть text fallback трафика раньше в `OpenRouter/Polza`, а не дожидаться provider failure;
+- добавить короткий runbook: какие Prometheus queries смотреть при всплеске `wormsoft` rate-limit.
+
+### 2. OpenRouter paid credit semantics
+
+Сейчас alert `FrontierOpenRouterCreditLow` firing, потому что `frontier_openrouter_key_limit_remaining=0`.
+
+Что сделать:
+
+- перепроверить, как именно `GET /api/v1/key` трактует `limit_remaining` для текущего paid/free mix;
+- если это нормальный ноль для вашего режима free-routing, ретюнить alert или сделать его conditional только для paid-routing mode;
+- если это реальный нулевой paid balance, пополнить OR paid budget или отключить alert до ввода paid traffic.
+
+### 3. Redis stream backlog
+
+Сейчас firing:
+
+- `FrontierRedisStreamLagHigh`
+- `FrontierRedisStreamOldestPendingTooOld`
+
+Что сделать:
+
+- проверить `stream:posts:parsed` consumer groups и зависшие pending messages;
+- понять, это временный backlog после rollout или устойчивый throughput bottleneck;
+- при необходимости увеличить worker throughput после стабилизации wormsoft limits.
+
+### 4. Clean rebuild / deploy path
+
+Runtime hotfix уже работает, но clean image rebuild всё ещё зависит от нестабильного registry access на сервере.
+
+Что сделать:
+
+- добить стабильный base-image pull через mirror/internal registry;
+- вернуть rollout к `sync -> build -> up --force-recreate` без `docker cp`;
+- после этого сделать один чистый rebuild `worker/admin/mcp/ingest`.
+
+### 5. Dashboards and runbooks
+
+Алерты уже есть, но operational слой ещё не завершён.
+
+Что сделать:
+
+- добавить Grafana panels для `openrouter picker skips`, `openrouter vision/text fallbacks`, `polza -> gigachat spillover`;
+- оформить короткие runbooks для `WormsoftRateLimitBurst`, `OpenRouterPickerSkipBurst`, `PolzaFallbackBurst`.

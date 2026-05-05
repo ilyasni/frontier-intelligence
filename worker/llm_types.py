@@ -25,6 +25,7 @@ class GigaChatResponse:
     provider: str = "gigachat"
     usage: GigaChatUsage = field(default_factory=GigaChatUsage)
     parsed: dict[str, Any] | None = None
+    fallback_reason: str = ""
 
     @property
     def actual_model(self) -> str:
@@ -38,6 +39,28 @@ def usage_from_openai_response(resp: Any) -> GigaChatUsage:
 
     def _coerce(name: str) -> int:
         value = getattr(usage, name, 0)
+        try:
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    return GigaChatUsage(
+        prompt_tokens=_coerce("prompt_tokens"),
+        completion_tokens=_coerce("completion_tokens"),
+        precached_prompt_tokens=_coerce("precached_prompt_tokens"),
+        total_tokens=_coerce("total_tokens"),
+    )
+
+
+def usage_from_openai_payload(payload: dict[str, Any] | None) -> GigaChatUsage:
+    if not isinstance(payload, dict):
+        return GigaChatUsage()
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return GigaChatUsage()
+
+    def _coerce(name: str) -> int:
+        value = usage.get(name, 0)
         try:
             return int(value or 0)
         except Exception:

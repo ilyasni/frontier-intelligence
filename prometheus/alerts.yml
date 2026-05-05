@@ -97,23 +97,188 @@ groups:
       - alert: FrontierWormsoftChainEscalationBurst
         expr: |
           (
-            sum by (service, task) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason="chain_escalation"}[15m]))
+            sum by (service, task) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason="chain_escalation"}[1h]))
             /
             clamp_min(
-              sum by (service, task) (increase(frontier_llm_requests_total{service="worker",provider="wormsoft",status="ok"}[15m])),
+              sum by (service, task) (increase(frontier_llm_requests_total{service="worker",provider="wormsoft",status="ok"}[1h])),
               1
             )
-          ) >= 0.25
+          ) >= 0.30
           and
-          sum by (service, task) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason="chain_escalation"}[15m])) >= 5
-        for: 5m
+          sum by (service, task) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason="chain_escalation"}[1h])) >= 30
+        for: 15m
         labels:
           severity: warning
           service: worker
           notify: telegram
         annotations:
           summary: "Wormsoft relevance gray-zone escalations are spiking"
-          description: "Quality escalations from Wormsoft to Giga for {{ $labels.service }}/{{ $labels.task }} exceeded 25% with at least 5 events in 15 minutes. This usually means gray-zone or ambiguous relevance cases, not a provider outage, but it can raise Giga spend."
+          description: "Quality escalations from Wormsoft for {{ $labels.service }}/{{ $labels.task }} exceeded 30% with at least 30 events in 1 hour and persisted for 15 minutes. This usually means sustained gray-zone or ambiguous relevance cases and can materially raise Giga spend."
+
+      - alert: FrontierOpenRouterRateLimitBurst
+        expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="openrouter"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "OpenRouter is rate-limiting production traffic"
+          description: "OpenRouter 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. Dynamic OR fallback will spill to Polza or Giga and can raise cost."
+
+      - alert: FrontierOpenRouterCreditLow
+        expr: frontier_openrouter_key_limit_remaining{service="admin"} < 5
+        for: 10m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "OpenRouter remaining credit is low"
+          description: "OpenRouter reported only {{ $value }} credits remaining for the current key. Free traffic may still work, but paid fallback headroom and future paid routing are limited."
+
+      - alert: FrontierOpenRouterKeyRefreshStale
+        expr: time() - frontier_openrouter_key_refresh_timestamp_seconds{service="admin"} > 1800
+        for: 10m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "OpenRouter key refresh is stale"
+          description: "Admin has not refreshed OpenRouter key usage/limits for more than 30 minutes. Cost visibility and cap detection are degraded."
+
+      - alert: FrontierOpenRouterKeyUnavailable
+        expr: frontier_openrouter_key_available{service="admin"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "OpenRouter key snapshot is unavailable"
+          description: "Admin could not fetch OpenRouter key state for more than 15 minutes. Check outbound access, key validity, and OpenRouter API reachability."
+
+      - alert: FrontierOpenRouterCatalogRefreshStale
+        expr: time() - frontier_openrouter_catalog_refresh_timestamp_seconds{service="admin"} > 2700
+        for: 10m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "OpenRouter catalog refresh is stale"
+          description: "Admin has not refreshed the OpenRouter free-model catalog for more than 45 minutes. Dynamic routing may keep using outdated capability or availability data."
+
+      - alert: FrontierOpenRouterCatalogUnavailable
+        expr: frontier_openrouter_catalog_available{service="admin"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "OpenRouter catalog snapshot is unavailable"
+          description: "Admin could not fetch a usable OpenRouter free-model catalog for more than 15 minutes. Picker quality and model awareness are degraded."
+
+      - alert: FrontierOpenRouterModelQuarantineBurst
+        expr: sum by (service) (frontier_openrouter_model_quarantine{service="admin"}) >= 3
+        for: 10m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Multiple OpenRouter free models are quarantined"
+          description: "{{ $labels.service }} currently sees {{ $value }} quarantined OpenRouter models for more than 10 minutes. Free-pool resilience is shrinking and spillover risk is rising."
+
+      - alert: FrontierOpenRouterPickerSkipBurst
+        expr: sum by (service, task_family, reason) (increase(frontier_openrouter_picker_skip_total{service="worker",reason=~"guard_.*|near_cap|all_quarantined|no_capable_model"}[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "OpenRouter picker is repeatedly skipping requests"
+          description: "OpenRouter picker skips for {{ $labels.service }}/{{ $labels.task_family }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. This usually means quarantine, cap pressure, or no compatible free model."
+
+      - alert: FrontierOpenRouterNearDailyCap
+        expr: max by (service, model_id) (frontier_openrouter_rpd_used{service="admin"}) >= 750
+        for: 10m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "An OpenRouter free model is nearing the daily soft cap"
+          description: "{{ $labels.model_id }} has already reserved {{ $value }} OpenRouter free requests today. Expect picker skips, more quarantine pressure, and more spillover to Polza or Giga."
+
+      - alert: FrontierOpenRouterVisionFallbackBurst
+        expr: sum by (service, to_provider, reason) (increase(frontier_openrouter_vision_fallbacks_total{service="worker"}[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "OpenRouter vision fallback traffic is spiking"
+          description: "OpenRouter vision fallbacks from {{ $labels.service }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Vision cost and latency are likely rising."
+
+      - alert: FrontierOpenRouterTextFallbackBurst
+        expr: sum by (service, task, to_provider, reason) (increase(frontier_llm_fallbacks_total{service="worker",from_provider="openrouter"}[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "OpenRouter text fallback traffic is spiking"
+          description: "OpenRouter text fallbacks for {{ $labels.service }}/{{ $labels.task }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. The text chain is bypassing OR more often than expected."
+
+      - alert: FrontierPolzaRateLimitBurst
+        expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="polza"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Polza is rate-limiting production traffic"
+          description: "Polza 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. Spillover to GigaChat may accelerate."
+
+      - alert: FrontierPolzaErrorBurst
+        expr: sum by (service, task) (increase(frontier_llm_requests_total{service="worker",provider="polza",status="error"}[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Polza is returning repeated errors"
+          description: "Polza request errors for {{ $labels.service }}/{{ $labels.task }} increased by {{ $value }} in 15 minutes. Check provider health, model availability, and outbound connectivity."
+
+      - alert: FrontierPolzaVisionErrorBurst
+        expr: sum by (service) (increase(frontier_polza_vision_requests_total{service="worker",status="error"}[15m])) >= 3
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Polza vision fallback is returning repeated errors"
+          description: "Polza vision errors for {{ $labels.service }} increased by {{ $value }} in 15 minutes. Mass-vision fallback may spill directly into GigaChat."
+
+      - alert: FrontierPolzaFallbackBurst
+        expr: sum by (service, task, reason, to_provider) (increase(frontier_llm_fallbacks_total{service="worker",from_provider="polza"}[15m])) >= 3
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Polza fallback traffic is spiking"
+          description: "Polza fallbacks for {{ $labels.service }}/{{ $labels.task }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Tertiary spillover to GigaChat is now material."
 
       - alert: FrontierRedisStreamLagHigh
         expr: frontier_redis_stream_lag{service="admin"} > 1000

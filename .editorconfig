@@ -1,0 +1,16 @@
+root = true
+
+[*.sh]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+[Dockerfile]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+[*.ps1]
+end_of_line = crlf
+insert_final_newline = true
+charset = utf-8

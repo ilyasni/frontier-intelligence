@@ -191,7 +191,6 @@ async def _generate_candidate_topics(
                 f"{json.dumps(payload, ensure_ascii=False)}"
             ),
             task="mcp_synthesis",
-            model_override=settings.gigachat_model_pro,
             pro=True,
             max_tokens=700,
         )
@@ -243,7 +242,6 @@ async def _generate_opportunities(
     if not items:
         return {}
 
-    settings = get_settings()
     compact = [
         {
             "topic": item["topic"],
@@ -275,7 +273,6 @@ async def _generate_opportunities(
                 f"{json.dumps({'workspace': workspace, 'gaps': compact}, ensure_ascii=False)}"
             ),
             task="mcp_synthesis",
-            model_override=settings.gigachat_model_pro,
             pro=True,
             max_tokens=700,
         )

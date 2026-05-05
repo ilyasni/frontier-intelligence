@@ -26,6 +26,7 @@ def normalize_vision_stream_fields(data: dict) -> dict:
     for fld, default in (("album_item_index", 0), ("album_total_items", 1)):
         out[fld] = _coerce_int(out.get(fld), default)
     out["vision_mode"] = str(out.get("vision_mode") or "full").strip().lower() or "full"
+    out["quality_tier"] = str(out.get("quality_tier") or "standard").strip().lower() or "standard"
     out["max_media_bytes"] = _coerce_int(out.get("max_media_bytes"), 9_000_000)
     return out
 
@@ -66,6 +67,7 @@ class PostVisionEvent(BaseModel):
     album_item_index: int = 0
     album_total_items: int = 1
     vision_mode: str = "full"  # full | ocr_only | skip
+    quality_tier: str = "standard"
     max_media_bytes: int = 9_000_000
 
     @model_validator(mode="before")

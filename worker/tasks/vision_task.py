@@ -35,6 +35,16 @@ def _empty_vision_result() -> dict:
     return {"labels": [], "ocr_text": "", "scene": "", "design_signals": []}
 
 
+def _vision_llm_meta(response: object | None) -> dict:
+    return {
+        "provider": str(getattr(response, "provider", "") or ""),
+        "requested_model": str(getattr(response, "requested_model", "") or ""),
+        "actual_model": str(getattr(response, "actual_model", getattr(response, "model", "")) or ""),
+        "status": "ok" if response is not None else "unknown",
+        "fallback_reason": str(getattr(response, "fallback_reason", "") or ""),
+    }
+
+
 def _classify_vision_error(exc: Exception) -> tuple[str, int | None]:
     """
     openai-python exposes APIStatusError subclasses with .status_code.
@@ -105,7 +115,7 @@ class VisionTask:
             **ASYNC_ENGINE_POOL_KWARGS,
         )
         self.Session = sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
-        self.gigachat: Optional[GigaChatClient] = None
+        self.gigachat: Optional[LLMRouterClient] = None
         self._s3 = None
         self._s3_bucket = None
 
@@ -347,17 +357,22 @@ class VisionTask:
 
             result = _empty_vision_result()
             vision_error = None
+            llm_meta: dict = {}
             mime = _detect_media_mime(s3_key, image_bytes)
             skip_reason = _should_skip_model_vision(event, s3_key, mime, len(image_bytes))
             if skip_reason:
                 result["vision_skip_reason"] = skip_reason
             else:
                 try:
-                    vision_response = await self.gigachat.vision(image_bytes)
+                    vision_response = await self.gigachat.vision(
+                        image_bytes,
+                        quality_tier=event.quality_tier,
+                    )
                     if isinstance(vision_response, dict):
                         result = vision_response
                     else:
                         result = vision_response.parsed or _empty_vision_result()
+                        llm_meta = _vision_llm_meta(vision_response)
                 except Exception as exc:
                     vision_error = _vision_error_payload(exc)
                     kind = vision_error["kind"]
@@ -396,8 +411,11 @@ class VisionTask:
                 "mime_type": mime,
                 "size_bytes": len(image_bytes),
                 "vision_mode": event.vision_mode,
+                "quality_tier": event.quality_tier,
                 **result,
             }
+            if llm_meta:
+                item["_llm"] = llm_meta
             if vision_error:
                 item["vision_error"] = vision_error
             items.append(item)

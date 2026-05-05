@@ -46,6 +46,47 @@ class Settings(BaseSettings):
     wormsoft_api_base: str = Field("https://ai.wormsoft.ru/api/gpt", alias="WORMSOFT_API_BASE")
     wormsoft_api_key: str = Field("", alias="WORMSOFT_API_KEY")
     wormsoft_model_default: str = Field("wormsoft/agent/medium", alias="WORMSOFT_MODEL_DEFAULT")
+    wormsoft_model_mcp_synthesis: str = Field("", alias="WORMSOFT_MODEL_MCP_SYNTHESIS")
+    openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
+    openrouter_base_url: str = Field("https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL")
+    openrouter_referrer: str = Field(
+        "https://frontier-intelligence.local",
+        alias="OPENROUTER_REFERRER",
+    )
+    openrouter_text_model: str = Field("openrouter/free", alias="OPENROUTER_TEXT_MODEL")
+    openrouter_vision_model: str = Field("openrouter/free", alias="OPENROUTER_VISION_MODEL")
+    openrouter_free_rpm_throttle: int = Field(18, alias="OPENROUTER_FREE_RPM_THROTTLE")
+    openrouter_free_rpd_soft_cap: int = Field(850, alias="OPENROUTER_FREE_RPD_SOFT_CAP")
+    openrouter_free_quarantine_5xx_sec: int = Field(
+        900,
+        alias="OPENROUTER_FREE_QUARANTINE_5XX_SEC",
+    )
+    openrouter_health_probe_timeout_sec: float = Field(
+        20.0,
+        alias="OPENROUTER_HEALTH_PROBE_TIMEOUT_SEC",
+    )
+    openrouter_health_probe_max_tokens: int = Field(
+        1,
+        alias="OPENROUTER_HEALTH_PROBE_MAX_TOKENS",
+    )
+    openrouter_picker_sticky_sec: int = Field(600, alias="OPENROUTER_PICKER_STICKY_SEC")
+    openrouter_rpd_safety_buffer: float = Field(0.1, alias="OPENROUTER_RPD_SAFETY_BUFFER")
+    openrouter_quarantine_5xx_threshold: int = Field(
+        3,
+        alias="OPENROUTER_QUARANTINE_5XX_THRESHOLD",
+    )
+    openrouter_quarantine_5xx_window_sec: int = Field(
+        300,
+        alias="OPENROUTER_QUARANTINE_5XX_WINDOW_SEC",
+    )
+    polza_api_key: str = Field("", alias="POLZA_API_KEY")
+    polza_base_url: str = Field("https://polza.ai/api/v1", alias="POLZA_BASE_URL")
+    polza_text_model: str = Field("google/gemma-3-12b-it", alias="POLZA_TEXT_MODEL")
+    polza_synthesis_model: str = Field(
+        "mistralai/mistral-small-3.1-24b-instruct",
+        alias="POLZA_SYNTHESIS_MODEL",
+    )
+    polza_vision_model: str = Field("", alias="POLZA_VISION_MODEL")
     gigachat_model_lite: str = Field("GigaChat-2", alias="GIGACHAT_MODEL_LITE")
     gigachat_model: str = Field("GigaChat-2", alias="GIGACHAT_MODEL")
     gigachat_model_pro: str = Field("GigaChat-2-Pro", alias="GIGACHAT_MODEL_PRO")
@@ -159,6 +200,22 @@ class Settings(BaseSettings):
         "*/10 * * * *",
         alias="ADMIN_WORMSOFT_LIMITS_REFRESH_CRON",
     )
+    admin_openrouter_catalog_refresh_cron: str = Field(
+        "*/15 * * * *",
+        alias="ADMIN_OPENROUTER_CATALOG_REFRESH_CRON",
+    )
+    admin_openrouter_key_refresh_cron: str = Field(
+        "*/5 * * * *",
+        alias="ADMIN_OPENROUTER_KEY_REFRESH_CRON",
+    )
+    admin_openrouter_health_refresh_cron: str = Field(
+        "*/5 * * * *",
+        alias="ADMIN_OPENROUTER_HEALTH_REFRESH_CRON",
+    )
+    admin_openrouter_reconcile_cron: str = Field(
+        "* * * * *",
+        alias="ADMIN_OPENROUTER_RECONCILE_CRON",
+    )
     admin_trend_alert_cron: str = Field(
         "25 * * * *",
         alias="ADMIN_TREND_ALERT_CRON",
@@ -250,6 +307,7 @@ class Settings(BaseSettings):
     indexing_claim_idle_ms: int = Field(600_000, alias="INDEXING_CLAIM_IDLE_MS")        # 10 min
     indexing_consumer_cleanup_interval: int = Field(1800, alias="INDEXING_CONSUMER_CLEANUP_INTERVAL")  # 30 min
     vision_enabled: bool = Field(True, alias="VISION_ENABLED")
+    vision_routing_enabled: bool = Field(True, alias="VISION_ROUTING_ENABLED")
     vision_claim_idle_ms: int = Field(600_000, alias="VISION_CLAIM_IDLE_MS")
     vision_max_delivery_count: int = Field(5, alias="VISION_MAX_DELIVERY_COUNT")
     vision_dlq_stream: str = Field("stream:posts:vision:dlq", alias="VISION_DLQ_STREAM")

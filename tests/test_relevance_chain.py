@@ -65,6 +65,34 @@ async def test_relevance_chain_accepts_non_other_borderline_score_after_escalati
 
 
 @pytest.mark.asyncio
+async def test_relevance_chain_keeps_above_threshold_non_other_on_primary():
+    calls = []
+
+    async def _chat(**kwargs):
+        calls.append(kwargs)
+        return GigaChatResponse(
+            content='{"score": 0.66, "category": "technology", "reasoning": "clear enough"}',
+            model="GigaChat-2",
+            usage=GigaChatUsage(prompt_tokens=32, completion_tokens=9, total_tokens=41),
+        )
+
+    client = SimpleNamespace(
+        chat=AsyncMock(side_effect=_chat),
+        budget_text=AsyncMock(return_value=SimpleNamespace(text="trimmed text", truncated=False)),
+    )
+
+    chain = RelevanceChain(client)
+    chain._settings.gigachat_relevance_gray_zone = 0.1
+    result = await chain.run("solid tech signal", "AI Trends", ["technology", "design"], threshold=0.6)
+
+    assert result["score"] == 0.66
+    assert result["category"] == "technology"
+    assert result["relevant"] is True
+    assert result["_escalated"] is False
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_relevance_chain_keeps_other_category_borderline_dropped():
     client = SimpleNamespace(
         chat=AsyncMock(
@@ -82,6 +110,36 @@ async def test_relevance_chain_keeps_other_category_borderline_dropped():
     assert result["score"] == 0.5
     assert result["category"] == "other"
     assert result["relevant"] is False
+
+
+@pytest.mark.asyncio
+async def test_relevance_chain_escalates_ambiguous_other_category():
+    calls = []
+
+    async def _chat(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return GigaChatResponse(
+                content='{"score": 0.72, "category": "unknown_future_bucket", "reasoning": "odd label"}',
+                model="GigaChat-2",
+            )
+        return GigaChatResponse(
+            content='{"score": 0.73, "category": "technology", "reasoning": "resolved by fallback"}',
+            model="GigaChat-2-Pro",
+        )
+
+    client = SimpleNamespace(
+        chat=AsyncMock(side_effect=_chat),
+        budget_text=AsyncMock(return_value=SimpleNamespace(text="trimmed text", truncated=False)),
+    )
+
+    chain = RelevanceChain(client)
+    result = await chain.run("ambiguous label content", "Disruption", ["technology"], threshold=0.6)
+
+    assert result["category"] == "technology"
+    assert result["relevant"] is True
+    assert result["_escalated"] is True
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio

@@ -101,6 +101,106 @@ try:
         "Unix timestamp of the last successful GigaChat balance refresh.",
         ["service"],
     )
+    OPENROUTER_VISION_REQUESTS_TOTAL = Counter(
+        "frontier_openrouter_vision_requests_total",
+        "Total OpenRouter vision requests.",
+        ["service", "status"],
+    )
+    OPENROUTER_VISION_FALLBACKS_TOTAL = Counter(
+        "frontier_openrouter_vision_fallbacks_total",
+        "Total OpenRouter vision fallbacks to secondary providers.",
+        ["service", "to_provider", "reason"],
+    )
+    OPENROUTER_VISION_QUARANTINE = Gauge(
+        "frontier_openrouter_vision_quarantine",
+        "Whether OpenRouter free vision is currently quarantined.",
+        ["service"],
+    )
+    OPENROUTER_VISION_RPD_USED = Gauge(
+        "frontier_openrouter_vision_rpd_used",
+        "Reserved OpenRouter free vision requests for the current UTC day.",
+        ["service"],
+    )
+    POLZA_VISION_REQUESTS_TOTAL = Counter(
+        "frontier_polza_vision_requests_total",
+        "Total Polza vision requests.",
+        ["service", "status"],
+    )
+    OPENROUTER_CATALOG_AVAILABLE = Gauge(
+        "frontier_openrouter_catalog_available",
+        "Whether the latest OpenRouter catalog snapshot is usable.",
+        ["service"],
+    )
+    OPENROUTER_CATALOG_REFRESH_TIMESTAMP = Gauge(
+        "frontier_openrouter_catalog_refresh_timestamp_seconds",
+        "Unix timestamp of the latest OpenRouter catalog snapshot.",
+        ["service"],
+    )
+    OPENROUTER_CATALOG_MODEL_COUNT = Gauge(
+        "frontier_openrouter_catalog_model_count",
+        "Count of OpenRouter free models grouped by capability snapshot.",
+        ["service", "kind"],
+    )
+    OPENROUTER_KEY_AVAILABLE = Gauge(
+        "frontier_openrouter_key_available",
+        "Whether the latest OpenRouter key snapshot is usable.",
+        ["service"],
+    )
+    OPENROUTER_KEY_REFRESH_TIMESTAMP = Gauge(
+        "frontier_openrouter_key_refresh_timestamp_seconds",
+        "Unix timestamp of the latest OpenRouter key snapshot.",
+        ["service"],
+    )
+    OPENROUTER_KEY_LIMIT_REMAINING = Gauge(
+        "frontier_openrouter_key_limit_remaining",
+        "Remaining OpenRouter credit limit reported by the current key.",
+        ["service"],
+    )
+    OPENROUTER_KEY_USAGE_DAILY = Gauge(
+        "frontier_openrouter_key_usage_daily",
+        "Current UTC-day usage reported by the OpenRouter key endpoint.",
+        ["service", "kind"],
+    )
+    OPENROUTER_KEY_FREE_TIER = Gauge(
+        "frontier_openrouter_key_free_tier",
+        "Whether the current OpenRouter key is still considered free tier.",
+        ["service"],
+    )
+    OPENROUTER_HEALTH_SUCCESS_RATE = Gauge(
+        "frontier_openrouter_health_success_rate",
+        "Rolling OpenRouter model health success rate.",
+        ["service", "model_id"],
+    )
+    OPENROUTER_HEALTH_LATENCY_MS = Gauge(
+        "frontier_openrouter_health_latency_ms",
+        "Rolling OpenRouter model latency in milliseconds.",
+        ["service", "model_id"],
+    )
+    OPENROUTER_MODEL_QUARANTINE = Gauge(
+        "frontier_openrouter_model_quarantine",
+        "Whether an OpenRouter model is currently quarantined.",
+        ["service", "model_id"],
+    )
+    OPENROUTER_PICKER_DECISIONS_TOTAL = Counter(
+        "frontier_openrouter_picker_decisions_total",
+        "Total OpenRouter picker decisions by task family and model.",
+        ["service", "task_family", "model_id"],
+    )
+    OPENROUTER_PICKER_SKIP_TOTAL = Counter(
+        "frontier_openrouter_picker_skip_total",
+        "Total OpenRouter picker skips by task family and reason.",
+        ["service", "task_family", "reason"],
+    )
+    OPENROUTER_RPD_USED = Gauge(
+        "frontier_openrouter_rpd_used",
+        "Reserved OpenRouter requests per model for the current UTC day.",
+        ["service", "model_id"],
+    )
+    OPENROUTER_RPM_USED = Gauge(
+        "frontier_openrouter_rpm_used",
+        "Reserved OpenRouter requests per model for the current UTC minute.",
+        ["service", "model_id"],
+    )
     WORMSOFT_LIMITS_AVAILABLE = Gauge(
         "frontier_wormsoft_limits_available",
         "Whether the last Wormsoft limits/pricing refresh completed successfully.",
@@ -196,6 +296,26 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     GIGACHAT_ESCALATIONS_TOTAL = None
     GIGACHAT_BALANCE_TOKENS = None
     GIGACHAT_BALANCE_REFRESH_TIMESTAMP = None
+    OPENROUTER_VISION_REQUESTS_TOTAL = None
+    OPENROUTER_VISION_FALLBACKS_TOTAL = None
+    OPENROUTER_VISION_QUARANTINE = None
+    OPENROUTER_VISION_RPD_USED = None
+    POLZA_VISION_REQUESTS_TOTAL = None
+    OPENROUTER_CATALOG_AVAILABLE = None
+    OPENROUTER_CATALOG_REFRESH_TIMESTAMP = None
+    OPENROUTER_CATALOG_MODEL_COUNT = None
+    OPENROUTER_KEY_AVAILABLE = None
+    OPENROUTER_KEY_REFRESH_TIMESTAMP = None
+    OPENROUTER_KEY_LIMIT_REMAINING = None
+    OPENROUTER_KEY_USAGE_DAILY = None
+    OPENROUTER_KEY_FREE_TIER = None
+    OPENROUTER_HEALTH_SUCCESS_RATE = None
+    OPENROUTER_HEALTH_LATENCY_MS = None
+    OPENROUTER_MODEL_QUARANTINE = None
+    OPENROUTER_PICKER_DECISIONS_TOTAL = None
+    OPENROUTER_PICKER_SKIP_TOTAL = None
+    OPENROUTER_RPD_USED = None
+    OPENROUTER_RPM_USED = None
     WORMSOFT_LIMITS_AVAILABLE = None
     WORMSOFT_LIMITS_REFRESH_TIMESTAMP = None
     WORMSOFT_SUBSCRIPTION_LIMIT_CREDITS = None
@@ -375,6 +495,124 @@ def set_gigachat_balance(service: str, usage: str, value: int) -> None:
 def note_gigachat_balance_refresh(service: str, timestamp: float) -> None:
     if GIGACHAT_BALANCE_REFRESH_TIMESTAMP is not None:
         GIGACHAT_BALANCE_REFRESH_TIMESTAMP.labels(service=service).set(timestamp)
+
+
+def note_openrouter_vision_request(service: str, status: str) -> None:
+    if OPENROUTER_VISION_REQUESTS_TOTAL is not None:
+        OPENROUTER_VISION_REQUESTS_TOTAL.labels(service=service, status=status).inc()
+
+
+def note_openrouter_vision_fallback(service: str, to_provider: str, reason: str) -> None:
+    if OPENROUTER_VISION_FALLBACKS_TOTAL is not None:
+        OPENROUTER_VISION_FALLBACKS_TOTAL.labels(
+            service=service,
+            to_provider=to_provider,
+            reason=reason,
+        ).inc()
+
+
+def set_openrouter_vision_quarantine(service: str, is_quarantined: bool) -> None:
+    if OPENROUTER_VISION_QUARANTINE is not None:
+        OPENROUTER_VISION_QUARANTINE.labels(service=service).set(1 if is_quarantined else 0)
+
+
+def set_openrouter_vision_rpd_used(service: str, used: int) -> None:
+    if OPENROUTER_VISION_RPD_USED is not None:
+        OPENROUTER_VISION_RPD_USED.labels(service=service).set(int(used or 0))
+
+
+def note_polza_vision_request(service: str, status: str) -> None:
+    if POLZA_VISION_REQUESTS_TOTAL is not None:
+        POLZA_VISION_REQUESTS_TOTAL.labels(service=service, status=status).inc()
+
+
+def set_openrouter_catalog_snapshot(service: str, payload: dict) -> None:
+    if OPENROUTER_CATALOG_AVAILABLE is None:
+        return
+    models = list(payload.get("models") or [])
+    OPENROUTER_CATALOG_AVAILABLE.labels(service=service).set(1 if models else 0)
+    fetched_at = payload.get("fetched_at")
+    if fetched_at:
+        OPENROUTER_CATALOG_REFRESH_TIMESTAMP.labels(service=service).set(float(fetched_at))
+    vision_count = sum(1 for model in models if model.get("supports_vision"))
+    structured_count = sum(1 for model in models if model.get("supports_structured"))
+    tools_count = sum(1 for model in models if model.get("supports_tools"))
+    OPENROUTER_CATALOG_MODEL_COUNT.labels(service=service, kind="all").set(len(models))
+    OPENROUTER_CATALOG_MODEL_COUNT.labels(service=service, kind="vision").set(vision_count)
+    OPENROUTER_CATALOG_MODEL_COUNT.labels(service=service, kind="structured").set(structured_count)
+    OPENROUTER_CATALOG_MODEL_COUNT.labels(service=service, kind="tools").set(tools_count)
+
+
+def set_openrouter_key_snapshot(service: str, payload: dict) -> None:
+    if OPENROUTER_KEY_AVAILABLE is None:
+        return
+    available = bool(payload.get("available"))
+    OPENROUTER_KEY_AVAILABLE.labels(service=service).set(1 if available else 0)
+    OPENROUTER_KEY_FREE_TIER.labels(service=service).set(1 if payload.get("is_free_tier") else 0)
+    fetched_at = payload.get("fetched_at")
+    if fetched_at and OPENROUTER_KEY_REFRESH_TIMESTAMP is not None:
+        OPENROUTER_KEY_REFRESH_TIMESTAMP.labels(service=service).set(float(fetched_at))
+    limit_remaining = payload.get("limit_remaining")
+    OPENROUTER_KEY_LIMIT_REMAINING.labels(service=service).set(float(limit_remaining or 0.0))
+    OPENROUTER_KEY_USAGE_DAILY.labels(service=service, kind="credits").set(
+        float(payload.get("usage_daily") or 0.0)
+    )
+    OPENROUTER_KEY_USAGE_DAILY.labels(service=service, kind="byok_credits").set(
+        float(payload.get("byok_usage_daily") or 0.0)
+    )
+
+
+def set_openrouter_model_health(
+    service: str,
+    model_id: str,
+    *,
+    success_rate: float,
+    latency_ms: float,
+    is_quarantined: bool,
+) -> None:
+    if OPENROUTER_HEALTH_SUCCESS_RATE is not None:
+        OPENROUTER_HEALTH_SUCCESS_RATE.labels(service=service, model_id=model_id).set(
+            float(success_rate)
+        )
+    if OPENROUTER_HEALTH_LATENCY_MS is not None:
+        OPENROUTER_HEALTH_LATENCY_MS.labels(service=service, model_id=model_id).set(
+            float(latency_ms)
+        )
+    if OPENROUTER_MODEL_QUARANTINE is not None:
+        OPENROUTER_MODEL_QUARANTINE.labels(service=service, model_id=model_id).set(
+            1 if is_quarantined else 0
+        )
+
+
+def note_openrouter_picker_decision(service: str, task_family: str, model_id: str) -> None:
+    if OPENROUTER_PICKER_DECISIONS_TOTAL is not None:
+        OPENROUTER_PICKER_DECISIONS_TOTAL.labels(
+            service=service,
+            task_family=task_family,
+            model_id=model_id,
+        ).inc()
+
+
+def note_openrouter_picker_skip(service: str, task_family: str, reason: str) -> None:
+    if OPENROUTER_PICKER_SKIP_TOTAL is not None:
+        OPENROUTER_PICKER_SKIP_TOTAL.labels(
+            service=service,
+            task_family=task_family,
+            reason=reason,
+        ).inc()
+
+
+def set_openrouter_model_usage(
+    service: str,
+    model_id: str,
+    *,
+    rpd_used: int | None = None,
+    rpm_used: int | None = None,
+) -> None:
+    if rpd_used is not None and OPENROUTER_RPD_USED is not None:
+        OPENROUTER_RPD_USED.labels(service=service, model_id=model_id).set(int(rpd_used))
+    if rpm_used is not None and OPENROUTER_RPM_USED is not None:
+        OPENROUTER_RPM_USED.labels(service=service, model_id=model_id).set(int(rpm_used))
 
 
 def set_wormsoft_limits_snapshot(service: str, payload: dict) -> None:

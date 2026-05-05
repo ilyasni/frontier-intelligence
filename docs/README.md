@@ -15,6 +15,8 @@
   [security-git-preflight.md](./security-git-preflight.md)
 - Server-first git workflow:
   [server-git-workflow.md](./server-git-workflow.md)
+- Remaining operational follow-ups for the multi-LLM rollout:
+  [TODO_MULTI_LLM_ROLLOUT.md](./TODO_MULTI_LLM_ROLLOUT.md)
 - Runtime mode overlays:
   [runtime-modes.md](./runtime-modes.md)
 
@@ -35,6 +37,7 @@
 - For Balanced rollout keep `INDEXING_MAX_CONCURRENCY=1` on this contour unless live metrics show enough headroom.
 - **Git / сервер (2026-04-18):** рабочее дерево на сервере `/opt/frontier-intelligence` — первая зафиксированная база; общая история — в Git remote после push. В git не попадают только рантайм-пути (`.env`, `sessions/`, `searxng/settings.yml`, данные Docker volumes). Qdrant: `frontier_docs` (dense + sparse), `trend_clusters` — вторичный индекс для стабильных trend-кластеров из PostgreSQL.
 - **Crawl/Vision → `stream:posts:reindex`:** полностью в коде (`shared/reindex.py`, `worker/tasks/reindex_task.py`, публикация из `vision_task` и `crawl4ai`). Массовый догон — операция (`scripts/enqueue_reindex_enriched_posts.py`); при работе смотри `XLEN stream:posts:reindex` и `XINFO GROUPS`. Под нагрузку можно **временно** поднять `GIGACHAT_MIN_REQUEST_INTERVAL_MS` (например `5000`) — параметр уже читается из `shared/config.py` / compose, это тюнинг окружения, а не «недореализованная фича».
+- **Deploy rule for COPY-based services:** `worker`, `admin`, `mcp`, `ingest`, `crawl4ai`, `paddleocr` и `gpt2giga-proxy` получают код через `Dockerfile COPY`, а не bind mount. После изменения исходников нужен `sync` → `build` → `docker compose up -d --force-recreate <service>`; одного `restart` недостаточно. `rsync` копирует локальные байты как есть, поэтому серверные `*.sh` должны оставаться в `LF`, иначе bash-скрипты могут сломаться после синка.
 
 ### Быстрая проверка HTTP (на хосте с проброшенными портами compose)
 
@@ -584,7 +587,7 @@ crawl4ai сервис
 
 ### Проверка e2e после деплоя
 
-1. **Деплой**: правки в рабочей копии → Sync → Server (`scripts/sync-push.ps1` или Task); на сервере при смене Dockerfile/зависимостей — `docker compose build`, иначе `docker compose restart` для `worker`, `ingest`, `crawl4ai`, `admin`. Новая схема БД: с рабочей машины можно одним шагом `.\scripts\push-and-remote-migrate.ps1` (rsync через WSL + SSH + `scripts/server-apply-sql-migrations.sh` в Postgres-контейнере и restart сервисов). Либо только на сервере: `cd /opt/frontier-intelligence && bash scripts/server-apply-sql-migrations.sh`. Альтернатива с хоста: `bash scripts/apply-postgres-migrations.sh` при доступном `psql` и `DATABASE_URL`. Существующая БД не обновляется от одного `init.sql`.
+1. **Деплой**: правки в рабочей копии → Sync → Server (`scripts/sync-push.ps1` или Task). Для `worker/admin/mcp/ingest/crawl4ai/paddleocr/gpt2giga-proxy` одного `restart` недостаточно: код запекается в образ через `COPY`, поэтому после source-изменений нужен rebuild + `up -d --force-recreate`. Самый простой путь с рабочей машины: `.\scripts\push-and-remote-deploy.ps1 -Services worker,admin` или Task `Sync → Server + Rebuild`. Если менялась только схема БД, можно отдельно `.\scripts\push-and-remote-migrate.ps1` (rsync через WSL + SSH + `scripts/server-apply-sql-migrations.sh`). Либо только на сервере: `cd /opt/frontier-intelligence && bash scripts/server-apply-sql-migrations.sh`. Альтернатива с хоста: `bash scripts/apply-postgres-migrations.sh` при доступном `psql` и `DATABASE_URL`. Существующая БД не обновляется от одного `init.sql`.
 2. **PostgreSQL**: `SELECT post_id, kind FROM post_enrichments WHERE kind IN ('vision','crawl') ORDER BY updated_at DESC LIMIT 20;`
 3. **Логи**: `worker` — строки `Enriched`, `Reindex done`; `crawl4ai` — `Crawl enrichment saved`; worker vision — `Vision done`.
 4. **Qdrant**: точки появляются для **релевантных** постов (`indexing_status.embedding_status = 'done'`), не для dropped. Crawl/Vision enrichment патчит существующую точку через `stream:posts:reindex`; existing enriched rows can be queued with `python scripts/enqueue_reindex_enriched_posts.py --kind crawl --kind vision --limit 1000`. Stable trend clusters mirror to `trend_clusters` after cluster/signal analysis; existing rows can be backfilled with `python scripts/sync_trend_clusters_to_qdrant.py`.

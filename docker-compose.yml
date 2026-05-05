@@ -101,6 +101,8 @@ services:
     build:
       context: ./gpt2giga-proxy
       dockerfile: Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [core]
     dns:
       - 8.8.8.8
@@ -146,6 +148,8 @@ services:
     build:
       context: .
       dockerfile: ingest/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [ingest]
     environment:
       FRONTIER_RUNTIME_MODE: ${FRONTIER_RUNTIME_MODE:-custom}
@@ -196,6 +200,8 @@ services:
     build:
       context: .
       dockerfile: services/xray/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [xray]
     environment:
       XRAY_VLESS_ADDRESS: ${XRAY_VLESS_ADDRESS:-}
@@ -220,6 +226,8 @@ services:
     build:
       context: .
       dockerfile: worker/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [worker]
     environment:
       FRONTIER_RUNTIME_MODE: ${FRONTIER_RUNTIME_MODE:-custom}
@@ -234,6 +242,26 @@ services:
       WORMSOFT_API_BASE: ${WORMSOFT_API_BASE:-https://ai.wormsoft.ru/api/gpt}
       WORMSOFT_API_KEY: ${WORMSOFT_API_KEY:-}
       WORMSOFT_MODEL_DEFAULT: ${WORMSOFT_MODEL_DEFAULT:-wormsoft/agent/medium}
+      WORMSOFT_MODEL_MCP_SYNTHESIS: ${WORMSOFT_MODEL_MCP_SYNTHESIS:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_REFERRER: ${OPENROUTER_REFERRER:-https://frontier-intelligence.local}
+      OPENROUTER_TEXT_MODEL: ${OPENROUTER_TEXT_MODEL:-openrouter/free}
+      OPENROUTER_VISION_MODEL: ${OPENROUTER_VISION_MODEL:-openrouter/free}
+      OPENROUTER_FREE_RPM_THROTTLE: ${OPENROUTER_FREE_RPM_THROTTLE:-18}
+      OPENROUTER_FREE_RPD_SOFT_CAP: ${OPENROUTER_FREE_RPD_SOFT_CAP:-850}
+      OPENROUTER_FREE_QUARANTINE_5XX_SEC: ${OPENROUTER_FREE_QUARANTINE_5XX_SEC:-900}
+      OPENROUTER_HEALTH_PROBE_TIMEOUT_SEC: ${OPENROUTER_HEALTH_PROBE_TIMEOUT_SEC:-20}
+      OPENROUTER_HEALTH_PROBE_MAX_TOKENS: ${OPENROUTER_HEALTH_PROBE_MAX_TOKENS:-1}
+      OPENROUTER_PICKER_STICKY_SEC: ${OPENROUTER_PICKER_STICKY_SEC:-600}
+      OPENROUTER_RPD_SAFETY_BUFFER: ${OPENROUTER_RPD_SAFETY_BUFFER:-0.1}
+      OPENROUTER_QUARANTINE_5XX_THRESHOLD: ${OPENROUTER_QUARANTINE_5XX_THRESHOLD:-3}
+      OPENROUTER_QUARANTINE_5XX_WINDOW_SEC: ${OPENROUTER_QUARANTINE_5XX_WINDOW_SEC:-300}
+      POLZA_API_KEY: ${POLZA_API_KEY:-}
+      POLZA_BASE_URL: ${POLZA_BASE_URL:-https://polza.ai/api/v1}
+      POLZA_TEXT_MODEL: ${POLZA_TEXT_MODEL:-google/gemma-3-12b-it}
+      POLZA_SYNTHESIS_MODEL: ${POLZA_SYNTHESIS_MODEL:-mistralai/mistral-small-3.1-24b-instruct}
+      POLZA_VISION_MODEL: ${POLZA_VISION_MODEL:-}
       GIGACHAT_EMBEDDINGS_MODEL: ${GIGACHAT_EMBEDDINGS_MODEL:-EmbeddingsGigaR}
       GIGACHAT_MODEL_LITE: ${GIGACHAT_MODEL_LITE:-GigaChat-2}
       GIGACHAT_MODEL: ${GIGACHAT_MODEL:-GigaChat-2}
@@ -260,6 +288,7 @@ services:
       GIGACHAT_MIN_REQUEST_INTERVAL_MS: ${GIGACHAT_MIN_REQUEST_INTERVAL_MS:-250}
       INDEXING_MAX_CONCURRENCY: ${INDEXING_MAX_CONCURRENCY:-1}
       VISION_ENABLED: ${VISION_ENABLED:-true}
+      VISION_ROUTING_ENABLED: ${VISION_ROUTING_ENABLED:-true}
       VISION_CLAIM_IDLE_MS: ${VISION_CLAIM_IDLE_MS:-600000}
       VISION_MAX_DELIVERY_COUNT: ${VISION_MAX_DELIVERY_COUNT:-5}
       VISION_DLQ_STREAM: ${VISION_DLQ_STREAM:-stream:posts:vision:dlq}
@@ -343,6 +372,8 @@ services:
     build:
       context: .
       dockerfile: mcp/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [mcp]
     environment:
       FRONTIER_RUNTIME_MODE: ${FRONTIER_RUNTIME_MODE:-custom}
@@ -357,6 +388,7 @@ services:
       WORMSOFT_API_BASE: ${WORMSOFT_API_BASE:-https://ai.wormsoft.ru/api/gpt}
       WORMSOFT_API_KEY: ${WORMSOFT_API_KEY:-}
       WORMSOFT_MODEL_DEFAULT: ${WORMSOFT_MODEL_DEFAULT:-wormsoft/agent/medium}
+      WORMSOFT_MODEL_MCP_SYNTHESIS: ${WORMSOFT_MODEL_MCP_SYNTHESIS:-}
       GIGACHAT_EMBEDDINGS_MODEL: ${GIGACHAT_EMBEDDINGS_MODEL:-EmbeddingsGigaR}
       GIGACHAT_MODEL_LITE: ${GIGACHAT_MODEL_LITE:-GigaChat-2}
       GIGACHAT_MODEL: ${GIGACHAT_MODEL:-GigaChat-2}
@@ -393,6 +425,8 @@ services:
     build:
       context: .
       dockerfile: mcp/Dockerfile.gateway
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [mcp]
     environment:
       MCP_GATEWAY_HOST: "0.0.0.0"
@@ -412,6 +446,8 @@ services:
     build:
       context: .
       dockerfile: admin/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [admin]
     environment:
       FRONTIER_RUNTIME_MODE: ${FRONTIER_RUNTIME_MODE:-custom}
@@ -431,6 +467,24 @@ services:
       WORMSOFT_API_BASE: ${WORMSOFT_API_BASE:-https://ai.wormsoft.ru/api/gpt}
       WORMSOFT_API_KEY: ${WORMSOFT_API_KEY:-}
       WORMSOFT_MODEL_DEFAULT: ${WORMSOFT_MODEL_DEFAULT:-wormsoft/agent/medium}
+      WORMSOFT_MODEL_MCP_SYNTHESIS: ${WORMSOFT_MODEL_MCP_SYNTHESIS:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_REFERRER: ${OPENROUTER_REFERRER:-https://frontier-intelligence.local}
+      OPENROUTER_TEXT_MODEL: ${OPENROUTER_TEXT_MODEL:-openrouter/free}
+      OPENROUTER_FREE_RPM_THROTTLE: ${OPENROUTER_FREE_RPM_THROTTLE:-18}
+      OPENROUTER_FREE_RPD_SOFT_CAP: ${OPENROUTER_FREE_RPD_SOFT_CAP:-850}
+      OPENROUTER_FREE_QUARANTINE_5XX_SEC: ${OPENROUTER_FREE_QUARANTINE_5XX_SEC:-900}
+      OPENROUTER_HEALTH_PROBE_TIMEOUT_SEC: ${OPENROUTER_HEALTH_PROBE_TIMEOUT_SEC:-20}
+      OPENROUTER_HEALTH_PROBE_MAX_TOKENS: ${OPENROUTER_HEALTH_PROBE_MAX_TOKENS:-1}
+      OPENROUTER_PICKER_STICKY_SEC: ${OPENROUTER_PICKER_STICKY_SEC:-600}
+      OPENROUTER_RPD_SAFETY_BUFFER: ${OPENROUTER_RPD_SAFETY_BUFFER:-0.1}
+      OPENROUTER_QUARANTINE_5XX_THRESHOLD: ${OPENROUTER_QUARANTINE_5XX_THRESHOLD:-3}
+      OPENROUTER_QUARANTINE_5XX_WINDOW_SEC: ${OPENROUTER_QUARANTINE_5XX_WINDOW_SEC:-300}
+      POLZA_API_KEY: ${POLZA_API_KEY:-}
+      POLZA_BASE_URL: ${POLZA_BASE_URL:-https://polza.ai/api/v1}
+      POLZA_TEXT_MODEL: ${POLZA_TEXT_MODEL:-google/gemma-3-12b-it}
+      POLZA_SYNTHESIS_MODEL: ${POLZA_SYNTHESIS_MODEL:-mistralai/mistral-small-3.1-24b-instruct}
       GIGACHAT_SCOPE: ${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
       GIGACHAT_BASE_URL: ${GIGACHAT_BASE_URL:-https://gigachat.devices.sberbank.ru/api/v1}
       GIGACHAT_AUTH_URL: ${GIGACHAT_AUTH_URL:-https://ngw.devices.sberbank.ru:9443/api/v2/oauth}
@@ -460,6 +514,10 @@ services:
       REDIS_STREAM_LAG_ALERT_THRESHOLD: ${REDIS_STREAM_LAG_ALERT_THRESHOLD:-1000}
       REDIS_STREAM_PENDING_ALERT_THRESHOLD: ${REDIS_STREAM_PENDING_ALERT_THRESHOLD:-100}
       REDIS_STREAM_OLDEST_PENDING_AGE_ALERT_SECONDS: ${REDIS_STREAM_OLDEST_PENDING_AGE_ALERT_SECONDS:-900}
+      ADMIN_OPENROUTER_CATALOG_REFRESH_CRON: ${ADMIN_OPENROUTER_CATALOG_REFRESH_CRON:-*/15 * * * *}
+      ADMIN_OPENROUTER_KEY_REFRESH_CRON: ${ADMIN_OPENROUTER_KEY_REFRESH_CRON:-*/5 * * * *}
+      ADMIN_OPENROUTER_HEALTH_REFRESH_CRON: ${ADMIN_OPENROUTER_HEALTH_REFRESH_CRON:-*/5 * * * *}
+      ADMIN_OPENROUTER_RECONCILE_CRON: ${ADMIN_OPENROUTER_RECONCILE_CRON:-* * * * *}
       ADMIN_TREND_ALERT_CRON: ${ADMIN_TREND_ALERT_CRON:-25 * * * *}
       TREND_ALERTS_ENABLED: ${TREND_ALERTS_ENABLED:-true}
       TREND_ALERT_WINDOW_HOURS: ${TREND_ALERT_WINDOW_HOURS:-48}
@@ -491,6 +549,8 @@ services:
     build:
       context: .
       dockerfile: crawl4ai/Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     profiles: [crawl]
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-frontier}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-frontier}

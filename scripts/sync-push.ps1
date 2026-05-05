@@ -65,11 +65,21 @@ if (-not (Test-Path -LiteralPath $ExcludeFile)) {
     exit 1
 }
 
-# В WSL часто нет `ssh` в PATH — используем Windows OpenSSH изнутри WSL
-$SshWin = Join-Path $env:WINDIR "System32\OpenSSH\ssh.exe"
+# Предпочитаем нативный ssh в WSL: это стабильнее, чем прокидывать Windows ssh.exe в rsync -e.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$null = wsl sh -lc "command -v ssh" 2>&1
+$wslSshExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+
 $WslSshExe = $null
-if (Test-Path -LiteralPath $SshWin) {
-    $WslSshExe = ConvertTo-WslPath $SshWin
+if ($wslSshExit -eq 0) {
+    $WslSshExe = "ssh"
+} else {
+    $SshWin = Join-Path $env:WINDIR "System32\OpenSSH\ssh.exe"
+    if (Test-Path -LiteralPath $SshWin) {
+        $WslSshExe = ConvertTo-WslPath $SshWin
+    }
 }
 
 # ── Сборка аргументов rsync ───────────────────────────────────────
@@ -80,6 +90,9 @@ if ($WslSshExe) {
 $args += @(
     "--exclude-from=$WslExcludeFile",
     "--no-perms",
+    "--no-owner",
+    "--no-group",
+    "--omit-dir-times",
     "--chmod=Du=rwx,Dg=rwx,Fu=rw,Fg=rw"
 )
 

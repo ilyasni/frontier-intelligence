@@ -105,10 +105,25 @@ cd /opt/frontier-intelligence
 git fetch origin
 git status --short
 git pull --ff-only origin main
+bash scripts/server-prepare-base-images.sh worker mcp crawl4ai
 bash scripts/server-build-stack.sh worker mcp crawl4ai
 COMPOSE_PROFILES=core,ingest,xray,worker,crawl,paddleocr,mcp,admin \
-  docker compose up -d --force-recreate worker mcp crawl4ai
+  docker compose up -d --force-recreate --wait worker mcp crawl4ai
 ```
+
+Important: `worker`, `admin`, `mcp`, `ingest`, `crawl4ai`, `paddleocr`, and
+`gpt2giga-proxy` bake source code into the image with `COPY`. After source
+changes, `docker compose restart <service>` is **not enough**. Rebuild the
+image and recreate the container from the updated server tree.
+
+Important: `rsync` pushes the bytes from the local working tree as-is. It does
+not re-normalize line endings on the server. Keep server-side `*.sh` scripts in
+LF locally, otherwise `bash` on the server can fail with errors such as
+`pipefail\r: invalid option name` after sync.
+
+If the server has unstable access to Docker Hub, set `PYTHON_BASE_IMAGE` in the
+server `.env` to a reachable mirror/internal registry for Python-based
+COPY-build services, then rerun the deploy workflow.
 
 ## Server Hotfix Rule
 

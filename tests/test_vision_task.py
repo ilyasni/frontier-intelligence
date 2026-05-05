@@ -45,6 +45,7 @@ async def test_vision_task_falls_back_to_ocr_on_422(monkeypatch) -> None:
     payload = save_args[2]
     assert payload["vision_mode"] == "full"
     assert payload["ocr_text"] == "detected text"
+    assert payload["items"][0]["quality_tier"] == "standard"
     assert payload["items"][0]["paddle_ocr_text"] == "detected text"
     assert payload["items"][0]["vision_error"]["status_code"] == 422
     assert payload["items"][0]["vision_error"]["kind"] == "nonfatal_upstream"
@@ -101,6 +102,8 @@ async def test_vision_task_uploads_album_summary_and_marks_group(monkeypatch) ->
     )
 
     task._upload_album_summary.assert_awaited_once()
+    save_payload = task._save_enrichment.await_args.args[2]
+    assert save_payload["items"][0]["quality_tier"] == "standard"
     _, kwargs = task._update_media_group_vision.await_args
     assert kwargs["workspace_id"] == "disruption"
     assert kwargs["source_id"] == "aiwizards"
