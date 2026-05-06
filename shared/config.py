@@ -144,6 +144,12 @@ class Settings(BaseSettings):
         300,
         alias="LLM_CIRCUIT_FAILURE_WINDOW_SEC",
     )
+    llm_shadow_eval_enabled: bool = Field(True, alias="LLM_SHADOW_EVAL_ENABLED")
+    llm_shadow_eval_timeout_sec: float = Field(15.0, alias="LLM_SHADOW_EVAL_TIMEOUT_SEC")
+    llm_shadow_eval_max_concurrency: int = Field(
+        2,
+        alias="LLM_SHADOW_EVAL_MAX_CONCURRENCY",
+    )
     polza_api_key: str = Field("", alias="POLZA_API_KEY")
     polza_base_url: str = Field("https://polza.ai/api/v1", alias="POLZA_BASE_URL")
     polza_text_model: str = Field("google/gemma-3-12b-it", alias="POLZA_TEXT_MODEL")

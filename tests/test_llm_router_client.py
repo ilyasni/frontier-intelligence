@@ -1,10 +1,13 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from shared.llm_control_plane import (
     POLICY_MODE_MAINTENANCE,
+    POLICY_MODE_SHADOW_EVAL,
     POLICY_MODE_STRICT,
+    ROUTING_EVENTS_REDIS_KEY,
     RoutingCandidate,
     RoutingPolicyV2,
     TaskFamilyPolicy,
@@ -338,6 +341,67 @@ class _ExplodingGuard(_FakeGuard):
         reset_at: float | None = None,
     ) -> None:
         raise RuntimeError("guard_write_failed")
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.hashes = {}
+        self.values = {}
+        self.lists = {}
+
+    async def hgetall(self, key):
+        return dict(self.hashes.get(key, {}))
+
+    async def hincrbyfloat(self, key, field, amount):
+        bucket = self.hashes.setdefault(key, {})
+        bucket[field] = float(bucket.get(field, 0.0) or 0.0) + float(amount)
+        return bucket[field]
+
+    async def hincrby(self, key, field, amount):
+        bucket = self.hashes.setdefault(key, {})
+        bucket[field] = int(bucket.get(field, 0) or 0) + int(amount)
+        return bucket[field]
+
+    async def hset(self, key, mapping=None, *args):
+        bucket = self.hashes.setdefault(key, {})
+        if mapping:
+            bucket.update(mapping)
+        elif len(args) == 2:
+            bucket[args[0]] = args[1]
+        return True
+
+    async def expire(self, key, ttl):
+        return True
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def set(self, key, value, ex=None):
+        self.values[key] = value
+        return True
+
+    async def delete(self, key):
+        self.values.pop(key, None)
+        self.hashes.pop(key, None)
+        return 1
+
+    async def incr(self, key):
+        value = int(self.values.get(key, 0) or 0) + 1
+        self.values[key] = value
+        return value
+
+    async def lpush(self, key, value):
+        bucket = self.lists.setdefault(key, [])
+        bucket.insert(0, value)
+        return len(bucket)
+
+    async def ltrim(self, key, start, stop):
+        bucket = self.lists.setdefault(key, [])
+        if stop >= 0:
+            self.lists[key] = bucket[start : stop + 1]
+        else:
+            self.lists[key] = bucket[start:]
+        return True
 
 
 def _settings(embed_dim: int = 2560):
@@ -682,3 +746,56 @@ async def test_llm_router_maintenance_mode_prefers_gigachat(monkeypatch) -> None
     assert client.last_routing_decision is not None
     assert client.last_routing_decision.mode == POLICY_MODE_MAINTENANCE
     assert len(client.last_routing_decision.considered_candidates) == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_router_shadow_eval_runs_alternative_chain_and_publishes_result(monkeypatch) -> None:
+    monkeypatch.setattr("worker.llm_router_client.get_settings", _settings)
+    _install_dynamic_openrouter(monkeypatch)
+    monkeypatch.setattr(
+        LLMRouterClient,
+        "routing_policy",
+        property(
+            lambda self: _policy_override(
+                text_mode=POLICY_MODE_SHADOW_EVAL,
+                text_candidates=[
+                    RoutingCandidate(provider="wormsoft", model="wormsoft/agent/medium"),
+                    RoutingCandidate(provider="gigachat", model="GigaChat-2"),
+                ],
+            )
+        ),
+    )
+    redis = _FakeRedis()
+    giga = _FakeGiga()
+    wormsoft = _FakeWormsoft(available=True)
+    client = LLMRouterClient(
+        redis=redis,
+        gigachat_client=giga,
+        wormsoft_client=wormsoft,
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=True),
+        openrouter_text_client=_FakeOpenRouterText(),
+        polza_text_client=_FakePolzaText(),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    response = await client.chat(system="s", user="u", task="relevance")
+    await client.drain_shadow_evaluations()
+
+    assert response.provider == "wormsoft"
+    assert giga.calls
+    events = [
+        json.loads(item)
+        for item in redis.lists.get(ROUTING_EVENTS_REDIS_KEY, [])
+    ]
+    shadow_finished = next(
+        event for event in events if event.get("event") == "routing_shadow_execution_finished"
+    )
+    payload = shadow_finished["payload"]
+    assert payload["primary_receipt"]["status"] == "ok"
+    assert payload["shadow_receipt"]["execution_role"] == "shadow"
+    assert payload["shadow_receipt"]["status"] == "ok"
+    assert payload["shadow_receipt"]["actual_provider"] == "gigachat"
+    assert payload["comparison"]["status_match"] is True
+    assert payload["comparison"]["provider_match"] is False

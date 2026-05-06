@@ -1,13 +1,17 @@
 """Provider-aware LLM router that keeps Giga for embeddings/vision."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 from shared.config import get_settings
 from shared.llm_control_plane import (
+    EXECUTION_ROLE_PRIMARY,
+    EXECUTION_ROLE_SHADOW,
     POLICY_MODE_DEGRADED,
     POLICY_MODE_SHADOW_EVAL,
     AttemptOutcome,
@@ -18,6 +22,8 @@ from shared.llm_control_plane import (
     RoutingDecision,
     ROUTING_EVENTS_MAXLEN,
     ROUTING_EVENTS_REDIS_KEY,
+    ShadowComparison,
+    ShadowEvaluationResult,
     TASK_FAMILY_EMBEDDINGS,
     TASK_FAMILY_TEXT_GENERATION,
     TASK_FAMILY_VISION_GENERATION,
@@ -105,6 +111,10 @@ class LLMRouterClient:
             settings=self._settings,
         )
         self._budget_manager = ProviderBudgetManager(redis=redis, settings=self._settings)
+        self._shadow_eval_semaphore = asyncio.Semaphore(
+            max(1, int(getattr(self._settings, "llm_shadow_eval_max_concurrency", 2) or 2))
+        )
+        self._shadow_tasks: set[asyncio.Task[Any]] = set()
         self._provider_adapters = {
             PROVIDER_WORMSOFT: WormsoftAdapter(
                 service_name=service_name,
@@ -136,6 +146,7 @@ class LLMRouterClient:
         self._last_execution_receipt: ExecutionReceipt | None = None
 
     async def close(self) -> None:
+        await self.drain_shadow_evaluations(cancel=True)
         if self._runtime_redis is not None:
             await self._runtime_redis.aclose()
         await self._budget_manager.close()
@@ -160,6 +171,15 @@ class LLMRouterClient:
     @property
     def last_execution_receipt(self) -> ExecutionReceipt | None:
         return self._last_execution_receipt
+
+    async def drain_shadow_evaluations(self, *, cancel: bool = False) -> None:
+        if not self._shadow_tasks:
+            return
+        pending = list(self._shadow_tasks)
+        if cancel:
+            for task in pending:
+                task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     @property
     def routing_settings(self):
@@ -484,7 +504,10 @@ class LLMRouterClient:
                 vector = await adapter.embed(request)
                 latency_ms = (time.monotonic() - started_at) * 1000.0
                 await self._record_provider_success(attempt_provider, effective_model)
-                await self._budget_manager.commit(reservation, actual_units=1.0)
+                reservation = await self._budget_manager.commit(
+                    reservation,
+                    actual_units=1.0,
+                )
                 attempt_outcomes.append(
                     AttemptOutcome(
                         provider=attempt_provider,
@@ -524,7 +547,7 @@ class LLMRouterClient:
                     "routing_execution_finished",
                     receipt.model_dump(),
                 )
-                await self._publish_shadow_plan(
+                await self._launch_shadow_evaluation(
                     task=task,
                     task_family=task_family,
                     mode=policy_mode,
@@ -532,6 +555,8 @@ class LLMRouterClient:
                     selected_provider=attempt_provider,
                     selected_model=effective_model,
                     skipped_candidates=skipped_candidates,
+                    request=request.model_copy(update={"model": effective_model}),
+                    primary_receipt=receipt,
                 )
                 return vector
             except Exception as exc:
@@ -888,7 +913,7 @@ class LLMRouterClient:
                     requested_model=effective_model,
                     actual_model=response.actual_model,
                 )
-                await self._budget_manager.commit(
+                reservation = await self._budget_manager.commit(
                     reservation,
                     actual_units=cost_estimate if cost_estimate is not None else 1.0,
                     prompt_tokens=response.usage.prompt_tokens,
@@ -913,7 +938,7 @@ class LLMRouterClient:
                 self._last_execution_receipt = receipt
                 await adapter.record_result(receipt=receipt, error=None)
                 await self._append_routing_event("routing_execution_finished", receipt.model_dump())
-                await self._publish_shadow_plan(
+                await self._launch_shadow_evaluation(
                     task="vision",
                     task_family=TASK_FAMILY_VISION_GENERATION,
                     mode=policy_mode,
@@ -921,6 +946,8 @@ class LLMRouterClient:
                     selected_provider=attempt_provider,
                     selected_model=effective_model,
                     skipped_candidates=skipped_candidates,
+                    request=resolved_request,
+                    primary_receipt=receipt,
                 )
                 return response
             except Exception as exc:
@@ -1129,6 +1156,52 @@ class LLMRouterClient:
             skipped_candidates=list(skipped_candidates or []),
         )
 
+    def _shadow_candidates(
+        self,
+        attempts: list[tuple[str, str]],
+        *,
+        selected_provider: str,
+        selected_model: str,
+    ) -> list[tuple[str, str]]:
+        selected_pair = (normalize_provider(selected_provider), str(selected_model or "").strip())
+        for index, pair in enumerate(attempts):
+            normalized = (normalize_provider(pair[0]), str(pair[1] or "").strip())
+            if normalized == selected_pair:
+                return attempts[index + 1 :]
+        return []
+
+    def _shadow_enabled(self, mode: str) -> bool:
+        return bool(getattr(self._settings, "llm_shadow_eval_enabled", True)) and (
+            normalize_policy_mode(mode) == POLICY_MODE_SHADOW_EVAL
+        )
+
+    @staticmethod
+    def _shadow_comparison(
+        primary_receipt: ExecutionReceipt,
+        shadow_receipt: ExecutionReceipt,
+    ) -> ShadowComparison:
+        primary_cost = primary_receipt.cost_estimate
+        shadow_cost = shadow_receipt.cost_estimate
+        primary_budget = dict(primary_receipt.budget_attribution or {})
+        shadow_budget = dict(shadow_receipt.budget_attribution or {})
+        return ShadowComparison(
+            status_match=primary_receipt.status == shadow_receipt.status,
+            provider_match=primary_receipt.actual_provider == shadow_receipt.actual_provider,
+            same_model=primary_receipt.actual_model == shadow_receipt.actual_model,
+            latency_delta_ms=shadow_receipt.latency_ms - primary_receipt.latency_ms,
+            cost_delta=(
+                None
+                if primary_cost is None or shadow_cost is None
+                else float(shadow_cost) - float(primary_cost)
+            ),
+            prompt_tokens_delta=int(shadow_budget.get("prompt_tokens", 0) or 0)
+            - int(primary_budget.get("prompt_tokens", 0) or 0),
+            completion_tokens_delta=int(shadow_budget.get("completion_tokens", 0) or 0)
+            - int(primary_budget.get("completion_tokens", 0) or 0),
+            billable_tokens_delta=int(shadow_budget.get("billable_tokens", 0) or 0)
+            - int(primary_budget.get("billable_tokens", 0) or 0),
+        )
+
     async def _publish_shadow_plan(
         self,
         *,
@@ -1139,19 +1212,24 @@ class LLMRouterClient:
         selected_provider: str,
         selected_model: str,
         skipped_candidates: list[dict[str, Any]],
+        shadow_group_id: str = "",
     ) -> None:
-        if normalize_policy_mode(mode) != POLICY_MODE_SHADOW_EVAL:
+        if not self._shadow_enabled(mode):
             return
         shadow_attempts = [
             {"provider": provider, "model": model}
-            for provider, model in attempts
-            if (provider, model) != (selected_provider, selected_model)
+            for provider, model in self._shadow_candidates(
+                attempts,
+                selected_provider=selected_provider,
+                selected_model=selected_model,
+            )
         ]
         if not shadow_attempts:
             return
         await self._append_routing_event(
             "routing_shadow_plan",
             {
+                "shadow_group_id": shadow_group_id,
                 "task": task,
                 "task_family": task_family,
                 "mode": mode,
@@ -1161,6 +1239,512 @@ class LLMRouterClient:
                 "skipped_candidates": list(skipped_candidates),
                 "timestamp": time.time(),
             },
+        )
+
+    def _track_shadow_task(self, task: asyncio.Task[Any]) -> None:
+        self._shadow_tasks.add(task)
+        task.add_done_callback(self._shadow_tasks.discard)
+
+    async def _launch_shadow_evaluation(
+        self,
+        *,
+        task: str,
+        task_family: str,
+        mode: str,
+        attempts: list[tuple[str, str]],
+        selected_provider: str,
+        selected_model: str,
+        skipped_candidates: list[dict[str, Any]],
+        request: ProviderExecutionRequest,
+        primary_receipt: ExecutionReceipt,
+    ) -> None:
+        if not self._shadow_enabled(mode):
+            return
+        shadow_attempts = self._shadow_candidates(
+            attempts,
+            selected_provider=selected_provider,
+            selected_model=selected_model,
+        )
+        if not shadow_attempts:
+            return
+        shadow_group_id = uuid.uuid4().hex
+        await self._publish_shadow_plan(
+            task=task,
+            task_family=task_family,
+            mode=mode,
+            attempts=attempts,
+            selected_provider=selected_provider,
+            selected_model=selected_model,
+            skipped_candidates=skipped_candidates,
+            shadow_group_id=shadow_group_id,
+        )
+        shadow_request = request.model_copy(
+            update={
+                "metadata": {
+                    **dict(request.metadata or {}),
+                    "shadow_group_id": shadow_group_id,
+                }
+            }
+        )
+        task_obj = asyncio.create_task(
+            self._run_shadow_evaluation(
+                task=task,
+                task_family=task_family,
+                attempts=shadow_attempts,
+                mode=mode,
+                request=shadow_request,
+                primary_receipt=primary_receipt,
+                shadow_group_id=shadow_group_id,
+            ),
+            name=f"shadow-eval-{task}-{shadow_group_id[:8]}",
+        )
+        self._track_shadow_task(task_obj)
+
+    async def _run_shadow_evaluation(
+        self,
+        *,
+        task: str,
+        task_family: str,
+        attempts: list[tuple[str, str]],
+        mode: str,
+        request: ProviderExecutionRequest,
+        primary_receipt: ExecutionReceipt,
+        shadow_group_id: str,
+    ) -> None:
+        timeout = float(getattr(self._settings, "llm_shadow_eval_timeout_sec", 15.0) or 15.0)
+        async with self._shadow_eval_semaphore:
+            await self._append_routing_event(
+                "routing_shadow_execution_started",
+                {
+                    "shadow_group_id": shadow_group_id,
+                    "task": task,
+                    "task_family": task_family,
+                    "mode": mode,
+                    "attempts": [
+                        {"provider": provider, "model": model}
+                        for provider, model in attempts
+                    ],
+                    "timestamp": time.time(),
+                },
+            )
+            try:
+                await asyncio.wait_for(
+                    self._execute_shadow_chain(
+                        task=task,
+                        task_family=task_family,
+                        attempts=attempts,
+                        request=request,
+                        primary_receipt=primary_receipt,
+                        shadow_group_id=shadow_group_id,
+                        mode=mode,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                timeout_receipt = ExecutionReceipt(
+                    task=task,
+                    task_family=task_family,
+                    status="error",
+                    execution_role=EXECUTION_ROLE_SHADOW,
+                    shadow_group_id=shadow_group_id,
+                    requested_provider=attempts[0][0],
+                    requested_model=attempts[0][1],
+                    actual_provider=attempts[0][0],
+                    actual_model=attempts[0][1],
+                    fallback_reason="shadow_timeout",
+                    provider_error=ProviderError(
+                        provider=attempts[0][0],
+                        category="timeout",
+                        message="shadow evaluation timed out",
+                        retryable=True,
+                        reason="shadow_timeout",
+                    ),
+                    decision=self._routing_decision(
+                        task=task,
+                        task_family=task_family,
+                        attempts=attempts,
+                        selected_provider=attempts[0][0],
+                        selected_model=attempts[0][1],
+                        skipped_candidates=[],
+                        mode=mode,
+                    ),
+                )
+                result = ShadowEvaluationResult(
+                    group_id=shadow_group_id,
+                    primary_receipt=primary_receipt,
+                    shadow_receipt=timeout_receipt,
+                    comparison=self._shadow_comparison(primary_receipt, timeout_receipt),
+                )
+                await self._append_routing_event(
+                    "routing_shadow_execution_finished",
+                    result.model_dump(),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("shadow_evaluation_failed", exc_info=True)
+
+    async def _execute_shadow_chain(
+        self,
+        *,
+        task: str,
+        task_family: str,
+        attempts: list[tuple[str, str]],
+        request: ProviderExecutionRequest,
+        primary_receipt: ExecutionReceipt,
+        shadow_group_id: str,
+        mode: str,
+    ) -> None:
+        attempt_outcomes: list[AttemptOutcome] = []
+        skipped_candidates: list[dict[str, Any]] = []
+        last_receipt: ExecutionReceipt | None = None
+
+        for provider, requested_model in attempts:
+            effective_model = requested_model
+            if task_family == TASK_FAMILY_VISION_GENERATION:
+                available, reason = self._vision_provider_available(provider, effective_model)
+            elif task_family == TASK_FAMILY_EMBEDDINGS:
+                available, reason = True, "ok"
+            else:
+                available, reason = self._provider_available(provider, effective_model)
+            if not available:
+                skipped_candidates.append(
+                    {"provider": provider, "model": effective_model, "reason": reason}
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=reason,
+                    )
+                )
+                continue
+
+            allowed_by_circuit, circuit_reason = await self._circuit_breaker.reserve(
+                provider,
+                effective_model,
+            )
+            if not allowed_by_circuit:
+                skipped_candidates.append(
+                    {
+                        "provider": provider,
+                        "model": effective_model,
+                        "reason": circuit_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=circuit_reason,
+                    )
+                )
+                continue
+
+            resolved_request = request.model_copy(update={"model": effective_model})
+            effective_model, resolution_metadata = await self._resolve_provider_model(
+                provider,
+                resolved_request,
+            )
+            if not effective_model:
+                reason = str(resolution_metadata.get("reason") or "no_capable_model")
+                skipped_candidates.append(
+                    {"provider": provider, "model": requested_model, "reason": reason}
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=provider,
+                        model=requested_model,
+                        status="skipped",
+                        reason=reason,
+                    )
+                )
+                continue
+            resolved_request = resolved_request.model_copy(
+                update={
+                    "model": effective_model,
+                    "metadata": {
+                        **dict(request.metadata or {}),
+                        **dict(resolution_metadata or {}),
+                    },
+                }
+            )
+
+            if task_family == TASK_FAMILY_EMBEDDINGS:
+                profile_reason = self._embedding_profile_reason(effective_model)
+                if profile_reason:
+                    skipped_candidates.append(
+                        {
+                            "provider": provider,
+                            "model": effective_model,
+                            "reason": profile_reason,
+                        }
+                    )
+                    attempt_outcomes.append(
+                        AttemptOutcome(
+                            provider=provider,
+                            model=effective_model,
+                            status="skipped",
+                            reason=profile_reason,
+                        )
+                    )
+                    continue
+
+            allowed_capacity, capacity_reason = await self._reserve_provider_capacity(
+                provider,
+                effective_model,
+                task_family=task_family,
+            )
+            if not allowed_capacity:
+                skipped_candidates.append(
+                    {
+                        "provider": provider,
+                        "model": effective_model,
+                        "reason": capacity_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=capacity_reason,
+                    )
+                )
+                continue
+
+            reservation = await self._budget_manager.reserve(
+                provider=provider,
+                model=effective_model,
+                task_family=task_family,
+                execution_role=EXECUTION_ROLE_SHADOW,
+                metadata={"shadow_group_id": shadow_group_id},
+            )
+            adapter = self._adapter_for_provider(provider)
+            started_at = time.monotonic()
+            try:
+                if task_family == TASK_FAMILY_VISION_GENERATION:
+                    response = await adapter.vision(resolved_request)
+                    cost_estimate = adapter.estimate_cost(
+                        response=response,
+                        requested_model=effective_model,
+                        actual_model=response.actual_model,
+                    )
+                    reservation = await self._budget_manager.commit(
+                        reservation,
+                        actual_units=cost_estimate if cost_estimate is not None else 1.0,
+                        prompt_tokens=response.usage.prompt_tokens,
+                        completion_tokens=response.usage.completion_tokens,
+                        billable_tokens=response.usage.billable_tokens,
+                    )
+                    attempt_outcomes.append(
+                        AttemptOutcome(
+                            provider=provider,
+                            model=effective_model,
+                            status="ok",
+                            actual_model=response.actual_model,
+                        )
+                    )
+                    shadow_receipt = ExecutionReceipt(
+                        task=task,
+                        task_family=task_family,
+                        status="ok",
+                        execution_role=EXECUTION_ROLE_SHADOW,
+                        shadow_group_id=shadow_group_id,
+                        requested_provider=attempts[0][0],
+                        requested_model=attempts[0][1],
+                        actual_provider=response.provider,
+                        actual_model=response.actual_model,
+                        fallback_reason=response.fallback_reason,
+                        latency_ms=(time.monotonic() - started_at) * 1000.0,
+                        cost_estimate=cost_estimate,
+                        budget_attribution=reservation,
+                        decision=self._routing_decision(
+                            task=task,
+                            task_family=task_family,
+                            attempts=attempts,
+                            selected_provider=provider,
+                            selected_model=effective_model,
+                            skipped_candidates=skipped_candidates,
+                            mode=mode,
+                        ),
+                        attempts=attempt_outcomes,
+                    )
+                elif task_family == TASK_FAMILY_EMBEDDINGS:
+                    await adapter.embed(resolved_request)
+                    reservation = await self._budget_manager.commit(
+                        reservation,
+                        actual_units=1.0,
+                    )
+                    attempt_outcomes.append(
+                        AttemptOutcome(
+                            provider=provider,
+                            model=effective_model,
+                            status="ok",
+                            actual_model=effective_model,
+                        )
+                    )
+                    shadow_receipt = ExecutionReceipt(
+                        task=task,
+                        task_family=task_family,
+                        status="ok",
+                        execution_role=EXECUTION_ROLE_SHADOW,
+                        shadow_group_id=shadow_group_id,
+                        requested_provider=attempts[0][0],
+                        requested_model=attempts[0][1],
+                        actual_provider=provider,
+                        actual_model=effective_model,
+                        latency_ms=(time.monotonic() - started_at) * 1000.0,
+                        budget_attribution=reservation,
+                        decision=self._routing_decision(
+                            task=task,
+                            task_family=task_family,
+                            attempts=attempts,
+                            selected_provider=provider,
+                            selected_model=effective_model,
+                            skipped_candidates=skipped_candidates,
+                            mode=mode,
+                        ),
+                        attempts=attempt_outcomes,
+                    )
+                else:
+                    response = await adapter.execute(resolved_request)
+                    cost_estimate = adapter.estimate_cost(
+                        response=response,
+                        requested_model=effective_model,
+                        actual_model=response.actual_model,
+                    )
+                    reservation = await self._budget_manager.commit(
+                        reservation,
+                        actual_units=cost_estimate if cost_estimate is not None else 1.0,
+                        prompt_tokens=response.usage.prompt_tokens,
+                        completion_tokens=response.usage.completion_tokens,
+                        billable_tokens=response.usage.billable_tokens,
+                    )
+                    attempt_outcomes.append(
+                        AttemptOutcome(
+                            provider=provider,
+                            model=effective_model,
+                            status="ok",
+                            actual_model=response.actual_model,
+                        )
+                    )
+                    shadow_receipt = ExecutionReceipt(
+                        task=task,
+                        task_family=task_family,
+                        status="ok",
+                        execution_role=EXECUTION_ROLE_SHADOW,
+                        shadow_group_id=shadow_group_id,
+                        requested_provider=attempts[0][0],
+                        requested_model=attempts[0][1],
+                        actual_provider=response.provider,
+                        actual_model=response.actual_model,
+                        fallback_reason=response.fallback_reason,
+                        latency_ms=(time.monotonic() - started_at) * 1000.0,
+                        cost_estimate=cost_estimate,
+                        budget_attribution=reservation,
+                        decision=self._routing_decision(
+                            task=task,
+                            task_family=task_family,
+                            attempts=attempts,
+                            selected_provider=provider,
+                            selected_model=effective_model,
+                            skipped_candidates=skipped_candidates,
+                            mode=mode,
+                        ),
+                        attempts=attempt_outcomes,
+                    )
+
+                result = ShadowEvaluationResult(
+                    group_id=shadow_group_id,
+                    primary_receipt=primary_receipt,
+                    shadow_receipt=shadow_receipt,
+                    comparison=self._shadow_comparison(primary_receipt, shadow_receipt),
+                )
+                await self._append_routing_event(
+                    "routing_shadow_execution_finished",
+                    result.model_dump(),
+                )
+                return
+            except Exception as exc:
+                await self._budget_manager.release(reservation)
+                provider_error = adapter.normalize_error(exc, model=effective_model)
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=provider,
+                        model=effective_model,
+                        status="error",
+                        reason=provider_error.reason or self._fallback_reason_from_error(exc),
+                    )
+                )
+                last_receipt = ExecutionReceipt(
+                    task=task,
+                    task_family=task_family,
+                    status="error",
+                    execution_role=EXECUTION_ROLE_SHADOW,
+                    shadow_group_id=shadow_group_id,
+                    requested_provider=attempts[0][0],
+                    requested_model=attempts[0][1],
+                    actual_provider=provider,
+                    actual_model=effective_model,
+                    fallback_reason=provider_error.reason
+                    or self._fallback_reason_from_error(exc),
+                    latency_ms=(time.monotonic() - started_at) * 1000.0,
+                    budget_attribution=reservation,
+                    decision=self._routing_decision(
+                        task=task,
+                        task_family=task_family,
+                        attempts=attempts,
+                        selected_provider=provider,
+                        selected_model=effective_model,
+                        skipped_candidates=skipped_candidates,
+                        mode=mode,
+                    ),
+                    attempts=attempt_outcomes,
+                    provider_error=provider_error,
+                )
+
+        if last_receipt is None:
+            last_receipt = ExecutionReceipt(
+                task=task,
+                task_family=task_family,
+                status="error",
+                execution_role=EXECUTION_ROLE_SHADOW,
+                shadow_group_id=shadow_group_id,
+                requested_provider=attempts[0][0],
+                requested_model=attempts[0][1],
+                actual_provider=attempts[-1][0],
+                actual_model=attempts[-1][1],
+                fallback_reason="no_shadow_route_available",
+                decision=self._routing_decision(
+                    task=task,
+                    task_family=task_family,
+                    attempts=attempts,
+                    selected_provider=attempts[-1][0],
+                    selected_model=attempts[-1][1],
+                    skipped_candidates=skipped_candidates,
+                    mode=mode,
+                ),
+                attempts=attempt_outcomes,
+                provider_error=ProviderError(
+                    provider=attempts[-1][0],
+                    category="provider_unavailable",
+                    message="no shadow route available",
+                    retryable=False,
+                    reason="no_shadow_route_available",
+                ),
+            )
+        result = ShadowEvaluationResult(
+            group_id=shadow_group_id,
+            primary_receipt=primary_receipt,
+            shadow_receipt=last_receipt,
+            comparison=self._shadow_comparison(primary_receipt, last_receipt),
+        )
+        await self._append_routing_event(
+            "routing_shadow_execution_finished",
+            result.model_dump(),
         )
 
     async def _append_routing_event(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -1631,7 +2215,7 @@ class LLMRouterClient:
                     requested_model=effective_model,
                     actual_model=response.actual_model,
                 )
-                await self._budget_manager.commit(
+                reservation = await self._budget_manager.commit(
                     reservation,
                     actual_units=cost_estimate if cost_estimate is not None else 1.0,
                     prompt_tokens=response.usage.prompt_tokens,
@@ -1659,7 +2243,7 @@ class LLMRouterClient:
                     "routing_execution_finished",
                     receipt.model_dump(),
                 )
-                await self._publish_shadow_plan(
+                await self._launch_shadow_evaluation(
                     task=task,
                     task_family=task_family,
                     mode=policy_mode,
@@ -1667,6 +2251,8 @@ class LLMRouterClient:
                     selected_provider=attempt_provider,
                     selected_model=effective_model,
                     skipped_candidates=skipped_candidates,
+                    request=resolved_request,
+                    primary_receipt=receipt,
                 )
                 return response
             except Exception as exc:

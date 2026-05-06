@@ -85,6 +85,8 @@ CIRCUIT_STATE_CLOSED = "closed"
 CIRCUIT_STATE_OPEN = "open"
 CIRCUIT_LEVEL_PROVIDER = "provider"
 CIRCUIT_LEVEL_MODEL = "model"
+EXECUTION_ROLE_PRIMARY = "primary"
+EXECUTION_ROLE_SHADOW = "shadow"
 
 
 def normalize_task_family(value: Any) -> str:
@@ -347,6 +349,8 @@ class ExecutionReceipt(BaseModel):
     task: str
     task_family: str
     status: str
+    execution_role: str = EXECUTION_ROLE_PRIMARY
+    shadow_group_id: str = ""
     requested_provider: str
     requested_model: str
     actual_provider: str
@@ -370,6 +374,32 @@ class ExecutionReceipt(BaseModel):
     @classmethod
     def _validate_provider(cls, value: Any) -> str:
         return normalize_provider(value)
+
+    @field_validator("execution_role", mode="before")
+    @classmethod
+    def _validate_execution_role(cls, value: Any) -> str:
+        raw = str(value or EXECUTION_ROLE_PRIMARY).strip().lower()
+        if raw in {EXECUTION_ROLE_PRIMARY, EXECUTION_ROLE_SHADOW}:
+            return raw
+        return EXECUTION_ROLE_PRIMARY
+
+
+class ShadowComparison(BaseModel):
+    status_match: bool
+    provider_match: bool
+    same_model: bool
+    latency_delta_ms: float | None = None
+    cost_delta: float | None = None
+    prompt_tokens_delta: int | None = None
+    completion_tokens_delta: int | None = None
+    billable_tokens_delta: int | None = None
+
+
+class ShadowEvaluationResult(BaseModel):
+    group_id: str
+    primary_receipt: ExecutionReceipt
+    shadow_receipt: ExecutionReceipt
+    comparison: ShadowComparison
 
 
 class ProviderExecutionRequest(BaseModel):

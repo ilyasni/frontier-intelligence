@@ -56,6 +56,8 @@ class ProviderBudgetManager:
         task_family: str,
         requested_units: float = 1.0,
         unit: str = "requests",
+        execution_role: str = "primary",
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         reservation = {
             "reservation_id": uuid.uuid4().hex,
@@ -64,9 +66,12 @@ class ProviderBudgetManager:
             "task_family": str(task_family or "").strip(),
             "requested_units": float(requested_units or 0.0),
             "unit": str(unit or "requests"),
+            "execution_role": str(execution_role or "primary"),
             "reserved_at": time.time(),
             "day": _day_key(),
         }
+        if metadata:
+            reservation.update(dict(metadata))
         redis = await self._client()
         if redis is None:
             return reservation
@@ -107,6 +112,9 @@ class ProviderBudgetManager:
             if actual_units is not None
             else payload.get("requested_units") or 0.0
         )
+        payload["prompt_tokens"] = int(prompt_tokens or 0)
+        payload["completion_tokens"] = int(completion_tokens or 0)
+        payload["billable_tokens"] = int(billable_tokens or 0)
         payload["committed_at"] = time.time()
         redis = await self._client()
         if redis is None:
@@ -117,9 +125,9 @@ class ProviderBudgetManager:
             await redis.hincrbyfloat(key, "committed_units", payload["actual_units"])
             await redis.hincrby(key, "committed_requests", 1)
             await redis.hincrby(key, "active_requests", -1)
-            await redis.hincrby(key, "prompt_tokens", int(prompt_tokens or 0))
-            await redis.hincrby(key, "completion_tokens", int(completion_tokens or 0))
-            await redis.hincrby(key, "billable_tokens", int(billable_tokens or 0))
+            await redis.hincrby(key, "prompt_tokens", payload["prompt_tokens"])
+            await redis.hincrby(key, "completion_tokens", payload["completion_tokens"])
+            await redis.hincrby(key, "billable_tokens", payload["billable_tokens"])
             await redis.hset(key, "updated_at", str(time.time()))
             await redis.expire(key, ttl)
         except Exception:
