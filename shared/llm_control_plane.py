@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
-from shared.embedding_models import get_embedding_model_spec
+from shared.embedding_models import embedding_profile
 from shared.llm_routing import (
     DEFAULT_OPENROUTER_TEXT_MODEL,
     DEFAULT_POLZA_SYNTHESIS_MODEL,
@@ -384,6 +384,7 @@ class ProviderExecutionRequest(BaseModel):
     text: str = ""
     image_bytes: bytes | None = None
     quality_tier: str = "standard"
+    embedding_purpose: str = "document"
     workspace_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -608,16 +609,7 @@ def apply_execution_mode(
 
 
 def embedding_profile_for_model(model: str) -> dict[str, Any]:
-    spec = get_embedding_model_spec(model)
-    if spec is None:
-        return {}
-    return {
-        "dimension": spec.dim,
-        "context_tokens": spec.context_tokens,
-        "tier": spec.tier,
-        "distance_metric": "cosine",
-        "index_family": f"dense-{spec.dim}",
-    }
+    return embedding_profile(model)
 
 
 def simulate_routing_decision(

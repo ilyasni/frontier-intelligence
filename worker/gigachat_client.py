@@ -13,7 +13,7 @@ from typing import Any
 from pydantic.fields import FieldInfo
 
 from shared.config import get_settings
-from shared.embedding_models import expected_embedding_dim
+from shared.embedding_models import embedding_input_text, expected_embedding_dim
 from shared.metrics import (
     note_gigachat_escalation,
     note_gigachat_request,
@@ -385,16 +385,23 @@ class GigaChatClient:
     async def budget_text(self, text: str, model: str, token_budget: int) -> BudgetedText:
         return await fit_text_to_token_budget(text, model, token_budget, self.count_tokens)
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, purpose: str = "document") -> list[float]:
         """Return embedding vector, using Redis cache and token-aware trimming."""
         await self.refresh_runtime_overrides()
-        budgeted = await self.budget_text(
+        prepared_text = embedding_input_text(
+            self._settings.gigachat_embeddings_model,
             text,
+            purpose=purpose,
+        )
+        budgeted = await self.budget_text(
+            prepared_text,
             self._settings.gigachat_embeddings_model,
             self.setting_int("gigachat_token_budget_embed", 1200),
         )
         embed_text = budgeted.text
-        key = EMBED_CACHE_PREFIX + hashlib.sha256(embed_text.encode("utf-8")).hexdigest()
+        key = EMBED_CACHE_PREFIX + hashlib.sha256(
+            f"{purpose}:{embed_text}".encode("utf-8")
+        ).hexdigest()
 
         if self._redis:
             cached = await self._redis.get(key)

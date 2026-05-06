@@ -673,7 +673,7 @@ class EnrichmentTask:
             source_region, market_scope = self._source_metadata(source)
 
             embed_text = event.content[:2000]
-            vector = await self.gigachat.embed(embed_text)
+            vector = await self.gigachat.embed(embed_text, purpose="document")
 
             payload = {
                 "workspace_id": event.workspace_id,

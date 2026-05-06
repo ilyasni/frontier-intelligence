@@ -285,6 +285,8 @@ async def fetch_capability_matrix_snapshot() -> dict[str, Any]:
                     "context_tokens": (model.get("metadata") or {}).get("context_tokens"),
                     "distance_metric": (model.get("metadata") or {}).get("distance_metric"),
                     "index_family": (model.get("metadata") or {}).get("index_family"),
+                    "query_prefix": (model.get("metadata") or {}).get("query_prefix"),
+                    "document_prefix": (model.get("metadata") or {}).get("document_prefix"),
                 }
             )
     rows.sort(key=lambda item: (item["provider"], item["model"]))

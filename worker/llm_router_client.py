@@ -348,7 +348,7 @@ class LLMRouterClient:
             return f"embedding_profile_mismatch_dim_{profile_dim}_vs_{expected_dim}"
         return ""
 
-    async def embed(self, text: str) -> list[float]:
+    async def embed(self, text: str, *, purpose: str = "document") -> list[float]:
         await self.refresh_runtime_overrides()
         task = "embed"
         task_family = TASK_FAMILY_EMBEDDINGS
@@ -392,6 +392,7 @@ class LLMRouterClient:
                 task=task,
                 task_family=task_family,
                 model=requested_model,
+                embedding_purpose=purpose,
             )
             effective_model, resolution_metadata = await self._resolve_provider_model(
                 attempt_provider,

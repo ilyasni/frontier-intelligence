@@ -18,6 +18,7 @@ class _FakeGiga:
     def __init__(self):
         self.runtime_mode = "custom"
         self.calls = []
+        self.embed_calls = []
 
     async def refresh_runtime_overrides(self, *, force: bool = False) -> None:
         return None
@@ -54,7 +55,8 @@ class _FakeGiga:
             "router budget_text should not call raw giga budget helper in this test"
         )
 
-    async def embed(self, text: str):
+    async def embed(self, text: str, *, purpose: str = "document"):
+        self.embed_calls.append({"text": text, "purpose": purpose})
         return [0.1]
 
     async def vision(self, image_bytes: bytes, prompt: str = ""):
@@ -558,8 +560,9 @@ async def test_llm_router_still_falls_back_when_guard_record_failure_breaks(monk
 async def test_llm_router_embed_uses_control_plane_path(monkeypatch) -> None:
     monkeypatch.setattr("worker.llm_router_client.get_settings", _settings)
     _install_dynamic_openrouter(monkeypatch)
+    giga = _FakeGiga()
     client = LLMRouterClient(
-        gigachat_client=_FakeGiga(),
+        gigachat_client=giga,
         wormsoft_client=_FakeWormsoft(available=True),
         openrouter_client=_FakeOpenRouter(),
         polza_client=_FakePolza(available=True),
@@ -569,9 +572,10 @@ async def test_llm_router_embed_uses_control_plane_path(monkeypatch) -> None:
         openrouter_text_guard=_FakeGuard((True, "ok")),
     )
 
-    vector = await client.embed("hello")
+    vector = await client.embed("hello", purpose="query")
 
     assert vector == [0.1]
+    assert giga.embed_calls[0]["purpose"] == "query"
     assert client.last_routing_decision is not None
     assert client.last_routing_decision.task_family == "embeddings"
     assert client.last_execution_receipt is not None

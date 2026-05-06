@@ -627,7 +627,10 @@ class GigaChatAdapter:
         return await self._giga.vision(request.image_bytes)
 
     async def embed(self, request: ProviderExecutionRequest) -> list[float]:
-        return await self._giga.embed(request.text)
+        return await self._giga.embed(
+            request.text,
+            purpose=request.embedding_purpose,
+        )
 
     async def record_result(
         self,

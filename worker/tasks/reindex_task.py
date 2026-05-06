@@ -371,7 +371,7 @@ class ReindexTask:
         assert self.gigachat is not None
         assert self.qdrant is not None
         assert self.neo4j is not None
-        vector = await self.gigachat.embed(index_text)
+        vector = await self.gigachat.embed(index_text, purpose="document")
         await self.qdrant.upsert_document(post_id, vector, payload, index_text)
         graph_done = bool(graph_concepts)
         if graph_done:
