@@ -1582,6 +1582,32 @@ function renderBudgetStatePanel(payload) {
   );
 }
 
+function renderCapabilityMatrixPanel(payload) {
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+  return renderSettingsPanel(
+    'Capability matrix',
+    'Provider/model capability truth used to reason about text, vision, and embeddings routes.',
+    rows.length ? `${rows.length} models` : 'Empty',
+    rows.length ? 'ok' : 'warn',
+    `
+      <div class="settings-stack">
+        ${renderSettingsTable(
+          ['Provider', 'Model', 'Text', 'Vision', 'Embeddings'],
+          rows.map((item) => [
+            escapeHtml(String(item.provider || '-')),
+            `<span class="mono">${escapeHtml(String(item.model || '-'))}</span>`,
+            escapeHtml(String(item.text_generation ? 'yes' : 'no')),
+            escapeHtml(String(item.vision_generation ? 'yes' : 'no')),
+            escapeHtml(String(item.embeddings ? 'yes' : 'no')),
+          ]),
+          'No capability rows available yet.',
+        )}
+        ${renderSettingsRawDetails(payload, 'Raw capability matrix')}
+      </div>
+    `,
+  );
+}
+
 function renderCircuitStatePanel(payload) {
   const circuits = Array.isArray(payload?.circuits) ? payload.circuits : [];
   const wormsoftGuard = payload?.wormsoft_guard || {};
@@ -1636,7 +1662,7 @@ function renderRoutingEventsPanel(payload) {
   );
 }
 
-function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyReport, wormsoftCatalog, wormsoftLimits, openRouterKey, providerState, budgetState, circuitState, routingEvents) {
+function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyReport, wormsoftCatalog, wormsoftLimits, openRouterKey, providerState, budgetState, capabilityMatrix, circuitState, routingEvents) {
   const runtime = data.runtime || {};
   const integrations = data.integrations || {};
   const secrets = data.secrets || {};
@@ -1669,6 +1695,7 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
       ${renderControlPlanePolicyPanel(data.control_plane_policy || {})}
       ${renderProviderStatePanel(providerState || {})}
       ${renderBudgetStatePanel(budgetState || {})}
+      ${renderCapabilityMatrixPanel(capabilityMatrix || {})}
       ${renderCircuitStatePanel(circuitState || {})}
       ${renderRoutingEventsPanel(routingEvents || {})}
       ${renderWormsoftLimitsPanel(wormsoftLimits || {}, data.llm_routing || {})}
@@ -2723,7 +2750,7 @@ async function loadSettings() {
   }
   settingsDetail.innerHTML = '<div class="empty" role="status" aria-live="polite">Loading settings...</div>';
   try {
-    const [data, balanceData, streamData, weeklyReport, wormsoftCatalog, wormsoftLimits, openRouterKey, providerState, budgetState, circuitState, routingEvents] = await Promise.all([
+    const [data, balanceData, streamData, weeklyReport, wormsoftCatalog, wormsoftLimits, openRouterKey, providerState, budgetState, capabilityMatrix, circuitState, routingEvents] = await Promise.all([
       apiGet('/api/settings').catch(() => null),
       apiGet('/api/settings/gigachat-balance').catch(() => null),
       apiGet('/api/pipeline/streams').catch(() => null),
@@ -2733,6 +2760,7 @@ async function loadSettings() {
       apiGet('/api/settings/providers/openrouter/key').catch(() => null),
       apiGet('/api/settings/provider-state').catch(() => null),
       apiGet('/api/settings/budget-state').catch(() => null),
+      apiGet('/api/settings/capability-matrix').catch(() => null),
       apiGet('/api/settings/circuits').catch(() => null),
       apiGet('/api/settings/routing-events?limit=25').catch(() => null),
     ]);
@@ -2753,6 +2781,7 @@ async function loadSettings() {
       openRouterKey || {},
       providerState || { providers: [] },
       budgetState || { budgets: [] },
+      capabilityMatrix || { rows: [] },
       circuitState || { circuits: [], wormsoft_guard: {} },
       routingEvents || { events: [] },
     );

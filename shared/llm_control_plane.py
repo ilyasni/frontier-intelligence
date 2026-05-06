@@ -171,6 +171,10 @@ class BudgetWindowState(BaseModel):
     limit: float | None = None
     remaining: float | None = None
     used: float | None = None
+    reserved: float | None = None
+    committed: float | None = None
+    released: float | None = None
+    outstanding: float | None = None
     unit: str = "credits"
     status: str = "unknown"
     refreshed_at: float | None = None
@@ -372,6 +376,12 @@ class ProviderExecutionRequest(BaseModel):
     model: str
     max_tokens: int = 1024
     pro: bool = False
+    prompt: str = ""
+    text: str = ""
+    image_bytes: bytes | None = None
+    quality_tier: str = "standard"
+    workspace_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("task_family", mode="before")
     @classmethod
@@ -395,6 +405,10 @@ class ProviderAdapter(Protocol):
     ) -> tuple[bool, str]: ...
 
     async def execute(self, request: ProviderExecutionRequest) -> GigaChatResponse: ...
+
+    async def vision(self, request: ProviderExecutionRequest) -> GigaChatResponse: ...
+
+    async def embed(self, request: ProviderExecutionRequest) -> list[float]: ...
 
     async def record_result(
         self,
@@ -540,6 +554,17 @@ def policy_candidates_for_task(
     return list(policy.family_policy(family).candidates)
 
 
+def model_supports_family(model: ModelCapabilitySnapshot, family: str) -> bool:
+    normalized = normalize_task_family(family)
+    if normalized == TASK_FAMILY_TEXT_GENERATION:
+        return bool(model.supports_text_generation)
+    if normalized == TASK_FAMILY_VISION_GENERATION:
+        return bool(model.supports_vision_generation)
+    if normalized == TASK_FAMILY_EMBEDDINGS:
+        return bool(model.supports_embeddings)
+    return True
+
+
 def simulate_routing_decision(
     policy: RoutingPolicyV2,
     *,
@@ -565,6 +590,24 @@ def simulate_routing_decision(
     selected = considered[0] if considered else RoutingCandidate(provider=PROVIDER_GIGACHAT, model="")
     for candidate in considered:
         state = states.get(candidate.provider)
+        if state and state.catalog and state.catalog.models:
+            matching_model = next(
+                (
+                    item
+                    for item in state.catalog.models
+                    if item.model == candidate.model or candidate.model == "openrouter/free"
+                ),
+                None,
+            )
+            if matching_model is not None and not model_supports_family(matching_model, family):
+                skipped.append(
+                    {
+                        "provider": candidate.provider,
+                        "model": candidate.model,
+                        "reason": "capability_mismatch",
+                    }
+                )
+                continue
         provider_circuit = provider_circuit_index.get(candidate.provider)
         model_circuit = circuit_index.get((candidate.provider, candidate.model))
         if state and not state.ready:

@@ -16,6 +16,7 @@ from shared.config import get_settings
 from shared.llm_control_plane import (
     BudgetWindowState,
     CircuitState,
+    ModelCapabilitySnapshot,
     ModelCatalogSnapshot,
     ProviderStateSnapshot,
     ROUTING_EVENTS_REDIS_KEY,
@@ -25,6 +26,7 @@ from shared.llm_control_plane import (
 )
 from shared.llm_routing import PROVIDER_GIGACHAT, PROVIDER_OPENROUTER, PROVIDER_POLZA, PROVIDER_WORMSOFT
 from shared.redis_client import get_client
+from worker.provider_budget_manager import ProviderBudgetManager
 from worker.provider_circuit_breaker import ProviderCircuitBreaker
 from worker.wormsoft_guard import WormsoftSharedGuard
 
@@ -76,6 +78,32 @@ async def _openrouter_provider_state() -> ProviderStateSnapshot:
     key_payload = await fetch_openrouter_key()
     health_payload = await fetch_openrouter_health_snapshot()
     runtime_payload = await fetch_openrouter_runtime_state(service_name="admin")
+    catalog_models = [
+        ModelCapabilitySnapshot(
+            provider=PROVIDER_OPENROUTER,
+            model=str(item.get("id") or ""),
+            input_modalities=[str(value) for value in (item.get("input_modalities") or [])],
+            output_modalities=[str(value) for value in (item.get("output_modalities") or [])],
+            capabilities=[
+                capability
+                for capability, enabled in {
+                    "vision": bool(item.get("supports_vision")),
+                    "structured": bool(item.get("supports_structured")),
+                    "tools": bool(item.get("supports_tools")),
+                }.items()
+                if enabled
+            ],
+            supports_text_generation=True,
+            supports_vision_generation=bool(item.get("supports_vision")),
+            supports_embeddings=False,
+            metadata={
+                "context_length": int(item.get("context_length") or 0),
+                "supported_parameters": list(item.get("supported_parameters") or []),
+            },
+        )
+        for item in (catalog_payload.get("models") or [])
+        if str(item.get("id") or "").strip()
+    ]
     return ProviderStateSnapshot(
         provider=PROVIDER_OPENROUTER,
         available=bool(key_payload.get("available")),
@@ -107,7 +135,7 @@ async def _openrouter_provider_state() -> ProviderStateSnapshot:
             fetched_at=catalog_payload.get("fetched_at"),
             source="openrouter.catalog",
             status=str(catalog_payload.get("status") or "unknown"),
-            models=[],
+            models=catalog_models,
         ),
         metadata={
             "key": key_payload,
@@ -120,12 +148,13 @@ async def _openrouter_provider_state() -> ProviderStateSnapshot:
 def _giga_provider_state(balance_payload: dict[str, Any]) -> ProviderStateSnapshot:
     balance_items = balance_payload.get("balance") or []
     total = sum(float(item.get("value") or 0.0) for item in balance_items)
+    settings = get_settings()
     return ProviderStateSnapshot(
         provider=PROVIDER_GIGACHAT,
-        available=bool(get_settings().gigachat_credentials),
-        ready=bool(get_settings().gigachat_credentials),
+        available=bool(settings.gigachat_credentials),
+        ready=bool(settings.gigachat_credentials),
         health_status=str(balance_payload.get("status") or "unknown"),
-        key_present=bool(get_settings().gigachat_credentials),
+        key_present=bool(settings.gigachat_credentials),
         quota_pressure="low_balance" if total <= float(balance_payload.get("alert_threshold") or 0.0) else "ok",
         budgets=[
             BudgetWindowState(
@@ -140,6 +169,21 @@ def _giga_provider_state(balance_payload: dict[str, Any]) -> ProviderStateSnapsh
             )
             for item in balance_items
         ],
+        catalog=ModelCatalogSnapshot(
+            provider=PROVIDER_GIGACHAT,
+            available=bool(settings.gigachat_credentials),
+            fetched_at=balance_payload.get("fetched_at"),
+            source="synthetic",
+            status="configured" if settings.gigachat_credentials else "missing_credentials",
+            models=[
+                ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model or "").strip(), supports_text_generation=True),
+                ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model_lite or "").strip(), supports_text_generation=True),
+                ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model_pro or "").strip(), supports_text_generation=True, supports_vision_generation=True, input_modalities=["text", "image"], output_modalities=["text"]),
+                ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model_max or "").strip(), supports_text_generation=True, supports_vision_generation=True, input_modalities=["text", "image"], output_modalities=["text"]),
+                ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model_vision or "").strip(), supports_text_generation=True, supports_vision_generation=True, input_modalities=["text", "image"], output_modalities=["text"]),
+                ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_embeddings_model or "").strip(), supports_embeddings=True, capabilities=["embeddings"]),
+            ],
+        ),
         metadata={"balance": balance_payload},
     )
 
@@ -153,6 +197,18 @@ def _polza_provider_state() -> ProviderStateSnapshot:
         health_status="configured" if settings.polza_api_key else "missing_api_key",
         key_present=bool(settings.polza_api_key),
         quota_pressure="unknown",
+        catalog=ModelCatalogSnapshot(
+            provider=PROVIDER_POLZA,
+            available=bool(settings.polza_api_key and settings.polza_text_model),
+            fetched_at=time.time(),
+            source="synthetic",
+            status="configured" if settings.polza_api_key else "missing_api_key",
+            models=[
+                ModelCapabilitySnapshot(provider=PROVIDER_POLZA, model=str(settings.polza_text_model or "").strip(), supports_text_generation=True),
+                ModelCapabilitySnapshot(provider=PROVIDER_POLZA, model=str(settings.polza_synthesis_model or "").strip(), supports_text_generation=True),
+                ModelCapabilitySnapshot(provider=PROVIDER_POLZA, model=str(settings.polza_vision_model or "").strip(), supports_text_generation=bool(settings.polza_vision_model), supports_vision_generation=bool(settings.polza_vision_model), input_modalities=["text", "image"] if settings.polza_vision_model else [], output_modalities=["text"] if settings.polza_vision_model else []),
+            ],
+        ),
         metadata={
             "text_model": settings.polza_text_model,
             "synthesis_model": settings.polza_synthesis_model,
@@ -168,6 +224,16 @@ async def fetch_provider_state_snapshot(policy: RoutingPolicyV2 | None = None) -
     gigachat_state = _giga_provider_state(gigachat_balance)
     polza_state = _polza_provider_state()
     states = [wormsoft_state, openrouter_state, polza_state, gigachat_state]
+    budget_manager = ProviderBudgetManager(redis=get_client())
+    try:
+        runtime_budgets = await budget_manager.snapshot([state.provider for state in states])
+    finally:
+        await budget_manager.close()
+    runtime_budget_map: dict[str, list[BudgetWindowState]] = {}
+    for budget in runtime_budgets:
+        runtime_budget_map.setdefault(budget.provider, []).append(budget)
+    for state in states:
+        state.budgets.extend(runtime_budget_map.get(state.provider, []))
     return {
         "status": "ok",
         "fetched_at": time.time(),
@@ -186,6 +252,34 @@ async def fetch_budget_state_snapshot() -> dict[str, Any]:
         "status": "ok",
         "fetched_at": time.time(),
         "budgets": budgets,
+    }
+
+
+async def fetch_capability_matrix_snapshot() -> dict[str, Any]:
+    provider_state = await fetch_provider_state_snapshot()
+    rows: list[dict[str, Any]] = []
+    for provider in provider_state.get("providers", []):
+        catalog = provider.get("catalog") or {}
+        for model in catalog.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            rows.append(
+                {
+                    "provider": str(provider.get("provider") or ""),
+                    "model": str(model.get("model") or ""),
+                    "text_generation": bool(model.get("supports_text_generation")),
+                    "vision_generation": bool(model.get("supports_vision_generation")),
+                    "embeddings": bool(model.get("supports_embeddings")),
+                    "input_modalities": list(model.get("input_modalities") or []),
+                    "output_modalities": list(model.get("output_modalities") or []),
+                    "capabilities": list(model.get("capabilities") or []),
+                }
+            )
+    rows.sort(key=lambda item: (item["provider"], item["model"]))
+    return {
+        "status": "ok",
+        "fetched_at": time.time(),
+        "rows": rows,
     }
 
 

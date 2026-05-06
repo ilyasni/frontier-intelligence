@@ -18,6 +18,7 @@ from shared.llm_control_plane import (
     AttemptOutcome,
     ExecutionReceipt,
     ProviderError,
+    ProviderExecutionRequest,
     RoutingCandidate,
     RoutingDecision,
     ROUTING_EVENTS_MAXLEN,
@@ -45,6 +46,13 @@ from worker.openrouter_guard import OpenRouterFreeGuard, OpenRouterVisionGuard
 from worker.openrouter_text_client import OpenRouterTextClient, OpenRouterTextError
 from worker.polza_client import PolzaVisionClient
 from worker.polza_text_client import PolzaTextClient
+from worker.provider_adapters import (
+    GigaChatAdapter,
+    OpenRouterAdapter,
+    PolzaAdapter,
+    WormsoftAdapter,
+)
+from worker.provider_budget_manager import ProviderBudgetManager
 from worker.provider_circuit_breaker import ProviderCircuitBreaker
 from worker.token_budget import fit_text_to_token_budget
 from worker.wormsoft_client import WormsoftTextClient, WormsoftTextError
@@ -97,12 +105,41 @@ class LLMRouterClient:
             service_name=service_name,
             settings=self._settings,
         )
+        self._budget_manager = ProviderBudgetManager(redis=redis, settings=self._settings)
+        self._provider_adapters = {
+            PROVIDER_WORMSOFT: WormsoftAdapter(
+                service_name=service_name,
+                settings=self._settings,
+                redis=redis,
+                text_client=self._wormsoft,
+            ),
+            PROVIDER_OPENROUTER: OpenRouterAdapter(
+                service_name=service_name,
+                settings=self._settings,
+                text_client=self._openrouter_text,
+                vision_client=self._openrouter,
+                text_guard=self._openrouter_text_guard,
+                vision_guard=self._openrouter_guard,
+            ),
+            PROVIDER_POLZA: PolzaAdapter(
+                service_name=service_name,
+                settings=self._settings,
+                text_client=self._polza_text,
+                vision_client=self._polza,
+            ),
+            PROVIDER_GIGACHAT: GigaChatAdapter(
+                service_name=service_name,
+                settings=self._settings,
+                giga_client=self._giga,
+            ),
+        }
         self._last_routing_decision: RoutingDecision | None = None
         self._last_execution_receipt: ExecutionReceipt | None = None
 
     async def close(self) -> None:
         if self._runtime_redis is not None:
             await self._runtime_redis.aclose()
+        await self._budget_manager.close()
         await self._circuit_breaker.close()
         await self._openrouter_text_guard.close()
         await self._openrouter_guard.close()
@@ -140,6 +177,9 @@ class LLMRouterClient:
             self.runtime_mode,
             self._routing_overrides_payload,
         )
+
+    def _adapter_for_provider(self, provider: str):
+        return self._provider_adapters[normalize_provider(provider)]
 
     async def refresh_runtime_overrides(self, *, force: bool = False) -> None:
         await self._giga.refresh_runtime_overrides(force=force)
@@ -303,7 +343,25 @@ class LLMRouterClient:
 
     async def embed(self, text: str) -> list[float]:
         started_at = time.monotonic()
-        vector = await self._giga.embed(text)
+        adapter = self._adapter_for_provider(PROVIDER_GIGACHAT)
+        request = ProviderExecutionRequest(
+            system="",
+            user="",
+            text=text,
+            task="embed",
+            task_family=TASK_FAMILY_EMBEDDINGS,
+            model=str(getattr(self._settings, "gigachat_embeddings_model", "EmbeddingsGigaR")),
+        )
+        reservation = await self._budget_manager.reserve(
+            provider=PROVIDER_GIGACHAT,
+            model=request.model,
+            task_family=TASK_FAMILY_EMBEDDINGS,
+        )
+        vector = await adapter.embed(request)
+        await self._budget_manager.commit(
+            reservation,
+            actual_units=1.0,
+        )
         await self._record_simple_execution(
             task="embed",
             task_family=TASK_FAMILY_EMBEDDINGS,
@@ -420,6 +478,23 @@ class LLMRouterClient:
         note_openrouter_vision_fallback(self._service_name, "gigachat", reason)
         return await self._vision_gigachat_with_reason(image_bytes, prompt, reason)
 
+    def _vision_provider_available(self, provider: str, model: str) -> tuple[bool, str]:
+        normalized = normalize_provider(provider)
+        if normalized == PROVIDER_OPENROUTER:
+            if not bool(getattr(self._openrouter, "is_available", True)):
+                return False, "provider_unavailable"
+            if not str(model or "").strip():
+                return False, "model_missing"
+        elif normalized == PROVIDER_POLZA:
+            if not self._polza.is_available:
+                return False, "provider_unavailable"
+            if not str(model or "").strip():
+                return False, "model_missing"
+        elif normalized == PROVIDER_GIGACHAT:
+            if self._giga is None:
+                return False, "provider_unavailable"
+        return True, "ok"
+
     async def vision(
         self,
         image_bytes: bytes,
@@ -428,129 +503,240 @@ class LLMRouterClient:
         quality_tier: str = "standard",
     ) -> GigaChatResponse:
         started_at = time.monotonic()
+        candidates, policy_mode, fallback_exception_only = self._policy_candidates(
+            task="vision",
+            task_family=TASK_FAMILY_VISION_GENERATION,
+            provider_override=None,
+            model_override=None,
+        )
         if self._vision_provider_for_quality_tier(quality_tier) != "openrouter":
-            response = await self._vision_gigachat(image_bytes, prompt)
-            await self._record_simple_execution(
-                task="vision",
-                task_family=TASK_FAMILY_VISION_GENERATION,
-                requested_provider=PROVIDER_GIGACHAT,
-                requested_model=self._vision_gigachat_model(),
-                response=response,
-                status="ok",
-                latency_ms=(time.monotonic() - started_at) * 1000.0,
-            )
-            return response
+            candidates.sort(key=lambda item: 0 if item.provider == PROVIDER_GIGACHAT else 1)
+        else:
+            order = {
+                PROVIDER_OPENROUTER: 0,
+                PROVIDER_POLZA: 1,
+                PROVIDER_GIGACHAT: 2,
+            }
+            candidates.sort(key=lambda item: order.get(item.provider, 99))
+        attempts = [(candidate.provider, candidate.model) for candidate in candidates]
+        skipped_candidates: list[dict[str, Any]] = []
+        attempt_outcomes: list[AttemptOutcome] = []
+        fallback_reason = ""
+        initial_provider, initial_model = attempts[0] if attempts else (PROVIDER_GIGACHAT, self._vision_gigachat_model())
+        decision = self._routing_decision(
+            task="vision",
+            attempts=attempts,
+            selected_provider=initial_provider,
+            selected_model=initial_model,
+            skipped_candidates=skipped_candidates,
+            mode=policy_mode,
+            fallback_exception_only=fallback_exception_only,
+        )
+        self._last_routing_decision = decision
+        self._last_execution_receipt = None
+        await self._append_routing_event("routing_decision_made", decision.model_dump())
 
-        model_override: str | None = None
-        reserved_model_id: str | None = None
-        if self._uses_dynamic_openrouter(getattr(self._openrouter, "default_model", "")):
-            task_family = task_family_for_vision(quality_tier)
-            decision = await pick_model(
-                task_family or "vision_mass",
-                service_name=self._service_name,
-            )
-            model_override = str(decision.get("model_id") or "").strip() or None
-            reserved_model_id = model_override
-            if not model_override:
-                response = await self._vision_fallback(
-                    image_bytes,
-                    prompt,
-                    str(decision.get("reason") or "no_capable_model"),
-                )
-                await self._record_simple_execution(
-                    task="vision",
-                    task_family=TASK_FAMILY_VISION_GENERATION,
-                    requested_provider=PROVIDER_OPENROUTER,
-                    requested_model="openrouter/free",
-                    response=response,
-                    status="ok",
-                    fallback_reason=response.fallback_reason,
-                    latency_ms=(time.monotonic() - started_at) * 1000.0,
-                )
-                return response
+        last_error: Exception | None = None
+        last_provider_error: ProviderError | None = None
+        for index, candidate in enumerate(candidates):
+            attempt_provider = candidate.provider
+            effective_model = candidate.model
+            next_attempt = attempts[index + 1] if index + 1 < len(attempts) else None
+            available, availability_reason = self._vision_provider_available(attempt_provider, effective_model)
+            if not available:
+                last_error = RuntimeError(availability_reason)
+                if not fallback_reason:
+                    fallback_reason = availability_reason
+                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": availability_reason})
+                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=availability_reason))
+                if next_attempt:
+                    if attempt_provider == PROVIDER_OPENROUTER:
+                        self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], availability_reason)
+                        note_openrouter_vision_fallback(self._service_name, next_attempt[0], availability_reason)
+                    continue
+                break
 
-        try:
-            if prompt:
-                response = await self._openrouter.vision(
-                    image_bytes,
-                    prompt=prompt,
-                    model_override=model_override,
-                )
-            else:
-                response = await self._openrouter.vision(
-                    image_bytes,
-                    model_override=model_override,
-                )
-            if reserved_model_id:
-                await record_call_result(
-                    reserved_model_id,
-                    success=True,
-                    latency_ms=(time.monotonic() - started_at) * 1000.0,
-                    status_code=200,
+            allowed_by_circuit, circuit_reason = await self._circuit_breaker.reserve(attempt_provider, effective_model)
+            if not allowed_by_circuit:
+                last_error = RuntimeError(circuit_reason)
+                if not fallback_reason:
+                    fallback_reason = circuit_reason
+                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": circuit_reason})
+                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=circuit_reason))
+                if next_attempt:
+                    if attempt_provider == PROVIDER_OPENROUTER:
+                        self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], circuit_reason)
+                        note_openrouter_vision_fallback(self._service_name, next_attempt[0], circuit_reason)
+                    continue
+                break
+
+            adapter = self._adapter_for_provider(attempt_provider)
+            if attempt_provider == PROVIDER_OPENROUTER and self._uses_dynamic_openrouter(effective_model):
+                provider_decision = await pick_model(
+                    task_family_for_vision(quality_tier) or "vision_mass",
                     service_name=self._service_name,
                 )
-            await self._record_simple_execution(
-                task="vision",
+                picked_model = str(provider_decision.get("model_id") or "").strip()
+                if not picked_model:
+                    reason = str(provider_decision.get("reason") or "no_capable_model")
+                    last_error = RuntimeError(reason)
+                    if not fallback_reason:
+                        fallback_reason = reason
+                    skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": reason})
+                    attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=reason))
+                    if next_attempt:
+                        self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], reason)
+                        note_openrouter_vision_fallback(self._service_name, next_attempt[0], reason)
+                        continue
+                    break
+                effective_model = picked_model
+
+            allowed_capacity, capacity_reason = await self._reserve_provider_capacity(
+                attempt_provider,
+                effective_model,
                 task_family=TASK_FAMILY_VISION_GENERATION,
-                requested_provider=PROVIDER_OPENROUTER,
-                requested_model=model_override
-                or getattr(self._openrouter, "default_model", "openrouter/free"),
-                response=response,
-                status="ok",
-                latency_ms=(time.monotonic() - started_at) * 1000.0,
             )
-            return response
-        except OpenRouterVisionError as exc:
-            if reserved_model_id:
-                try:
-                    await record_call_result(
-                        reserved_model_id,
-                        success=False,
-                        latency_ms=(time.monotonic() - started_at) * 1000.0,
-                        status_code=exc.status_code,
-                        or_reset_at=exc.reset_at,
-                        service_name=self._service_name,
+            if not allowed_capacity:
+                last_error = RuntimeError(capacity_reason)
+                if not fallback_reason:
+                    fallback_reason = capacity_reason
+                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": capacity_reason})
+                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=capacity_reason))
+                if next_attempt:
+                    if attempt_provider == PROVIDER_OPENROUTER:
+                        self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], capacity_reason)
+                        note_openrouter_vision_fallback(self._service_name, next_attempt[0], capacity_reason)
+                    continue
+                break
+
+            reservation = await self._budget_manager.reserve(
+                provider=attempt_provider,
+                model=effective_model,
+                task_family=TASK_FAMILY_VISION_GENERATION,
+            )
+            started_at = time.monotonic()
+            try:
+                response = await adapter.vision(
+                    ProviderExecutionRequest(
+                        system="",
+                        user="",
+                        task="vision",
+                        task_family=TASK_FAMILY_VISION_GENERATION,
+                        model=effective_model,
+                        image_bytes=image_bytes,
+                        prompt=prompt,
+                        quality_tier=quality_tier,
                     )
-                except Exception:
-                    logger.debug("openrouter_guard_record_failure_failed", exc_info=True)
-            response = await self._vision_fallback(image_bytes, prompt, exc.reason)
-            await self._record_simple_execution(
-                task="vision",
-                task_family=TASK_FAMILY_VISION_GENERATION,
-                requested_provider=PROVIDER_OPENROUTER,
-                requested_model=model_override
-                or getattr(self._openrouter, "default_model", "openrouter/free"),
-                response=response,
-                status="ok",
-                fallback_reason=response.fallback_reason,
-                latency_ms=(time.monotonic() - started_at) * 1000.0,
-            )
-            return response
-        except Exception:
-            if reserved_model_id:
-                try:
-                    await record_call_result(
-                        reserved_model_id,
-                        success=False,
-                        latency_ms=(time.monotonic() - started_at) * 1000.0,
-                        status_code=None,
-                        service_name=self._service_name,
+                )
+                latency_ms = (time.monotonic() - started_at) * 1000.0
+                if fallback_reason and not response.fallback_reason:
+                    response = GigaChatResponse(
+                        content=response.content,
+                        model=response.model,
+                        requested_model=response.requested_model,
+                        provider=response.provider,
+                        usage=response.usage,
+                        parsed=response.parsed,
+                        fallback_reason=fallback_reason,
                     )
-                except Exception:
-                    logger.debug("openrouter_guard_record_failure_failed", exc_info=True)
-            response = await self._vision_fallback(image_bytes, prompt, "openrouter_error")
-            await self._record_simple_execution(
+                await self._record_provider_success(attempt_provider, effective_model)
+                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="ok", actual_model=response.actual_model))
+                decision = self._routing_decision(
+                    task="vision",
+                    attempts=attempts,
+                    selected_provider=attempt_provider,
+                    selected_model=effective_model,
+                    skipped_candidates=skipped_candidates,
+                    mode=policy_mode,
+                    fallback_exception_only=fallback_exception_only,
+                )
+                self._last_routing_decision = decision
+                cost_estimate = adapter.estimate_cost(
+                    response=response,
+                    requested_model=effective_model,
+                    actual_model=response.actual_model,
+                )
+                await self._budget_manager.commit(
+                    reservation,
+                    actual_units=cost_estimate if cost_estimate is not None else 1.0,
+                    prompt_tokens=response.usage.prompt_tokens,
+                    completion_tokens=response.usage.completion_tokens,
+                    billable_tokens=response.usage.billable_tokens,
+                )
+                receipt = ExecutionReceipt(
+                    task="vision",
+                    task_family=TASK_FAMILY_VISION_GENERATION,
+                    status="ok",
+                    requested_provider=attempts[0][0] if attempts else attempt_provider,
+                    requested_model=attempts[0][1] if attempts else effective_model,
+                    actual_provider=response.provider,
+                    actual_model=response.actual_model,
+                    fallback_reason=response.fallback_reason,
+                    latency_ms=latency_ms,
+                    cost_estimate=cost_estimate,
+                    budget_attribution=reservation,
+                    decision=decision,
+                    attempts=attempt_outcomes,
+                )
+                self._last_execution_receipt = receipt
+                await adapter.record_result(receipt=receipt, error=None)
+                await self._append_routing_event("routing_execution_finished", receipt.model_dump())
+                return response
+            except Exception as exc:
+                last_error = exc
+
+            last_provider_error = adapter.normalize_error(last_error, model=effective_model)
+            await self._record_provider_failure(attempt_provider, effective_model, last_provider_error)
+            await self._budget_manager.release(reservation)
+            failed_receipt = ExecutionReceipt(
                 task="vision",
                 task_family=TASK_FAMILY_VISION_GENERATION,
-                requested_provider=PROVIDER_OPENROUTER,
-                requested_model=model_override
-                or getattr(self._openrouter, "default_model", "openrouter/free"),
-                response=response,
-                status="ok",
-                fallback_reason=response.fallback_reason,
+                status="error",
+                requested_provider=attempts[0][0] if attempts else attempt_provider,
+                requested_model=attempts[0][1] if attempts else effective_model,
+                actual_provider=attempt_provider,
+                actual_model=effective_model,
+                fallback_reason=last_provider_error.reason,
                 latency_ms=(time.monotonic() - started_at) * 1000.0,
+                budget_attribution=reservation,
+                provider_error=last_provider_error,
             )
-            return response
+            await adapter.record_result(receipt=failed_receipt, error=last_provider_error)
+            fallback_reason = last_provider_error.reason or self._fallback_reason_from_error(last_error)
+            attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="error", reason=fallback_reason))
+            if next_attempt:
+                if attempt_provider == PROVIDER_OPENROUTER:
+                    self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], fallback_reason)
+                    note_openrouter_vision_fallback(self._service_name, next_attempt[0], fallback_reason)
+                continue
+
+        if attempts:
+            receipt = ExecutionReceipt(
+                task="vision",
+                task_family=TASK_FAMILY_VISION_GENERATION,
+                status="error",
+                requested_provider=attempts[0][0],
+                requested_model=attempts[0][1],
+                actual_provider=normalize_provider(getattr(last_provider_error, "provider", attempts[-1][0])),
+                actual_model=attempts[-1][1],
+                fallback_reason=fallback_reason or self._fallback_reason_from_error(last_error or RuntimeError("vision_routing_failed")),
+                decision=self._routing_decision(
+                    task="vision",
+                    attempts=attempts,
+                    selected_provider=attempts[-1][0],
+                    selected_model=attempts[-1][1],
+                    skipped_candidates=skipped_candidates,
+                    mode=policy_mode,
+                    fallback_exception_only=fallback_exception_only,
+                ),
+                attempts=attempt_outcomes,
+                provider_error=last_provider_error,
+            )
+            self._last_execution_receipt = receipt
+            await self._append_routing_event("routing_execution_finished", receipt.model_dump())
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no_vision_route_available")
 
     async def _chat_gigachat(
         self,
@@ -677,6 +863,9 @@ class LLMRouterClient:
         attempts: list[tuple[str, str]],
         selected_provider: str,
         selected_model: str,
+        skipped_candidates: list[dict[str, Any]] | None = None,
+        mode: str = POLICY_MODE_DEGRADED,
+        fallback_exception_only: bool = True,
     ) -> RoutingDecision:
         candidates = [
             RoutingCandidate(provider=provider, model=model, capability_tags=["text"])
@@ -686,14 +875,15 @@ class LLMRouterClient:
         return RoutingDecision(
             task=task,
             task_family=control_plane_family_for_task(task),
-            mode=POLICY_MODE_DEGRADED,
+            mode=mode,
             requested_provider=requested_provider,
             requested_model=requested_model,
             selected_provider=selected_provider,
             selected_model=selected_model,
             fallback_allowed=True,
-            fallback_exception_only=True,
+            fallback_exception_only=fallback_exception_only,
             considered_candidates=candidates,
+            skipped_candidates=list(skipped_candidates or []),
         )
 
     async def _append_routing_event(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -771,10 +961,10 @@ class LLMRouterClient:
         self,
         provider: str,
         model: str,
+        task_family: str = TASK_FAMILY_TEXT_GENERATION,
     ) -> tuple[bool, str]:
-        if provider == PROVIDER_OPENROUTER and self._is_openrouter_free_model(model):
-            return await self._openrouter_text_guard.reserve_slot()
-        return True, "ok"
+        adapter = self._adapter_for_provider(provider)
+        return await adapter.reserve_capacity(task_family=task_family, model=model)
 
     async def _record_provider_success(self, provider: str, model: str) -> None:
         try:
@@ -808,6 +998,75 @@ class LLMRouterClient:
             return str(reason)[:64]
         return type(exc).__name__[:64]
 
+    def _policy_candidates(
+        self,
+        *,
+        task: str,
+        task_family: str,
+        provider_override: str | None,
+        model_override: str | None,
+    ) -> tuple[list[RoutingCandidate], str, bool]:
+        family_policy = self.routing_policy.family_policy(task_family)
+        base_candidates = list(family_policy.candidates)
+        candidates: list[RoutingCandidate] = []
+        if provider_override:
+            provider = normalize_provider(provider_override)
+            candidates.append(
+                RoutingCandidate(
+                    provider=provider,
+                    model=self._model_for_provider_override(task, provider, model_override),
+                    capability_tags=[task_family],
+                    notes="provider_override",
+                )
+            )
+        elif model_override and base_candidates:
+            first = base_candidates[0]
+            candidates.append(
+                RoutingCandidate(
+                    provider=first.provider,
+                    model=model_override.strip(),
+                    enabled=first.enabled,
+                    capability_tags=list(first.capability_tags),
+                    budget_class=first.budget_class,
+                    notes="model_override",
+                )
+            )
+            candidates.extend(base_candidates[1:])
+        else:
+            candidates.extend(base_candidates)
+
+        deduped: list[RoutingCandidate] = []
+        seen: set[tuple[str, str]] = set()
+        for candidate in candidates:
+            pair = (normalize_provider(candidate.provider), str(candidate.model or "").strip())
+            if not pair[1] or pair in seen:
+                continue
+            seen.add(pair)
+            deduped.append(candidate)
+        if task_family == TASK_FAMILY_VISION_GENERATION:
+            providers_present = {candidate.provider for candidate in deduped}
+            polza_model = str(getattr(self._polza, "default_model", "") or "").strip()
+            giga_model = self._vision_gigachat_model()
+            if PROVIDER_POLZA not in providers_present and polza_model:
+                deduped.append(
+                    RoutingCandidate(
+                        provider=PROVIDER_POLZA,
+                        model=polza_model,
+                        capability_tags=[task_family],
+                        notes="runtime_polza_vision_fallback",
+                    )
+                )
+            if PROVIDER_GIGACHAT not in providers_present and giga_model:
+                deduped.append(
+                    RoutingCandidate(
+                        provider=PROVIDER_GIGACHAT,
+                        model=giga_model,
+                        capability_tags=[task_family],
+                        notes="runtime_gigachat_vision_fallback",
+                    )
+                )
+        return deduped, family_policy.mode, family_policy.fallback_exception_only
+
     async def chat(
         self,
         system: str,
@@ -820,48 +1079,62 @@ class LLMRouterClient:
         max_tokens: int = 1024,
     ) -> GigaChatResponse:
         await self.refresh_runtime_overrides()
-        route = self.routing_settings.route_for_task(task) if task in ROUTABLE_LLM_TASKS else None
-        provider = normalize_provider(
-            provider_override or getattr(route, "provider", PROVIDER_GIGACHAT)
-        )
-        if provider_override:
-            requested_model = self._model_for_provider_override(task, provider, model_override)
-        else:
-            requested_model = self.route_model_for_task(
-                task,
+        if task not in ROUTABLE_LLM_TASKS and not provider_override:
+            return await self._chat_gigachat(
+                system,
+                user,
+                task=task,
                 pro=pro,
                 model_override=model_override,
+                max_tokens=max_tokens,
             )
 
-        attempts = self._route_attempts(
-            task,
+        task_family = control_plane_family_for_task(task)
+        candidates, policy_mode, fallback_exception_only = self._policy_candidates(
+            task=task,
+            task_family=task_family,
             provider_override=provider_override,
-            requested_model=requested_model,
+            model_override=model_override,
         )
+        attempts = [(candidate.provider, candidate.model) for candidate in candidates]
         last_error: Exception | None = None
         last_provider_error: ProviderError | None = None
         attempt_outcomes: list[AttemptOutcome] = []
         fallback_reason = ""
+        skipped_candidates: list[dict[str, Any]] = []
         decision = self._routing_decision(
             task=task,
             attempts=attempts,
-            selected_provider=provider,
-            selected_model=requested_model,
+            selected_provider=attempts[0][0] if attempts else PROVIDER_GIGACHAT,
+            selected_model=attempts[0][1]
+            if attempts
+            else self.route_model_for_task(task, pro=pro, model_override=model_override),
+            skipped_candidates=skipped_candidates,
+            mode=policy_mode,
+            fallback_exception_only=fallback_exception_only,
         )
         self._last_routing_decision = decision
         self._last_execution_receipt = None
         await self._append_routing_event("routing_decision_made", decision.model_dump())
 
-        for index, (attempt_provider, attempt_model) in enumerate(attempts):
+        for index, candidate in enumerate(candidates):
+            attempt_provider = candidate.provider
+            attempt_model = candidate.model
             next_attempt = attempts[index + 1] if index + 1 < len(attempts) else None
             effective_model = attempt_model
-            reserved_openrouter_model: str | None = None
             available, availability_reason = self._provider_available(
                 attempt_provider,
                 effective_model,
             )
             if not available:
                 last_error = RuntimeError(availability_reason)
+                skipped_candidates.append(
+                    {
+                        "provider": attempt_provider,
+                        "model": effective_model,
+                        "reason": availability_reason,
+                    }
+                )
                 attempt_outcomes.append(
                     AttemptOutcome(
                         provider=attempt_provider,
@@ -890,6 +1163,13 @@ class LLMRouterClient:
             )
             if not allowed_by_circuit:
                 last_error = RuntimeError(circuit_reason)
+                skipped_candidates.append(
+                    {
+                        "provider": attempt_provider,
+                        "model": effective_model,
+                        "reason": circuit_reason,
+                    }
+                )
                 attempt_outcomes.append(
                     AttemptOutcome(
                         provider=attempt_provider,
@@ -912,17 +1192,26 @@ class LLMRouterClient:
                     continue
                 break
 
+            adapter = self._adapter_for_provider(attempt_provider)
             if (
                 attempt_provider == PROVIDER_OPENROUTER
                 and self._uses_dynamic_openrouter(effective_model)
             ):
-                decision = await pick_model(
+                provider_decision = await pick_model(
                     task_family_for_task(task),
                     service_name=self._service_name,
                 )
-                picked_model = str(decision.get("model_id") or "").strip()
+                picked_model = str(provider_decision.get("model_id") or "").strip()
                 if not picked_model:
-                    last_error = RuntimeError(str(decision.get("reason") or "no_capable_model"))
+                    reason = str(provider_decision.get("reason") or "no_capable_model")
+                    last_error = RuntimeError(reason)
+                    skipped_candidates.append(
+                        {
+                            "provider": attempt_provider,
+                            "model": effective_model,
+                            "reason": reason,
+                        }
+                    )
                     if next_attempt:
                         note_llm_fallback(
                             self._service_name,
@@ -932,19 +1221,26 @@ class LLMRouterClient:
                             from_actual_model="",
                             to_provider=next_attempt[0],
                             to_model=next_attempt[1],
-                            reason=str(decision.get("reason") or "no_capable_model"),
+                            reason=reason,
                         )
                         continue
                     break
                 effective_model = picked_model
-                reserved_openrouter_model = picked_model
 
             allowed_capacity, capacity_reason = await self._reserve_provider_capacity(
                 attempt_provider,
                 effective_model,
+                task_family=task_family,
             )
             if not allowed_capacity:
                 last_error = RuntimeError(capacity_reason)
+                skipped_candidates.append(
+                    {
+                        "provider": attempt_provider,
+                        "model": effective_model,
+                        "reason": capacity_reason,
+                    }
+                )
                 attempt_outcomes.append(
                     AttemptOutcome(
                         provider=attempt_provider,
@@ -967,25 +1263,25 @@ class LLMRouterClient:
                     continue
                 break
 
+            reservation = await self._budget_manager.reserve(
+                provider=attempt_provider,
+                model=effective_model,
+                task_family=task_family,
+            )
             started_at = time.monotonic()
             try:
-                response = await self._chat_provider(
-                    attempt_provider,
-                    system,
-                    user,
-                    task=task,
-                    pro=pro if index == 0 else False,
-                    model_override=effective_model,
-                    max_tokens=max_tokens,
-                )
-                if reserved_openrouter_model:
-                    await record_call_result(
-                        reserved_openrouter_model,
-                        success=True,
-                        latency_ms=(time.monotonic() - started_at) * 1000.0,
-                        status_code=200,
-                        service_name=self._service_name,
+                response = await adapter.execute(
+                    ProviderExecutionRequest(
+                        system=system,
+                        user=user,
+                        task=task,
+                        task_family=task_family,
+                        model=effective_model,
+                        max_tokens=max_tokens,
+                        pro=pro if index == 0 else False,
                     )
+                )
+                latency_ms = (time.monotonic() - started_at) * 1000.0
                 await self._record_provider_success(attempt_provider, effective_model)
                 attempt_outcomes.append(
                     AttemptOutcome(
@@ -1010,64 +1306,69 @@ class LLMRouterClient:
                     attempts=attempts,
                     selected_provider=attempt_provider,
                     selected_model=effective_model,
+                    skipped_candidates=skipped_candidates,
+                    mode=policy_mode,
+                    fallback_exception_only=fallback_exception_only,
                 )
                 self._last_routing_decision = decision
+                cost_estimate = adapter.estimate_cost(
+                    response=response,
+                    requested_model=effective_model,
+                    actual_model=response.actual_model,
+                )
+                await self._budget_manager.commit(
+                    reservation,
+                    actual_units=cost_estimate if cost_estimate is not None else 1.0,
+                    prompt_tokens=response.usage.prompt_tokens,
+                    completion_tokens=response.usage.completion_tokens,
+                    billable_tokens=response.usage.billable_tokens,
+                )
                 receipt = ExecutionReceipt(
                     task=task,
-                    task_family=control_plane_family_for_task(task),
+                    task_family=task_family,
                     status="ok",
                     requested_provider=attempts[0][0] if attempts else attempt_provider,
                     requested_model=attempts[0][1] if attempts else effective_model,
                     actual_provider=response.provider,
                     actual_model=response.actual_model,
                     fallback_reason=response.fallback_reason,
-                    latency_ms=(time.monotonic() - started_at) * 1000.0,
+                    latency_ms=latency_ms,
+                    cost_estimate=cost_estimate,
+                    budget_attribution=reservation,
                     decision=decision,
                     attempts=attempt_outcomes,
                 )
                 self._last_execution_receipt = receipt
+                await adapter.record_result(receipt=receipt, error=None)
                 await self._append_routing_event(
                     "routing_execution_finished",
                     receipt.model_dump(),
                 )
                 return response
-            except OpenRouterTextError as exc:
-                last_error = exc
-                if reserved_openrouter_model:
-                    try:
-                        await record_call_result(
-                            reserved_openrouter_model,
-                            success=False,
-                            latency_ms=(time.monotonic() - started_at) * 1000.0,
-                            status_code=exc.status_code,
-                            or_reset_at=exc.reset_at,
-                            service_name=self._service_name,
-                        )
-                    except Exception:
-                        logger.debug("openrouter_text_guard_record_failure_failed", exc_info=True)
             except Exception as exc:
                 last_error = exc
-                if reserved_openrouter_model:
-                    try:
-                        await record_call_result(
-                            reserved_openrouter_model,
-                            success=False,
-                            latency_ms=(time.monotonic() - started_at) * 1000.0,
-                            status_code=None,
-                            service_name=self._service_name,
-                        )
-                    except Exception:
-                        logger.debug("openrouter_text_guard_record_failure_failed", exc_info=True)
 
-            last_provider_error = self._provider_error_from_exception(
-                attempt_provider,
-                last_error,
-            )
+            last_provider_error = adapter.normalize_error(last_error, model=effective_model)
             await self._record_provider_failure(
                 attempt_provider,
                 effective_model,
                 last_provider_error,
             )
+            await self._budget_manager.release(reservation)
+            failed_receipt = ExecutionReceipt(
+                task=task,
+                task_family=task_family,
+                status="error",
+                requested_provider=attempts[0][0] if attempts else attempt_provider,
+                requested_model=attempts[0][1] if attempts else effective_model,
+                actual_provider=attempt_provider,
+                actual_model=effective_model,
+                fallback_reason=last_provider_error.reason,
+                latency_ms=(time.monotonic() - started_at) * 1000.0,
+                budget_attribution=reservation,
+                provider_error=last_provider_error,
+            )
+            await adapter.record_result(receipt=failed_receipt, error=last_provider_error)
             fallback_reason = (
                 last_provider_error.reason or self._fallback_reason_from_error(last_error)
             )
@@ -1095,7 +1396,7 @@ class LLMRouterClient:
         if attempts:
             receipt = ExecutionReceipt(
                 task=task,
-                task_family=control_plane_family_for_task(task),
+                task_family=task_family,
                 status="error",
                 requested_provider=attempts[0][0],
                 requested_model=attempts[0][1],
@@ -1110,6 +1411,9 @@ class LLMRouterClient:
                     attempts=attempts,
                     selected_provider=attempts[-1][0],
                     selected_model=attempts[-1][1],
+                    skipped_candidates=skipped_candidates,
+                    mode=policy_mode,
+                    fallback_exception_only=fallback_exception_only,
                 ),
                 attempts=attempt_outcomes,
                 provider_error=last_provider_error,

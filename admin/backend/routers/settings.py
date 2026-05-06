@@ -15,6 +15,7 @@ from admin.backend.services.gigachat_balance import fetch_gigachat_balance
 from admin.backend.services.gigachat_weekly_report import fetch_gigachat_weekly_report
 from admin.backend.services.llm_control_plane import (
     fetch_budget_state_snapshot,
+    fetch_capability_matrix_snapshot,
     fetch_circuit_state_snapshot,
     fetch_provider_state_snapshot,
     fetch_routing_events,
@@ -421,6 +422,11 @@ async def get_provider_state():
 @router.get("/budget-state")
 async def get_budget_state():
     return await fetch_budget_state_snapshot()
+
+
+@router.get("/capability-matrix")
+async def get_capability_matrix():
+    return await fetch_capability_matrix_snapshot()
 
 
 @router.get("/circuits")
