@@ -1,6 +1,7 @@
 """
 Initialize all storage systems for Frontier Intelligence.
 Idempotent — safe to re-run.
+Shared by container-side Qdrant alias migration tooling as well.
 
 Usage:
     cd /opt/frontier-intelligence
@@ -81,7 +82,7 @@ async def init_postgres(settings):
     await engine.dispose()
 
 
-async def init_qdrant(settings):
+async def init_qdrant(settings, *, force_versioned_targets: bool = False):
     print("[2/3] Initializing Qdrant...")
     from qdrant_client import AsyncQdrantClient
     from qdrant_client.models import (
@@ -118,7 +119,7 @@ async def init_qdrant(settings):
             settings.qdrant_collection,
             settings.gigachat_embeddings_model,
         )
-        if settings.qdrant_collection_alias
+        if force_versioned_targets or settings.qdrant_collection_alias
         else settings.qdrant_collection
     )
     trends_collection = (
@@ -126,7 +127,7 @@ async def init_qdrant(settings):
             settings.qdrant_trends_collection,
             settings.gigachat_embeddings_model,
         )
-        if settings.qdrant_trends_collection_alias
+        if force_versioned_targets or settings.qdrant_trends_collection_alias
         else settings.qdrant_trends_collection
     )
 

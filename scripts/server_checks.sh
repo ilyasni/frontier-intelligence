@@ -30,6 +30,14 @@ echo "=== Qdrant collection (frontier_docs) ==="
 curl -sfS "http://127.0.0.1:${QDRANT_PORT:-6333}/collections/frontier_docs" | head -c 600
 echo ""
 
+echo "=== Qdrant alias status ==="
+if cd /opt/frontier-intelligence 2>/dev/null; then
+  bash scripts/server-qdrant-alias-cutover.sh status --kind all | head -c 1200 || true
+else
+  echo "SKIP: /opt/frontier-intelligence not found"
+fi
+echo ""
+
 echo "=== MCP /healthz ==="
 curl -sfS "http://127.0.0.1:${MCP_PORT:-8100}/healthz" || curl -sfS "http://127.0.0.1:${MCP_PORT:-8100}/readyz"
 echo ""

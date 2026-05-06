@@ -79,6 +79,16 @@ curl -s "http://localhost:6333/collections/frontier_docs" | jq .
 
 Production snapshot на 2026-04-17: `frontier_docs` green, dense 2560d + sparse, `points_count` > 17k. `trend_clusters` is a secondary Qdrant index for stable PostgreSQL trend clusters. If it is empty after rollout, run `python scripts/sync_trend_clusters_to_qdrant.py` from the app container or trigger semantic/signal analysis from Admin.
 
+Для migration на новую embedding-модель:
+
+```bash
+bash scripts/server-qdrant-alias-cutover.sh status
+bash scripts/server-qdrant-alias-cutover.sh prepare
+bash scripts/server-qdrant-alias-cutover.sh preflight --kind all
+```
+
+`swap` делай только после backfill/reindex, когда target collection набрала ожидаемый объём и preflight зелёный.
+
 ## 4.1. Urgent trend alerts
 
 Urgent Telegram alerts are not a daily digest. They are a rare notification layer over confirmed `trend_clusters`:
