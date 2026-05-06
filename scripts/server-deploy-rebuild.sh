@@ -9,14 +9,16 @@ cd /opt/frontier-intelligence
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-core,worker,mcp,crawl,paddleocr}"
+eval "$(bash scripts/server-ensure-python-base-image.sh)"
 
 echo "COMPOSE_PROFILES=$COMPOSE_PROFILES"
+echo "PYTHON_BASE_IMAGE=$PYTHON_BASE_IMAGE"
 
 echo "=== Phase 1: worker crawl4ai (build + up) ==="
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
 docker compose -f docker-compose.yml \
   --profile core --profile worker --profile crawl \
-  build --pull worker crawl4ai
+  build worker crawl4ai
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
 docker compose -f docker-compose.yml \
   --profile core --profile worker --profile crawl \
@@ -26,7 +28,7 @@ echo "=== Phase 2: mcp paddleocr (build + up) ==="
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
 docker compose -f docker-compose.yml \
   --profile core --profile mcp --profile paddleocr \
-  build --pull mcp paddleocr
+  build mcp paddleocr
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
 docker compose -f docker-compose.yml \
   --profile core --profile mcp --profile paddleocr \

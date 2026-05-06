@@ -21,6 +21,13 @@ bash scripts/server-build-stack.sh worker crawl4ai
 bash scripts/server-build-stack.sh   # все перечисленные сервисы с build
 ```
 
+`server-build-stack.sh` теперь сначала пытается закрепить локальный mirror
+`frontier/python-base:3.11-slim`. Если исходный `python:3.11-slim` уже есть на
+хосте, скрипт просто перетегирует его локально. Если внешняя база недоступна,
+скрипт пробует seed-ить mirror из уже существующего рабочего образа
+`frontier-intelligence-admin:latest` / `mcp` / `worker`, чтобы standard build
+мог пройти полностью локально.
+
 либо вручную:
 
 ```bash

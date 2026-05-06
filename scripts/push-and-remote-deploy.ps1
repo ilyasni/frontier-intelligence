@@ -54,7 +54,8 @@ $serviceArgs = $serviceList -join " "
 $remoteBuild = @"
 cd /opt/frontier-intelligence &&
 find scripts -type f -name '*.sh' -print0 | xargs -0 sed -i 's/\r$//' &&
-export PYTHON_BASE_IMAGE=`${PYTHON_BASE_IMAGE:-python:3.11-slim} &&
+export FRONTIER_PYTHON_BASE_SOURCE=`${FRONTIER_PYTHON_BASE_SOURCE:-python:3.11-slim} &&
+export FRONTIER_PYTHON_BASE_MIRROR=`${FRONTIER_PYTHON_BASE_MIRROR:-frontier/python-base:3.11-slim} &&
 export COMPOSE_PROFILES=core,ingest,xray,worker,crawl,paddleocr,mcp,admin &&
 bash scripts/server-build-stack.sh $serviceArgs &&
 docker compose -f docker-compose.yml up -d --force-recreate --wait $serviceArgs
