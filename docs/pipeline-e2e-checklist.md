@@ -65,12 +65,17 @@ LIMIT 30;
 ## 4. Qdrant
 
 Коллекция по умолчанию: `QDRANT_COLLECTION` / `frontier_docs`.
+Если включены alias-имена (`QDRANT_COLLECTION_ALIAS`, `QDRANT_TRENDS_COLLECTION_ALIAS`), рантайм читает и пишет через alias, а versioned collection готовится отдельно под текущую embedding-модель.
 
 ```bash
 curl -s "http://localhost:6333/collections/frontier_docs" | jq .
 ```
 
-Смотри `points_count`, `indexed_vectors_count`, `config.params.sparse_vectors`. Фильтрация по `workspace_id` в payload — нулевой счётчик при «всё dropped» ожидаем.
+Смотри `points_count`, `indexed_vectors_count`, `config.params.sparse_vectors`.
+При migration rollout дополнительно проверь:
+- alias указывает на ожидаемую active collection;
+- `config.params.vectors.dense.size` совпадает с текущим `EMBED_DIM`;
+- `payload.embedding_version` соответствует активной embedding-модели.
 
 Production snapshot на 2026-04-17: `frontier_docs` green, dense 2560d + sparse, `points_count` > 17k. `trend_clusters` is a secondary Qdrant index for stable PostgreSQL trend clusters. If it is empty after rollout, run `python scripts/sync_trend_clusters_to_qdrant.py` from the app container or trigger semantic/signal analysis from Admin.
 

@@ -17,7 +17,7 @@ import yaml
 from sqlalchemy import text
 
 from shared.config import get_settings
-from shared.embedding_models import expected_embedding_dim
+from shared.embedding_models import expected_embedding_dim, qdrant_collection_name_for_embedding
 from shared.sqlalchemy_pool import ASYNC_ENGINE_POOL_KWARGS
 
 
@@ -85,6 +85,8 @@ async def init_qdrant(settings):
     print("[2/3] Initializing Qdrant...")
     from qdrant_client import AsyncQdrantClient
     from qdrant_client.models import (
+        CreateAlias,
+        CreateAliasOperation,
         Distance,
         HnswConfigDiff,
         PayloadSchemaType,
@@ -105,6 +107,54 @@ async def init_qdrant(settings):
 
     collections = await client.get_collections()
     existing = {c.name for c in collections.collections}
+    aliases = await client.get_aliases()
+    alias_map = {
+        str(getattr(alias, "alias_name", "")).strip(): str(getattr(alias, "collection_name", "")).strip()
+        for alias in (getattr(aliases, "aliases", []) or [])
+    }
+
+    docs_collection = (
+        qdrant_collection_name_for_embedding(
+            settings.qdrant_collection,
+            settings.gigachat_embeddings_model,
+        )
+        if settings.qdrant_collection_alias
+        else settings.qdrant_collection
+    )
+    trends_collection = (
+        qdrant_collection_name_for_embedding(
+            settings.qdrant_trends_collection,
+            settings.gigachat_embeddings_model,
+        )
+        if settings.qdrant_trends_collection_alias
+        else settings.qdrant_trends_collection
+    )
+
+    async def ensure_alias_binding(alias_name: str, collection_name: str) -> None:
+        if not alias_name:
+            return
+        current = alias_map.get(alias_name)
+        if current == collection_name:
+            print(f"     alias {alias_name}: already points to {collection_name}")
+            return
+        if current:
+            print(
+                f"     alias {alias_name}: preserved existing target {current}; "
+                f"prepared {collection_name}"
+            )
+            return
+        await client.update_collection_aliases(
+            change_aliases_operations=[
+                CreateAliasOperation(
+                    create_alias=CreateAlias(
+                        collection_name=collection_name,
+                        alias_name=alias_name,
+                    )
+                )
+            ]
+        )
+        alias_map[alias_name] = collection_name
+        print(f"     alias {alias_name}: created -> {collection_name}")
 
     async def ensure_payload_indexes(collection_name, indexes):
         for field, schema_type in indexes:
@@ -139,9 +189,9 @@ async def init_qdrant(settings):
         ("source_count", PayloadSchemaType.INTEGER),
     ]
 
-    if "frontier_docs" not in existing:
+    if docs_collection not in existing:
         await client.create_collection(
-            collection_name="frontier_docs",
+            collection_name=docs_collection,
             vectors_config={
                 "dense": VectorParams(
                     size=settings.embed_dim,
@@ -153,14 +203,15 @@ async def init_qdrant(settings):
                 "sparse": SparseVectorParams(index=SparseIndexParams(on_disk=False))
             },
         )
-        print("     frontier_docs: created")
+        print(f"     {docs_collection}: created")
     else:
-        print("     frontier_docs: already exists")
-    await ensure_payload_indexes("frontier_docs", frontier_payload_indexes)
+        print(f"     {docs_collection}: already exists")
+    await ensure_payload_indexes(docs_collection, frontier_payload_indexes)
+    await ensure_alias_binding(settings.qdrant_collection_alias, docs_collection)
 
-    if "trend_clusters" not in existing:
+    if trends_collection not in existing:
         await client.create_collection(
-            collection_name="trend_clusters",
+            collection_name=trends_collection,
             vectors_config={
                 "dense": VectorParams(
                     size=settings.embed_dim,
@@ -169,10 +220,11 @@ async def init_qdrant(settings):
                 )
             },
         )
-        print("     trend_clusters: created")
+        print(f"     {trends_collection}: created")
     else:
-        print("     trend_clusters: already exists")
-    await ensure_payload_indexes("trend_clusters", trend_payload_indexes)
+        print(f"     {trends_collection}: already exists")
+    await ensure_payload_indexes(trends_collection, trend_payload_indexes)
+    await ensure_alias_binding(settings.qdrant_trends_collection_alias, trends_collection)
 
     await client.close()
 
