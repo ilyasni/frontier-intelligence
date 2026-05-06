@@ -21,6 +21,7 @@ from shared.llm_control_plane import (
     ProviderStateSnapshot,
     ROUTING_EVENTS_REDIS_KEY,
     RoutingPolicyV2,
+    embedding_profile_for_model,
     normalize_wormsoft_model_snapshot,
     simulate_routing_decision,
 )
@@ -149,6 +150,7 @@ def _giga_provider_state(balance_payload: dict[str, Any]) -> ProviderStateSnapsh
     balance_items = balance_payload.get("balance") or []
     total = sum(float(item.get("value") or 0.0) for item in balance_items)
     settings = get_settings()
+    embedding_model = str(settings.gigachat_embeddings_model or "").strip()
     return ProviderStateSnapshot(
         provider=PROVIDER_GIGACHAT,
         available=bool(settings.gigachat_credentials),
@@ -181,7 +183,13 @@ def _giga_provider_state(balance_payload: dict[str, Any]) -> ProviderStateSnapsh
                 ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model_pro or "").strip(), supports_text_generation=True, supports_vision_generation=True, input_modalities=["text", "image"], output_modalities=["text"]),
                 ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model_max or "").strip(), supports_text_generation=True, supports_vision_generation=True, input_modalities=["text", "image"], output_modalities=["text"]),
                 ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_model_vision or "").strip(), supports_text_generation=True, supports_vision_generation=True, input_modalities=["text", "image"], output_modalities=["text"]),
-                ModelCapabilitySnapshot(provider=PROVIDER_GIGACHAT, model=str(settings.gigachat_embeddings_model or "").strip(), supports_embeddings=True, capabilities=["embeddings"]),
+                ModelCapabilitySnapshot(
+                    provider=PROVIDER_GIGACHAT,
+                    model=embedding_model,
+                    supports_embeddings=True,
+                    capabilities=["embeddings"],
+                    metadata=embedding_profile_for_model(embedding_model),
+                ),
             ],
         ),
         metadata={"balance": balance_payload},
@@ -273,6 +281,10 @@ async def fetch_capability_matrix_snapshot() -> dict[str, Any]:
                     "input_modalities": list(model.get("input_modalities") or []),
                     "output_modalities": list(model.get("output_modalities") or []),
                     "capabilities": list(model.get("capabilities") or []),
+                    "dimension": (model.get("metadata") or {}).get("dimension"),
+                    "context_tokens": (model.get("metadata") or {}).get("context_tokens"),
+                    "distance_metric": (model.get("metadata") or {}).get("distance_metric"),
+                    "index_family": (model.get("metadata") or {}).get("index_family"),
                 }
             )
     rows.sort(key=lambda item: (item["provider"], item["model"]))
@@ -341,6 +353,7 @@ async def simulate_control_plane_route(
     *,
     task: str,
     task_family: str | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     provider_states_payload = await fetch_provider_state_snapshot(policy)
     circuits_payload = await fetch_circuit_state_snapshot(policy)
@@ -359,6 +372,7 @@ async def simulate_control_plane_route(
             for item in (circuits_payload.get("circuits") or [])
             if isinstance(item, dict)
         ],
+        mode=mode,
     )
     return {
         "status": "ok",

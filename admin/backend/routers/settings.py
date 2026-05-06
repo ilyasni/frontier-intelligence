@@ -69,6 +69,7 @@ class ControlPlanePolicyRequest(RoutingPolicyV2):
 class RouteSimulationRequest(BaseModel):
     task: str
     task_family: str | None = None
+    mode: str | None = None
 
 
 async def _ensure_runtime_settings_table() -> None:
@@ -409,6 +410,7 @@ async def simulate_control_plane(request: RouteSimulationRequest):
         policy,
         task=request.task,
         task_family=request.task_family,
+        mode=request.mode,
     )
 
 

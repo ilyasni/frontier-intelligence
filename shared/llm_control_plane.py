@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
+from shared.embedding_models import get_embedding_model_spec
 from shared.llm_routing import (
     DEFAULT_OPENROUTER_TEXT_MODEL,
     DEFAULT_POLZA_SYNTHESIS_MODEL,
@@ -118,6 +119,11 @@ def task_family_for_task(task: str) -> str:
 
 def now_ts() -> float:
     return time.time()
+
+
+def normalize_policy_mode(value: Any) -> str:
+    raw = str(value or POLICY_MODE_DEGRADED).strip().lower()
+    return raw if raw in POLICY_MODES else POLICY_MODE_DEGRADED
 
 
 class ProviderError(BaseModel):
@@ -271,8 +277,7 @@ class TaskFamilyPolicy(BaseModel):
     @field_validator("mode", mode="before")
     @classmethod
     def _validate_mode(cls, value: Any) -> str:
-        raw = str(value or POLICY_MODE_DEGRADED).strip().lower()
-        return raw if raw in POLICY_MODES else POLICY_MODE_DEGRADED
+        return normalize_policy_mode(value)
 
 
 class RoutingPolicyV2(BaseModel):
@@ -286,8 +291,7 @@ class RoutingPolicyV2(BaseModel):
     @field_validator("default_mode", mode="before")
     @classmethod
     def _validate_default_mode(cls, value: Any) -> str:
-        raw = str(value or POLICY_MODE_DEGRADED).strip().lower()
-        return raw if raw in POLICY_MODES else POLICY_MODE_DEGRADED
+        return normalize_policy_mode(value)
 
     def family_policy(self, family: str) -> TaskFamilyPolicy:
         normalized = normalize_task_family(family)
@@ -403,6 +407,11 @@ class ProviderAdapter(Protocol):
         task_family: str,
         model: str,
     ) -> tuple[bool, str]: ...
+
+    async def resolve_model(
+        self,
+        request: ProviderExecutionRequest,
+    ) -> tuple[str, dict[str, Any]]: ...
 
     async def execute(self, request: ProviderExecutionRequest) -> GigaChatResponse: ...
 
@@ -565,6 +574,52 @@ def model_supports_family(model: ModelCapabilitySnapshot, family: str) -> bool:
     return True
 
 
+def fallback_allowed_for_mode(mode: str, candidate_count: int) -> bool:
+    normalized = normalize_policy_mode(mode)
+    if normalized in {POLICY_MODE_STRICT, POLICY_MODE_MAINTENANCE}:
+        return False
+    return candidate_count > 1
+
+
+def apply_execution_mode(
+    candidates: list[RoutingCandidate],
+    *,
+    mode: str,
+    task_family: str,
+) -> list[RoutingCandidate]:
+    normalized_mode = normalize_policy_mode(mode)
+    normalized_family = normalize_task_family(task_family)
+    enabled = [candidate for candidate in candidates if candidate.enabled]
+    if not enabled:
+        return []
+    if normalized_mode == POLICY_MODE_STRICT:
+        return enabled[:1]
+    if normalized_mode == POLICY_MODE_MAINTENANCE:
+        preferred_provider = PROVIDER_GIGACHAT
+        if normalized_family == TASK_FAMILY_VISION_GENERATION:
+            preferred_provider = PROVIDER_GIGACHAT
+        elif normalized_family == TASK_FAMILY_EMBEDDINGS:
+            preferred_provider = PROVIDER_GIGACHAT
+        for candidate in enabled:
+            if candidate.provider == preferred_provider:
+                return [candidate]
+        return enabled[:1]
+    return enabled
+
+
+def embedding_profile_for_model(model: str) -> dict[str, Any]:
+    spec = get_embedding_model_spec(model)
+    if spec is None:
+        return {}
+    return {
+        "dimension": spec.dim,
+        "context_tokens": spec.context_tokens,
+        "tier": spec.tier,
+        "distance_metric": "cosine",
+        "index_family": f"dense-{spec.dim}",
+    }
+
+
 def simulate_routing_decision(
     policy: RoutingPolicyV2,
     *,
@@ -576,6 +631,7 @@ def simulate_routing_decision(
 ) -> RoutingDecision:
     family = normalize_task_family(task_family or task_family_for_task(task))
     family_policy = policy.family_policy(family)
+    effective_mode = normalize_policy_mode(mode or family_policy.mode or policy.default_mode)
     states = provider_states or {}
     circuit_index: dict[tuple[str, str], CircuitState] = {}
     provider_circuit_index: dict[str, CircuitState] = {}
@@ -585,7 +641,11 @@ def simulate_routing_decision(
         else:
             circuit_index[(circuit.provider, circuit.model)] = circuit
 
-    considered = [candidate for candidate in family_policy.candidates if candidate.enabled]
+    considered = apply_execution_mode(
+        list(family_policy.candidates),
+        mode=effective_mode,
+        task_family=family,
+    )
     skipped: list[dict[str, Any]] = []
     selected = considered[0] if considered else RoutingCandidate(provider=PROVIDER_GIGACHAT, model="")
     for candidate in considered:
@@ -644,12 +704,12 @@ def simulate_routing_decision(
     return RoutingDecision(
         task=task,
         task_family=family,
-        mode=str(mode or family_policy.mode or policy.default_mode),
+        mode=effective_mode,
         requested_provider=requested.provider,
         requested_model=requested.model,
         selected_provider=selected.provider,
         selected_model=selected.model,
-        fallback_allowed=True,
+        fallback_allowed=fallback_allowed_for_mode(effective_mode, len(considered)),
         fallback_exception_only=family_policy.fallback_exception_only,
         considered_candidates=considered,
         skipped_candidates=skipped,

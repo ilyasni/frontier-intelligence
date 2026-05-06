@@ -53,6 +53,24 @@ def _isoformat(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+async def _run_startup_step(
+    job_name: str,
+    runner,
+    *,
+    timeout_seconds: float = 30.0,
+) -> None:
+    try:
+        await asyncio.wait_for(runner(), timeout=timeout_seconds)
+    except TimeoutError:
+        logger.warning(
+            "Startup warmup timed out for %s after %.1fs; continuing admin startup",
+            job_name,
+            timeout_seconds,
+        )
+    except Exception:
+        logger.exception("Startup warmup failed for %s; continuing admin startup", job_name)
+
+
 def _manual_job_lock(job_name: str) -> asyncio.Lock | None:
     if job_name == "refresh_source_scores":
         return _source_score_lock
@@ -840,12 +858,15 @@ async def scheduler_lifespan():
     _scheduler = _build_scheduler()
     _scheduler.start()
     await reconcile_running_manual_jobs()
-    await scheduled_refresh_gigachat_balance()
-    await scheduled_refresh_wormsoft_limits()
-    await scheduled_refresh_openrouter_catalog()
-    await scheduled_refresh_openrouter_key()
-    await scheduled_probe_openrouter_health()
-    await scheduled_reconcile_openrouter_state()
+    await _run_startup_step("refresh_gigachat_balance", scheduled_refresh_gigachat_balance)
+    await _run_startup_step("refresh_wormsoft_limits", scheduled_refresh_wormsoft_limits)
+    await _run_startup_step("refresh_openrouter_catalog", scheduled_refresh_openrouter_catalog)
+    await _run_startup_step("refresh_openrouter_key", scheduled_refresh_openrouter_key)
+    await _run_startup_step("probe_openrouter_health", scheduled_probe_openrouter_health)
+    await _run_startup_step(
+        "reconcile_openrouter_state",
+        scheduled_reconcile_openrouter_state,
+    )
     logger.info(
         (
             "Admin scheduler started with timezone=%s, refresh_cron=%s, "

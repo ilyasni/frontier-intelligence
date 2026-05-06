@@ -2,6 +2,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from shared.llm_control_plane import (
+    POLICY_MODE_MAINTENANCE,
+    POLICY_MODE_STRICT,
+    RoutingCandidate,
+    RoutingPolicyV2,
+    TaskFamilyPolicy,
+)
 from worker.llm_router_client import LLMRouterClient
 from worker.llm_types import GigaChatResponse
 from worker.openrouter_client import OpenRouterVisionError
@@ -228,8 +235,45 @@ def _install_dynamic_openrouter(
     async def _fake_record_call_result(*args, **kwargs):
         return {"status": "ok"}
 
-    monkeypatch.setattr("worker.llm_router_client.pick_model", _fake_pick_model)
-    monkeypatch.setattr("worker.llm_router_client.record_call_result", _fake_record_call_result)
+    monkeypatch.setattr("worker.provider_adapters.pick_model", _fake_pick_model)
+    monkeypatch.setattr("worker.provider_adapters.record_call_result", _fake_record_call_result)
+
+
+def _policy_override(
+    *,
+    text_mode: str = "degraded",
+    embeddings_mode: str = "strict",
+    text_candidates: list[RoutingCandidate] | None = None,
+    embeddings_candidates: list[RoutingCandidate] | None = None,
+) -> RoutingPolicyV2:
+    return RoutingPolicyV2(
+        text_generation=TaskFamilyPolicy(
+            family="text_generation",
+            mode=text_mode,
+            candidates=text_candidates
+            or [
+                RoutingCandidate(provider="wormsoft", model="wormsoft/agent/medium"),
+                RoutingCandidate(provider="openrouter", model="openrouter/free"),
+                RoutingCandidate(provider="polza", model="google/gemma-3-12b-it"),
+                RoutingCandidate(provider="gigachat", model="GigaChat-2"),
+            ],
+        ),
+        vision_generation=TaskFamilyPolicy(
+            family="vision_generation",
+            mode="degraded",
+            candidates=[
+                RoutingCandidate(provider="openrouter", model="openrouter/free"),
+                RoutingCandidate(provider="polza", model="qwen3-vl-30b"),
+                RoutingCandidate(provider="gigachat", model="GigaChat-2-Pro"),
+            ],
+        ),
+        embeddings=TaskFamilyPolicy(
+            family="embeddings",
+            mode=embeddings_mode,
+            candidates=embeddings_candidates
+            or [RoutingCandidate(provider="gigachat", model="EmbeddingsGigaR")],
+        ),
+    )
 
 
 class _FakePolzaText:
@@ -294,9 +338,10 @@ class _ExplodingGuard(_FakeGuard):
         raise RuntimeError("guard_write_failed")
 
 
-def _settings():
+def _settings(embed_dim: int = 2560):
     return SimpleNamespace(
         redis_url="redis://redis:6379",
+        embed_dim=embed_dim,
         gigachat_model="GigaChat-2",
         gigachat_model_lite="GigaChat-2",
         gigachat_model_pro="GigaChat-2-Pro",
@@ -507,3 +552,129 @@ async def test_llm_router_still_falls_back_when_guard_record_failure_breaks(monk
 
     assert response.provider == "polza"
     assert response.fallback_reason == "openrouter_429"
+
+
+@pytest.mark.asyncio
+async def test_llm_router_embed_uses_control_plane_path(monkeypatch) -> None:
+    monkeypatch.setattr("worker.llm_router_client.get_settings", _settings)
+    _install_dynamic_openrouter(monkeypatch)
+    client = LLMRouterClient(
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=True),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=True),
+        openrouter_text_client=_FakeOpenRouterText(),
+        polza_text_client=_FakePolzaText(),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    vector = await client.embed("hello")
+
+    assert vector == [0.1]
+    assert client.last_routing_decision is not None
+    assert client.last_routing_decision.task_family == "embeddings"
+    assert client.last_execution_receipt is not None
+    assert client.last_execution_receipt.status == "ok"
+    assert client.last_execution_receipt.actual_provider == "gigachat"
+
+
+@pytest.mark.asyncio
+async def test_llm_router_embed_strict_mode_does_not_fallback(monkeypatch) -> None:
+    monkeypatch.setattr("worker.llm_router_client.get_settings", _settings)
+    _install_dynamic_openrouter(monkeypatch)
+    monkeypatch.setattr(
+        LLMRouterClient,
+        "routing_policy",
+        property(
+            lambda self: _policy_override(
+                embeddings_mode=POLICY_MODE_STRICT,
+                embeddings_candidates=[
+                    RoutingCandidate(provider="openrouter", model="openrouter/free"),
+                    RoutingCandidate(provider="gigachat", model="EmbeddingsGigaR"),
+                ],
+            )
+        ),
+    )
+    client = LLMRouterClient(
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=True),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=True),
+        openrouter_text_client=_FakeOpenRouterText(),
+        polza_text_client=_FakePolzaText(),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    with pytest.raises(Exception):
+        await client.embed("hello")
+
+    assert client.last_routing_decision is not None
+    assert client.last_routing_decision.mode == POLICY_MODE_STRICT
+    assert len(client.last_routing_decision.considered_candidates) == 1
+    assert client.last_execution_receipt is not None
+    assert client.last_execution_receipt.actual_provider == "openrouter"
+
+
+@pytest.mark.asyncio
+async def test_llm_router_embed_rejects_incompatible_embedding_profile(monkeypatch) -> None:
+    monkeypatch.setattr("worker.llm_router_client.get_settings", lambda: _settings(embed_dim=1024))
+    _install_dynamic_openrouter(monkeypatch)
+    client = LLMRouterClient(
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=True),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=True),
+        openrouter_text_client=_FakeOpenRouterText(),
+        polza_text_client=_FakePolzaText(),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    with pytest.raises(RuntimeError, match="embedding_profile_mismatch_dim_2560_vs_1024"):
+        await client.embed("hello")
+
+    assert client.last_execution_receipt is not None
+    assert "embedding_profile_mismatch" in client.last_execution_receipt.fallback_reason
+
+
+@pytest.mark.asyncio
+async def test_llm_router_maintenance_mode_prefers_gigachat(monkeypatch) -> None:
+    monkeypatch.setattr("worker.llm_router_client.get_settings", _settings)
+    _install_dynamic_openrouter(monkeypatch)
+    monkeypatch.setattr(
+        LLMRouterClient,
+        "routing_policy",
+        property(
+            lambda self: _policy_override(
+                text_mode=POLICY_MODE_MAINTENANCE,
+                text_candidates=[
+                    RoutingCandidate(provider="wormsoft", model="wormsoft/agent/medium"),
+                    RoutingCandidate(provider="openrouter", model="openrouter/free"),
+                    RoutingCandidate(provider="gigachat", model="GigaChat-2"),
+                ],
+            )
+        ),
+    )
+    giga = _FakeGiga()
+    wormsoft = _FakeWormsoft(available=True)
+    client = LLMRouterClient(
+        gigachat_client=giga,
+        wormsoft_client=wormsoft,
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=True),
+        openrouter_text_client=_FakeOpenRouterText(),
+        polza_text_client=_FakePolzaText(),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    response = await client.chat(system="s", user="u", task="relevance")
+
+    assert response.provider == "gigachat"
+    assert not wormsoft.calls
+    assert giga.calls
+    assert client.last_routing_decision is not None
+    assert client.last_routing_decision.mode == POLICY_MODE_MAINTENANCE
+    assert len(client.last_routing_decision.considered_candidates) == 1

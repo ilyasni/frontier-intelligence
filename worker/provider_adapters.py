@@ -33,6 +33,7 @@ from shared.llm_control_plane import (
     ProviderError,
     ProviderExecutionRequest,
     ProviderStateSnapshot,
+    embedding_profile_for_model,
     normalize_task_family,
     normalize_wormsoft_model_snapshot,
 )
@@ -181,6 +182,9 @@ class WormsoftAdapter:
         if guard_state.get("quarantined"):
             return False, "guard_quarantine"
         return True, "ok"
+
+    async def resolve_model(self, request: ProviderExecutionRequest) -> tuple[str, dict[str, Any]]:
+        return str(request.model or "").strip(), {}
 
     async def execute(self, request: ProviderExecutionRequest) -> GigaChatResponse:
         return await self._text.chat(
@@ -490,6 +494,9 @@ class PolzaAdapter:
             return False, "model_missing"
         return True, "ok"
 
+    async def resolve_model(self, request: ProviderExecutionRequest) -> tuple[str, dict[str, Any]]:
+        return str(request.model or "").strip(), {}
+
     async def execute(self, request: ProviderExecutionRequest) -> GigaChatResponse:
         return await self._text.chat(
             system=request.system,
@@ -564,6 +571,7 @@ class GigaChatAdapter:
         self._giga = giga_client
 
     async def discover_models(self) -> ModelCatalogSnapshot:
+        embedding_model = str(self._settings.gigachat_embeddings_model or "").strip()
         return _synthetic_catalog(
             self.provider_name,
             [
@@ -572,7 +580,11 @@ class GigaChatAdapter:
                 {"model": str(self._settings.gigachat_model_pro or "").strip(), "text": True, "vision": True},
                 {"model": str(self._settings.gigachat_model_max or "").strip(), "text": True, "vision": True},
                 {"model": str(self._settings.gigachat_model_vision or "").strip(), "text": True, "vision": True},
-                {"model": str(self._settings.gigachat_embeddings_model or "").strip(), "embeddings": True},
+                {
+                    "model": embedding_model,
+                    "embeddings": True,
+                    "metadata": embedding_profile_for_model(embedding_model),
+                },
             ],
         )
 
@@ -592,6 +604,9 @@ class GigaChatAdapter:
         if not str(model or "").strip():
             return False, "model_missing"
         return True, "ok"
+
+    async def resolve_model(self, request: ProviderExecutionRequest) -> tuple[str, dict[str, Any]]:
+        return str(request.model or "").strip(), {}
 
     async def execute(self, request: ProviderExecutionRequest) -> GigaChatResponse:
         return await self._giga.chat(

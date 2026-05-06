@@ -1592,13 +1592,16 @@ function renderCapabilityMatrixPanel(payload) {
     `
       <div class="settings-stack">
         ${renderSettingsTable(
-          ['Provider', 'Model', 'Text', 'Vision', 'Embeddings'],
+          ['Provider', 'Model', 'Text', 'Vision', 'Embeddings', 'Dim', 'Context', 'Metric'],
           rows.map((item) => [
             escapeHtml(String(item.provider || '-')),
             `<span class="mono">${escapeHtml(String(item.model || '-'))}</span>`,
             escapeHtml(String(item.text_generation ? 'yes' : 'no')),
             escapeHtml(String(item.vision_generation ? 'yes' : 'no')),
             escapeHtml(String(item.embeddings ? 'yes' : 'no')),
+            item.dimension == null ? '-' : escapeHtml(String(item.dimension)),
+            item.context_tokens == null ? '-' : escapeHtml(String(item.context_tokens)),
+            escapeHtml(String(item.distance_metric || '-')),
           ]),
           'No capability rows available yet.',
         )}

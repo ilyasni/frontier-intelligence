@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from shared.llm_control_plane import (
+    POLICY_MODE_MAINTENANCE,
+    POLICY_MODE_STRICT,
     CIRCUIT_LEVEL_MODEL,
     CIRCUIT_STATE_OPEN,
     CircuitState,
@@ -59,6 +61,30 @@ def test_simulate_routing_decision_skips_open_model_circuit() -> None:
     assert decision.requested_provider == "wormsoft"
     assert decision.selected_provider == "openrouter"
     assert decision.skipped_candidates[0]["reason"] == "wormsoft_429"
+
+
+def test_simulate_routing_decision_strict_mode_keeps_single_candidate() -> None:
+    policy = default_routing_policy_v2(_settings(), "custom", None)
+    policy.text_generation.mode = POLICY_MODE_STRICT
+
+    decision = simulate_routing_decision(policy, task="relevance")
+
+    assert decision.mode == POLICY_MODE_STRICT
+    assert decision.fallback_allowed is False
+    assert len(decision.considered_candidates) == 1
+    assert decision.selected_provider == "wormsoft"
+
+
+def test_simulate_routing_decision_maintenance_prefers_gigachat() -> None:
+    policy = default_routing_policy_v2(_settings(), "custom", None)
+    policy.text_generation.mode = POLICY_MODE_MAINTENANCE
+
+    decision = simulate_routing_decision(policy, task="relevance")
+
+    assert decision.mode == POLICY_MODE_MAINTENANCE
+    assert decision.fallback_allowed is False
+    assert len(decision.considered_candidates) == 1
+    assert decision.selected_provider == "gigachat"
 
 
 def test_normalize_wormsoft_model_snapshot_detects_capabilities() -> None:
