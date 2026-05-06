@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from shared.llm_control_plane import ExecutionReceipt
 from worker.provider_budget_manager import ProviderBudgetManager
 
 
@@ -118,3 +119,47 @@ async def test_provider_budget_manager_blocks_soft_capped_openrouter_usage() -> 
     assert reason == "runtime_soft_cap:runtime_usage"
     provider_window = next(item for item in snapshots if item.scope == "runtime_usage")
     assert provider_window.status == "soft_limited"
+
+
+@pytest.mark.asyncio
+async def test_provider_budget_manager_tracks_cost_aggregates() -> None:
+    manager = ProviderBudgetManager(redis=_FakeRedis(), settings=_settings())
+    receipt = ExecutionReceipt(
+        task="relevance",
+        task_family="text_generation",
+        status="ok",
+        requested_provider="wormsoft",
+        requested_model="wormsoft/agent/medium",
+        actual_provider="wormsoft",
+        actual_model="wormsoft/agent/medium",
+        execution_role="primary",
+        cost_estimate=379.0,
+        actual_cost=381.5,
+        cost_drift=2.5,
+        budget_attribution={
+            "prompt_tokens": 306,
+            "completion_tokens": 73,
+            "billable_tokens": 379,
+        },
+    )
+
+    await manager.record_execution_receipt(receipt)
+
+    snapshot = await manager.snapshot_costs(
+        ["wormsoft"],
+        models_by_provider={"wormsoft": ["wormsoft/agent/medium"]},
+        task_families=["text_generation"],
+        execution_roles=["primary"],
+    )
+
+    provider_window = next(item for item in snapshot if item.scope == "cost_provider")
+    model_window = next(item for item in snapshot if item.scope == "cost_model")
+    role_window = next(item for item in snapshot if item.scope == "cost_execution_role")
+
+    assert provider_window.request_count == 1
+    assert provider_window.success_count == 1
+    assert provider_window.estimated_cost_total == 379.0
+    assert provider_window.actual_cost_total == 381.5
+    assert provider_window.cost_drift_total == 2.5
+    assert model_window.model == "wormsoft/agent/medium"
+    assert role_window.execution_role == "primary"

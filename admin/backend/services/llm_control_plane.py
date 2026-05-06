@@ -16,6 +16,7 @@ from shared.config import get_settings
 from shared.llm_control_plane import (
     BudgetWindowState,
     CircuitState,
+    CostAggregateState,
     ModelCapabilitySnapshot,
     ModelCatalogSnapshot,
     ProviderStateSnapshot,
@@ -330,13 +331,49 @@ async def fetch_provider_state_snapshot(policy: RoutingPolicyV2 | None = None) -
 async def fetch_budget_state_snapshot() -> dict[str, Any]:
     provider_state = await fetch_provider_state_snapshot()
     budgets: list[dict[str, Any]] = []
+    costs: list[dict[str, Any]] = []
+    providers = []
+    models_by_provider: dict[str, list[str]] = {}
     for provider in provider_state.get("providers", []):
+        provider_name = str(provider.get("provider") or "")
+        if provider_name:
+            providers.append(provider_name)
+        catalog = provider.get("catalog") or {}
+        models_by_provider[provider_name] = [
+            str(item.get("model") or "")
+            for item in (catalog.get("models") or [])
+            if str(item.get("model") or "").strip()
+        ]
         for budget in provider.get("budgets") or []:
             budgets.append(budget)
+    budget_manager = ProviderBudgetManager(redis=get_client())
+    try:
+        cost_windows = await budget_manager.snapshot_costs(
+            providers,
+            models_by_provider=models_by_provider,
+            task_families=["text_generation", "vision_generation", "embeddings"],
+            execution_roles=["primary", "shadow"],
+        )
+    finally:
+        await budget_manager.close()
+    provider_costs = [item for item in cost_windows if item.scope == "cost_provider"]
+    for item in cost_windows:
+        costs.append(item.model_dump())
     return {
         "status": "ok",
         "fetched_at": time.time(),
         "budgets": budgets,
+        "costs": costs,
+        "summary": {
+            "request_count": sum(item.request_count for item in provider_costs),
+            "success_count": sum(item.success_count for item in provider_costs),
+            "error_count": sum(item.error_count for item in provider_costs),
+            "estimated_cost_total": sum(item.estimated_cost_total for item in provider_costs),
+            "actual_cost_total": sum(item.actual_cost_total for item in provider_costs),
+            "cost_drift_total": sum(item.cost_drift_total for item in provider_costs),
+            "provider_count": len(provider_costs),
+            "unit": "credits",
+        },
     }
 
 

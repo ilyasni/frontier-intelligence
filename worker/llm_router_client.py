@@ -44,7 +44,7 @@ from shared.llm_routing import (
     effective_llm_routing,
     normalize_provider,
 )
-from shared.metrics import note_llm_fallback, note_openrouter_vision_fallback
+from shared.metrics import note_llm_cost, note_llm_fallback, note_openrouter_vision_fallback
 from worker.gigachat_client import GigaChatClient, GigaChatResponse
 from worker.openrouter_client import OpenRouterVisionClient, OpenRouterVisionError
 from worker.openrouter_guard import OpenRouterFreeGuard, OpenRouterVisionGuard
@@ -362,6 +362,7 @@ class LLMRouterClient:
             latency_ms=latency_ms,
             decision=decision,
         )
+        receipt = await self._record_finops_receipt(receipt)
         self._last_execution_receipt = receipt
         await self._append_routing_event("routing_decision_made", decision.model_dump())
         await self._append_routing_event("routing_execution_finished", receipt.model_dump())
@@ -598,6 +599,7 @@ class LLMRouterClient:
                     decision=decision,
                     attempts=attempt_outcomes,
                 )
+                receipt = await self._record_finops_receipt(receipt)
                 self._last_execution_receipt = receipt
                 await adapter.record_result(receipt=receipt, error=None)
                 await self._append_routing_event(
@@ -639,6 +641,7 @@ class LLMRouterClient:
                 budget_attribution=reservation,
                 provider_error=last_provider_error,
             )
+            failed_receipt = await self._record_finops_receipt(failed_receipt)
             await adapter.record_result(receipt=failed_receipt, error=last_provider_error)
             fallback_reason = (
                 last_provider_error.reason or self._fallback_reason_from_error(last_error)
@@ -679,6 +682,7 @@ class LLMRouterClient:
                 attempts=attempt_outcomes,
                 provider_error=last_provider_error,
             )
+            receipt = await self._record_finops_receipt(receipt)
             self._last_execution_receipt = receipt
             await self._append_routing_event(
                 "routing_execution_finished",
@@ -1029,6 +1033,7 @@ class LLMRouterClient:
                     decision=decision,
                     attempts=attempt_outcomes,
                 )
+                receipt = await self._record_finops_receipt(receipt)
                 self._last_execution_receipt = receipt
                 await adapter.record_result(receipt=receipt, error=None)
                 await self._append_routing_event("routing_execution_finished", receipt.model_dump())
@@ -1063,6 +1068,7 @@ class LLMRouterClient:
                 budget_attribution=reservation,
                 provider_error=last_provider_error,
             )
+            failed_receipt = await self._record_finops_receipt(failed_receipt)
             await adapter.record_result(receipt=failed_receipt, error=last_provider_error)
             fallback_reason = last_provider_error.reason or self._fallback_reason_from_error(last_error)
             attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="error", reason=fallback_reason))
@@ -1095,6 +1101,7 @@ class LLMRouterClient:
                 attempts=attempt_outcomes,
                 provider_error=last_provider_error,
             )
+            receipt = await self._record_finops_receipt(receipt)
             self._last_execution_receipt = receipt
             await self._append_routing_event("routing_execution_finished", receipt.model_dump())
         if last_error is not None:
@@ -1274,8 +1281,16 @@ class LLMRouterClient:
         primary_receipt: ExecutionReceipt,
         shadow_receipt: ExecutionReceipt,
     ) -> ShadowComparison:
-        primary_cost = primary_receipt.cost_estimate
-        shadow_cost = shadow_receipt.cost_estimate
+        primary_cost = (
+            primary_receipt.actual_cost
+            if primary_receipt.actual_cost is not None
+            else primary_receipt.cost_estimate
+        )
+        shadow_cost = (
+            shadow_receipt.actual_cost
+            if shadow_receipt.actual_cost is not None
+            else shadow_receipt.cost_estimate
+        )
         primary_budget = dict(primary_receipt.budget_attribution or {})
         shadow_budget = dict(shadow_receipt.budget_attribution or {})
         return ShadowComparison(
@@ -1295,6 +1310,65 @@ class LLMRouterClient:
             billable_tokens_delta=int(shadow_budget.get("billable_tokens", 0) or 0)
             - int(primary_budget.get("billable_tokens", 0) or 0),
         )
+
+    def _finalize_execution_receipt(self, receipt: ExecutionReceipt) -> ExecutionReceipt:
+        estimate = (
+            float(receipt.cost_estimate)
+            if receipt.cost_estimate is not None
+            else None
+        )
+        actual = (
+            float(receipt.actual_cost)
+            if receipt.actual_cost is not None
+            else estimate
+        )
+        drift = (
+            float(receipt.cost_drift)
+            if receipt.cost_drift is not None
+            else (float(actual) - float(estimate) if actual is not None and estimate is not None else None)
+        )
+        budget = dict(receipt.budget_attribution or {})
+        workspace_id = str(receipt.workspace_id or budget.get("workspace_id") or "")
+        budget_class = str(
+            receipt.budget_class
+            or budget.get("budget_class")
+            or getattr(receipt.decision, "budget_class", "")
+            or ""
+        )
+        budget.setdefault("workspace_id", workspace_id)
+        budget.setdefault("budget_class", budget_class)
+        budget.setdefault("execution_role", receipt.execution_role)
+        budget.setdefault("actual_provider", receipt.actual_provider)
+        budget.setdefault("actual_model", receipt.actual_model)
+        if estimate is not None:
+            budget["cost_estimate"] = estimate
+        if actual is not None:
+            budget["actual_cost"] = actual
+        if drift is not None:
+            budget["cost_drift"] = drift
+        return receipt.model_copy(
+            update={
+                "actual_cost": actual,
+                "cost_drift": drift,
+                "workspace_id": workspace_id,
+                "budget_class": budget_class,
+                "budget_attribution": budget,
+            }
+        )
+
+    async def _record_finops_receipt(self, receipt: ExecutionReceipt) -> ExecutionReceipt:
+        finalized = self._finalize_execution_receipt(receipt)
+        note_llm_cost(
+            self._service_name,
+            finalized.actual_provider,
+            finalized.task_family,
+            finalized.execution_role,
+            estimated_cost=finalized.cost_estimate,
+            actual_cost=finalized.actual_cost,
+            cost_drift=finalized.cost_drift,
+        )
+        await self._budget_manager.record_execution_receipt(finalized)
+        return finalized
 
     async def _publish_shadow_plan(
         self,
@@ -1463,6 +1537,7 @@ class LLMRouterClient:
                         mode=mode,
                     ),
                 )
+                timeout_receipt = await self._record_finops_receipt(timeout_receipt)
                 result = ShadowEvaluationResult(
                     group_id=shadow_group_id,
                     primary_receipt=primary_receipt,
@@ -1713,6 +1788,7 @@ class LLMRouterClient:
                         ),
                         attempts=attempt_outcomes,
                     )
+                    shadow_receipt = await self._record_finops_receipt(shadow_receipt)
                 elif task_family == TASK_FAMILY_EMBEDDINGS:
                     await adapter.embed(resolved_request)
                     reservation = await self._budget_manager.commit(
@@ -1750,6 +1826,7 @@ class LLMRouterClient:
                         ),
                         attempts=attempt_outcomes,
                     )
+                    shadow_receipt = await self._record_finops_receipt(shadow_receipt)
                 else:
                     response = await adapter.execute(resolved_request)
                     cost_estimate = adapter.estimate_cost(
@@ -1797,6 +1874,7 @@ class LLMRouterClient:
                         ),
                         attempts=attempt_outcomes,
                     )
+                    shadow_receipt = await self._record_finops_receipt(shadow_receipt)
 
                 result = ShadowEvaluationResult(
                     group_id=shadow_group_id,
@@ -1846,6 +1924,7 @@ class LLMRouterClient:
                     attempts=attempt_outcomes,
                     provider_error=provider_error,
                 )
+                last_receipt = await self._record_finops_receipt(last_receipt)
 
         if last_receipt is None:
             last_receipt = ExecutionReceipt(
@@ -1877,6 +1956,7 @@ class LLMRouterClient:
                     reason="no_shadow_route_available",
                 ),
             )
+            last_receipt = await self._record_finops_receipt(last_receipt)
         result = ShadowEvaluationResult(
             group_id=shadow_group_id,
             primary_receipt=primary_receipt,
@@ -2480,6 +2560,7 @@ class LLMRouterClient:
                     decision=decision,
                     attempts=attempt_outcomes,
                 )
+                receipt = await self._record_finops_receipt(receipt)
                 self._last_execution_receipt = receipt
                 await adapter.record_result(receipt=receipt, error=None)
                 await self._append_routing_event(
@@ -2521,6 +2602,7 @@ class LLMRouterClient:
                 budget_attribution=reservation,
                 provider_error=last_provider_error,
             )
+            failed_receipt = await self._record_finops_receipt(failed_receipt)
             await adapter.record_result(receipt=failed_receipt, error=last_provider_error)
             fallback_reason = (
                 last_provider_error.reason or self._fallback_reason_from_error(last_error)
@@ -2572,6 +2654,7 @@ class LLMRouterClient:
                 attempts=attempt_outcomes,
                 provider_error=last_provider_error,
             )
+            receipt = await self._record_finops_receipt(receipt)
             self._last_execution_receipt = receipt
             await self._append_routing_event(
                 "routing_execution_finished",

@@ -246,6 +246,33 @@ class BudgetWindowState(BaseModel):
         return normalize_provider(value)
 
 
+class CostAggregateState(BaseModel):
+    provider: str
+    scope: str = "cost_provider"
+    window_label: str = ""
+    model: str = ""
+    task_family: str = ""
+    execution_role: str = ""
+    workspace_id: str = ""
+    request_count: int = 0
+    success_count: int = 0
+    error_count: int = 0
+    estimated_cost_total: float = 0.0
+    actual_cost_total: float = 0.0
+    cost_drift_total: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    billable_tokens: int = 0
+    unit: str = "credits"
+    status: str = "unknown"
+    refreshed_at: float | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _validate_provider(cls, value: Any) -> str:
+        return normalize_provider(value)
+
+
 class ModelCapabilitySnapshot(BaseModel):
     provider: str
     model: str
@@ -417,6 +444,11 @@ class ExecutionReceipt(BaseModel):
     fallback_reason: str = ""
     latency_ms: float = 0.0
     cost_estimate: float | None = None
+    actual_cost: float | None = None
+    cost_drift: float | None = None
+    cost_currency: str = "credits"
+    workspace_id: str = ""
+    budget_class: str = ""
     budget_attribution: dict[str, Any] = Field(default_factory=dict)
     decision: RoutingDecision | None = None
     attempts: list[AttemptOutcome] = Field(default_factory=list)

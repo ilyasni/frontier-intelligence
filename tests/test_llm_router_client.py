@@ -13,7 +13,7 @@ from shared.llm_control_plane import (
     TaskFamilyPolicy,
 )
 from worker.llm_router_client import LLMRouterClient
-from worker.llm_types import GigaChatResponse
+from worker.llm_types import GigaChatResponse, GigaChatUsage
 from worker.openrouter_client import OpenRouterVisionError
 from worker.provider_budget_manager import ProviderBudgetManager
 
@@ -104,6 +104,11 @@ class _FakeWormsoft:
             model="gemma4:31b-cloud",
             requested_model=model,
             provider="wormsoft",
+            usage=GigaChatUsage(
+                prompt_tokens=2,
+                completion_tokens=1,
+                total_tokens=3,
+            ),
         )
 
     async def close(self) -> None:
@@ -815,6 +820,44 @@ async def test_llm_router_shadow_eval_runs_alternative_chain_and_publishes_resul
     assert payload["shadow_receipt"]["actual_provider"] == "gigachat"
     assert payload["comparison"]["status_match"] is True
     assert payload["comparison"]["provider_match"] is False
+
+
+@pytest.mark.asyncio
+async def test_llm_router_records_finops_receipt_and_cost_aggregate(monkeypatch) -> None:
+    monkeypatch.setattr("worker.llm_router_client.get_settings", _settings)
+    _install_dynamic_openrouter(monkeypatch)
+    redis = _FakeRedis()
+    client = LLMRouterClient(
+        redis=redis,
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=True),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=True),
+        openrouter_text_client=_FakeOpenRouterText(),
+        polza_text_client=_FakePolzaText(),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    response = await client.chat(system="s", user="u", task="relevance")
+
+    assert response.provider == "wormsoft"
+    assert client.last_execution_receipt is not None
+    assert client.last_execution_receipt.cost_estimate == 3.0
+    assert client.last_execution_receipt.actual_cost == 3.0
+    assert client.last_execution_receipt.cost_drift == 0.0
+
+    manager = ProviderBudgetManager(redis=redis, settings=_settings())
+    cost_windows = await manager.snapshot_costs(
+        ["wormsoft"],
+        models_by_provider={"wormsoft": ["wormsoft/agent/medium"]},
+        task_families=["text_generation"],
+        execution_roles=["primary"],
+    )
+    provider_window = next(item for item in cost_windows if item.scope == "cost_provider")
+
+    assert provider_window.request_count == 1
+    assert provider_window.actual_cost_total == 3.0
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ import uuid
 from typing import Any
 
 from shared.config import get_settings
-from shared.llm_control_plane import BudgetWindowState
+from shared.llm_control_plane import BudgetWindowState, CostAggregateState, ExecutionReceipt
 from shared.llm_routing import PROVIDER_GIGACHAT, PROVIDER_OPENROUTER, PROVIDER_POLZA, PROVIDER_WORMSOFT, normalize_provider
 
 
@@ -151,6 +151,110 @@ class ProviderBudgetManager:
             hard_limit = float(getattr(settings, "llm_runtime_embeddings_daily_request_limit", 0) or 0.0) or None
 
         return soft_limit, hard_limit
+
+    @staticmethod
+    def _finops_key(
+        provider: str,
+        *,
+        day: str | None = None,
+        scope: str = "cost_provider",
+        model: str = "",
+        task_family: str = "",
+        execution_role: str = "",
+        workspace_id: str = "",
+    ) -> str:
+        normalized_provider = normalize_provider(provider)
+        suffix = ["llm:cost:runtime", normalized_provider, scope]
+        if model:
+            suffix.append(str(model).replace(":", "__").replace("/", "__"))
+        if task_family:
+            suffix.append(str(task_family))
+        if execution_role:
+            suffix.append(str(execution_role))
+        if workspace_id:
+            suffix.append(str(workspace_id).replace(":", "__").replace("/", "__"))
+        suffix.append(day or _day_key())
+        return ":".join(suffix)
+
+    @staticmethod
+    def _finops_scopes(payload: dict[str, Any]) -> list[dict[str, str]]:
+        provider = normalize_provider(payload.get("provider"))
+        model = str(payload.get("model") or "").strip()
+        task_family = str(payload.get("task_family") or "").strip()
+        execution_role = str(payload.get("execution_role") or "primary").strip()
+        workspace_id = str(payload.get("workspace_id") or "").strip()
+        scopes = [
+            {
+                "scope": "cost_provider",
+                "provider": provider,
+                "model": "",
+                "task_family": "",
+                "execution_role": "",
+                "workspace_id": "",
+            }
+        ]
+        if model:
+            scopes.append(
+                {
+                    "scope": "cost_model",
+                    "provider": provider,
+                    "model": model,
+                    "task_family": "",
+                    "execution_role": "",
+                    "workspace_id": "",
+                }
+            )
+        if task_family:
+            scopes.append(
+                {
+                    "scope": "cost_task_family",
+                    "provider": provider,
+                    "model": "",
+                    "task_family": task_family,
+                    "execution_role": "",
+                    "workspace_id": "",
+                }
+            )
+        if execution_role:
+            scopes.append(
+                {
+                    "scope": "cost_execution_role",
+                    "provider": provider,
+                    "model": "",
+                    "task_family": "",
+                    "execution_role": execution_role,
+                    "workspace_id": "",
+                }
+            )
+        if workspace_id:
+            scopes.append(
+                {
+                    "scope": "cost_workspace",
+                    "provider": provider,
+                    "model": "",
+                    "task_family": "",
+                    "execution_role": "",
+                    "workspace_id": workspace_id,
+                }
+            )
+        return scopes
+
+    async def _write_many(self, commands: list[tuple[str, tuple[Any, ...]]]) -> None:
+        redis = await self._client()
+        if redis is None or not commands:
+            return
+        pipeline_factory = getattr(redis, "pipeline", None)
+        if callable(pipeline_factory):
+            try:
+                async with redis.pipeline() as pipe:
+                    for method_name, args in commands:
+                        getattr(pipe, method_name)(*args)
+                    await pipe.execute()
+                return
+            except Exception:
+                pass
+        for method_name, args in commands:
+            await getattr(redis, method_name)(*args)
 
     async def _scope_snapshot(
         self,
@@ -367,6 +471,101 @@ class ProviderBudgetManager:
             return payload
         return payload
 
+    async def record_execution_receipt(self, receipt: ExecutionReceipt | None) -> None:
+        if receipt is None:
+            return
+        provider = normalize_provider(receipt.actual_provider or receipt.requested_provider)
+        if not provider:
+            return
+        payload = {
+            "provider": provider,
+            "model": str(receipt.actual_model or receipt.requested_model or "").strip(),
+            "task_family": str(receipt.task_family or "").strip(),
+            "execution_role": str(receipt.execution_role or "primary").strip(),
+            "workspace_id": str(receipt.workspace_id or "").strip(),
+            "status": str(receipt.status or "").strip().lower(),
+            "estimated_cost": float(receipt.cost_estimate or 0.0)
+            if receipt.cost_estimate is not None
+            else 0.0,
+            "actual_cost": float(receipt.actual_cost or 0.0)
+            if receipt.actual_cost is not None
+            else 0.0,
+            "cost_drift": float(receipt.cost_drift or 0.0)
+            if receipt.cost_drift is not None
+            else 0.0,
+            "prompt_tokens": int(receipt.budget_attribution.get("prompt_tokens") or 0),
+            "completion_tokens": int(receipt.budget_attribution.get("completion_tokens") or 0),
+            "billable_tokens": int(receipt.budget_attribution.get("billable_tokens") or 0),
+            "unit": str(receipt.cost_currency or "credits"),
+            "day": _day_key(),
+        }
+        redis = await self._client()
+        if redis is None:
+            return
+        now = time.time()
+        ttl = 3 * 24 * 3600
+        commands: list[tuple[str, tuple[Any, ...]]] = []
+        for scope in self._finops_scopes(payload):
+            key = self._finops_key(
+                scope["provider"],
+                day=payload["day"],
+                scope=scope["scope"],
+                model=scope["model"],
+                task_family=scope["task_family"],
+                execution_role=scope["execution_role"],
+                workspace_id=scope["workspace_id"],
+            )
+            commands.extend(
+                [
+                    ("hincrby", (key, "request_count", 1)),
+                    (
+                        "hincrby",
+                        (
+                            key,
+                            "success_count" if payload["status"] == "ok" else "error_count",
+                            1,
+                        ),
+                    ),
+                    ("hincrbyfloat", (key, "estimated_cost_total", payload["estimated_cost"])),
+                    ("hincrbyfloat", (key, "actual_cost_total", payload["actual_cost"])),
+                    ("hincrbyfloat", (key, "cost_drift_total", payload["cost_drift"])),
+                    ("hincrby", (key, "prompt_tokens", payload["prompt_tokens"])),
+                    ("hincrby", (key, "completion_tokens", payload["completion_tokens"])),
+                    ("hincrby", (key, "billable_tokens", payload["billable_tokens"])),
+                    (
+                        "hset",
+                        (
+                            key,
+                            {
+                                "provider": payload["provider"],
+                                "scope": scope["scope"],
+                                "model": scope["model"],
+                                "task_family": scope["task_family"],
+                                "execution_role": scope["execution_role"],
+                                "workspace_id": scope["workspace_id"],
+                                "unit": payload["unit"],
+                                "updated_at": str(now),
+                                "last_status": payload["status"],
+                            },
+                        ),
+                    ),
+                    ("expire", (key, ttl)),
+                ]
+            )
+        try:
+            normalized_commands = []
+            for method_name, args in commands:
+                if method_name == "hset":
+                    key, mapping = args
+                    normalized_commands.append((method_name, (key,)))
+                    await redis.hset(key, mapping=mapping)
+                else:
+                    normalized_commands.append((method_name, args))
+            filtered = [item for item in normalized_commands if item[0] != "hset"]
+            await self._write_many(filtered)
+        except Exception:
+            return
+
     async def release(self, reservation: dict[str, Any] | None) -> dict[str, Any]:
         payload = dict(reservation or {})
         provider = normalize_provider(payload.get("provider"))
@@ -474,6 +673,158 @@ class ProviderBudgetManager:
                         model=descriptor["model"],
                         task_family=descriptor["task_family"],
                         execution_role=descriptor["execution_role"],
+                    )
+                )
+        return result
+
+    async def _cost_snapshot(
+        self,
+        *,
+        provider: str,
+        scope: str,
+        model: str = "",
+        task_family: str = "",
+        execution_role: str = "",
+        workspace_id: str = "",
+    ) -> CostAggregateState:
+        redis = await self._client()
+        now = time.time()
+        key = self._finops_key(
+            provider,
+            scope=scope,
+            model=model,
+            task_family=task_family,
+            execution_role=execution_role,
+            workspace_id=workspace_id,
+        )
+        try:
+            raw = await redis.hgetall(key) if redis is not None else {}
+        except Exception:
+            raw = {}
+
+        def _num_float(name: str) -> float:
+            try:
+                return float(raw.get(name) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _num_int(name: str) -> int:
+            try:
+                return int(float(raw.get(name) or 0.0))
+            except (TypeError, ValueError):
+                return 0
+
+        return CostAggregateState(
+            provider=normalize_provider(provider),
+            scope=scope,
+            window_label=_day_key(),
+            model=str(raw.get("model") or model or ""),
+            task_family=str(raw.get("task_family") or task_family or ""),
+            execution_role=str(raw.get("execution_role") or execution_role or ""),
+            workspace_id=str(raw.get("workspace_id") or workspace_id or ""),
+            request_count=_num_int("request_count"),
+            success_count=_num_int("success_count"),
+            error_count=_num_int("error_count"),
+            estimated_cost_total=_num_float("estimated_cost_total"),
+            actual_cost_total=_num_float("actual_cost_total"),
+            cost_drift_total=_num_float("cost_drift_total"),
+            prompt_tokens=_num_int("prompt_tokens"),
+            completion_tokens=_num_int("completion_tokens"),
+            billable_tokens=_num_int("billable_tokens"),
+            unit=str(raw.get("unit") or "credits"),
+            status="ok" if raw else "empty",
+            refreshed_at=_num_float("updated_at") or now,
+        )
+
+    async def snapshot_costs(
+        self,
+        providers: list[str],
+        *,
+        models_by_provider: dict[str, list[str]] | None = None,
+        task_families: list[str] | None = None,
+        execution_roles: list[str] | None = None,
+        workspace_ids: list[str] | None = None,
+    ) -> list[CostAggregateState]:
+        redis = await self._client()
+        now = time.time()
+        if redis is None:
+            return [
+                CostAggregateState(
+                    provider=provider,
+                    scope="cost_provider",
+                    window_label=_day_key(),
+                    unit="credits",
+                    status="unavailable",
+                    refreshed_at=now,
+                )
+                for provider in providers
+            ]
+
+        result: list[CostAggregateState] = []
+        models_by_provider = models_by_provider or {}
+        normalized_roles = sorted({str(role or "").strip() for role in (execution_roles or []) if str(role or "").strip()})
+        normalized_families = sorted({str(family or "").strip() for family in (task_families or []) if str(family or "").strip()})
+        normalized_workspaces = sorted({str(workspace_id or "").strip() for workspace_id in (workspace_ids or []) if str(workspace_id or "").strip()})
+        for provider in sorted({normalize_provider(provider) for provider in providers}):
+            scope_descriptors = [
+                {
+                    "scope": "cost_provider",
+                    "model": "",
+                    "task_family": "",
+                    "execution_role": "",
+                    "workspace_id": "",
+                }
+            ]
+            for model in sorted({str(item or "").strip() for item in models_by_provider.get(provider, []) if str(item or "").strip()}):
+                scope_descriptors.append(
+                    {
+                        "scope": "cost_model",
+                        "model": model,
+                        "task_family": "",
+                        "execution_role": "",
+                        "workspace_id": "",
+                    }
+                )
+            for task_family in normalized_families:
+                scope_descriptors.append(
+                    {
+                        "scope": "cost_task_family",
+                        "model": "",
+                        "task_family": task_family,
+                        "execution_role": "",
+                        "workspace_id": "",
+                    }
+                )
+            for execution_role in normalized_roles:
+                scope_descriptors.append(
+                    {
+                        "scope": "cost_execution_role",
+                        "model": "",
+                        "task_family": "",
+                        "execution_role": execution_role,
+                        "workspace_id": "",
+                    }
+                )
+            for workspace_id in normalized_workspaces:
+                scope_descriptors.append(
+                    {
+                        "scope": "cost_workspace",
+                        "model": "",
+                        "task_family": "",
+                        "execution_role": "",
+                        "workspace_id": workspace_id,
+                    }
+                )
+
+            for descriptor in scope_descriptors:
+                result.append(
+                    await self._cost_snapshot(
+                        provider=provider,
+                        scope=descriptor["scope"],
+                        model=descriptor["model"],
+                        task_family=descriptor["task_family"],
+                        execution_role=descriptor["execution_role"],
+                        workspace_id=descriptor["workspace_id"],
                     )
                 )
         return result

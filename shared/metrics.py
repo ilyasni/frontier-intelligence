@@ -61,6 +61,21 @@ try:
             "reason",
         ],
     )
+    LLM_COST_ESTIMATE_TOTAL = Counter(
+        "frontier_llm_cost_estimate_total",
+        "Cumulative estimated LLM cost by provider and task family.",
+        ["service", "provider", "task_family", "execution_role"],
+    )
+    LLM_COST_ACTUAL_TOTAL = Counter(
+        "frontier_llm_cost_actual_total",
+        "Cumulative actual LLM cost by provider and task family.",
+        ["service", "provider", "task_family", "execution_role"],
+    )
+    LLM_COST_DRIFT_TOTAL = Gauge(
+        "frontier_llm_cost_drift_total",
+        "Cumulative actual-minus-estimated LLM cost drift by provider and task family.",
+        ["service", "provider", "task_family", "execution_role"],
+    )
     GIGACHAT_PROMPT_TOKENS_TOTAL = Counter(
         "frontier_gigachat_prompt_tokens_total",
         "Total prompt tokens reported by GigaChat.",
@@ -288,6 +303,9 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     LLM_BILLABLE_TOKENS_TOTAL = None
     LLM_REQUESTS_TOTAL = None
     LLM_FALLBACKS_TOTAL = None
+    LLM_COST_ESTIMATE_TOTAL = None
+    LLM_COST_ACTUAL_TOTAL = None
+    LLM_COST_DRIFT_TOTAL = None
     GIGACHAT_PROMPT_TOKENS_TOTAL = None
     GIGACHAT_COMPLETION_TOKENS_TOTAL = None
     GIGACHAT_PRECACHED_PROMPT_TOKENS_TOTAL = None
@@ -433,6 +451,30 @@ def note_llm_fallback(
             to_model=to_model,
             reason=reason,
         ).inc()
+
+
+def note_llm_cost(
+    service: str,
+    provider: str,
+    task_family: str,
+    execution_role: str,
+    *,
+    estimated_cost: float | None = None,
+    actual_cost: float | None = None,
+    cost_drift: float | None = None,
+) -> None:
+    labels = {
+        "service": service,
+        "provider": provider,
+        "task_family": task_family,
+        "execution_role": execution_role,
+    }
+    if LLM_COST_ESTIMATE_TOTAL is not None and estimated_cost is not None:
+        LLM_COST_ESTIMATE_TOTAL.labels(**labels).inc(float(estimated_cost))
+    if LLM_COST_ACTUAL_TOTAL is not None and actual_cost is not None:
+        LLM_COST_ACTUAL_TOTAL.labels(**labels).inc(float(actual_cost))
+    if LLM_COST_DRIFT_TOTAL is not None and cost_drift is not None:
+        LLM_COST_DRIFT_TOTAL.labels(**labels).inc(float(cost_drift))
 
 
 def note_gigachat_usage(
