@@ -294,6 +294,31 @@ async def fetch_provider_state_snapshot(policy: RoutingPolicyV2 | None = None) -
         runtime_budget_map.setdefault(budget.provider, []).append(budget)
     for state in states:
         state.budgets.extend(runtime_budget_map.get(state.provider, []))
+        provider_runtime_budget = next(
+            (
+                item
+                for item in state.budgets
+                if item.scope == "runtime_usage"
+            ),
+            None,
+        )
+        if provider_runtime_budget and provider_runtime_budget.status == "hard_limited":
+            state.quota_pressure = "runtime_hard_cap"
+            state.readiness_state = derive_provider_readiness(
+                available=state.available,
+                ready=state.ready,
+                health_status=state.health_status,
+                quota_pressure=state.quota_pressure,
+            )
+        elif provider_runtime_budget and provider_runtime_budget.status == "soft_limited":
+            if state.quota_pressure in {"ok", "unknown"}:
+                state.quota_pressure = "runtime_soft_cap"
+            state.readiness_state = derive_provider_readiness(
+                available=state.available,
+                ready=state.ready,
+                health_status=state.health_status,
+                quota_pressure=state.quota_pressure,
+            )
     return {
         "status": "ok",
         "fetched_at": time.time(),

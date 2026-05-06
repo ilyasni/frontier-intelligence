@@ -494,6 +494,32 @@ class LLMRouterClient:
                 )
                 break
 
+            allowed_budget, budget_reason = await self._allow_budget_reservation(
+                attempt_provider,
+                effective_model,
+                task_family=task_family,
+                execution_role=EXECUTION_ROLE_PRIMARY,
+            )
+            if not allowed_budget:
+                last_error = RuntimeError(budget_reason)
+                fallback_reason = fallback_reason or budget_reason
+                skipped_candidates.append(
+                    {
+                        "provider": attempt_provider,
+                        "model": effective_model,
+                        "reason": budget_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=attempt_provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=budget_reason,
+                    )
+                )
+                break
+
             reservation = await self._budget_manager.reserve(
                 provider=attempt_provider,
                 model=effective_model,
@@ -873,6 +899,25 @@ class LLMRouterClient:
                     if attempt_provider == PROVIDER_OPENROUTER:
                         self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], capacity_reason)
                         note_openrouter_vision_fallback(self._service_name, next_attempt[0], capacity_reason)
+                    continue
+                break
+
+            allowed_budget, budget_reason = await self._allow_budget_reservation(
+                attempt_provider,
+                effective_model,
+                task_family=TASK_FAMILY_VISION_GENERATION,
+                execution_role=EXECUTION_ROLE_PRIMARY,
+            )
+            if not allowed_budget:
+                last_error = RuntimeError(budget_reason)
+                if not fallback_reason:
+                    fallback_reason = budget_reason
+                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": budget_reason})
+                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=budget_reason))
+                if next_attempt:
+                    if attempt_provider == PROVIDER_OPENROUTER:
+                        self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], budget_reason)
+                        note_openrouter_vision_fallback(self._service_name, next_attempt[0], budget_reason)
                     continue
                 break
 
@@ -1515,6 +1560,30 @@ class LLMRouterClient:
                 )
                 continue
 
+            allowed_budget, budget_reason = await self._allow_budget_reservation(
+                provider,
+                effective_model,
+                task_family=task_family,
+                execution_role=EXECUTION_ROLE_SHADOW,
+            )
+            if not allowed_budget:
+                skipped_candidates.append(
+                    {
+                        "provider": provider,
+                        "model": effective_model,
+                        "reason": budget_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=budget_reason,
+                    )
+                )
+                continue
+
             reservation = await self._budget_manager.reserve(
                 provider=provider,
                 model=effective_model,
@@ -1826,6 +1895,22 @@ class LLMRouterClient:
     ) -> tuple[bool, str]:
         adapter = self._adapter_for_provider(provider)
         return await adapter.reserve_capacity(task_family=task_family, model=model)
+
+    async def _allow_budget_reservation(
+        self,
+        provider: str,
+        model: str,
+        *,
+        task_family: str,
+        execution_role: str = EXECUTION_ROLE_PRIMARY,
+    ) -> tuple[bool, str]:
+        allowed, reason, _ = await self._budget_manager.allow_reservation(
+            provider=provider,
+            model=model,
+            task_family=task_family,
+            execution_role=execution_role,
+        )
+        return allowed, reason
 
     async def _resolve_provider_model(
         self,
@@ -2167,6 +2252,43 @@ class LLMRouterClient:
                         to_provider=next_attempt[0],
                         to_model=next_attempt[1],
                         reason=capacity_reason,
+                    )
+                    continue
+                break
+
+            allowed_budget, budget_reason = await self._allow_budget_reservation(
+                attempt_provider,
+                effective_model,
+                task_family=task_family,
+                execution_role=EXECUTION_ROLE_PRIMARY,
+            )
+            if not allowed_budget:
+                last_error = RuntimeError(budget_reason)
+                skipped_candidates.append(
+                    {
+                        "provider": attempt_provider,
+                        "model": effective_model,
+                        "reason": budget_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=attempt_provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=budget_reason,
+                    )
+                )
+                if next_attempt:
+                    note_llm_fallback(
+                        self._service_name,
+                        task,
+                        from_provider=attempt_provider,
+                        from_requested_model=effective_model,
+                        from_actual_model="",
+                        to_provider=next_attempt[0],
+                        to_model=next_attempt[1],
+                        reason=budget_reason,
                     )
                     continue
                 break

@@ -150,6 +150,54 @@ class Settings(BaseSettings):
         2,
         alias="LLM_SHADOW_EVAL_MAX_CONCURRENCY",
     )
+    llm_runtime_shadow_daily_request_soft_cap: int = Field(
+        250,
+        alias="LLM_RUNTIME_SHADOW_DAILY_REQUEST_SOFT_CAP",
+    )
+    llm_runtime_shadow_daily_request_limit: int = Field(
+        0,
+        alias="LLM_RUNTIME_SHADOW_DAILY_REQUEST_LIMIT",
+    )
+    llm_runtime_embeddings_daily_request_soft_cap: int = Field(
+        0,
+        alias="LLM_RUNTIME_EMBEDDINGS_DAILY_REQUEST_SOFT_CAP",
+    )
+    llm_runtime_embeddings_daily_request_limit: int = Field(
+        0,
+        alias="LLM_RUNTIME_EMBEDDINGS_DAILY_REQUEST_LIMIT",
+    )
+    llm_runtime_provider_openrouter_daily_request_soft_cap: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_OPENROUTER_DAILY_REQUEST_SOFT_CAP",
+    )
+    llm_runtime_provider_openrouter_daily_request_limit: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_OPENROUTER_DAILY_REQUEST_LIMIT",
+    )
+    llm_runtime_provider_wormsoft_daily_request_soft_cap: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_WORMSOFT_DAILY_REQUEST_SOFT_CAP",
+    )
+    llm_runtime_provider_wormsoft_daily_request_limit: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_WORMSOFT_DAILY_REQUEST_LIMIT",
+    )
+    llm_runtime_provider_polza_daily_request_soft_cap: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_POLZA_DAILY_REQUEST_SOFT_CAP",
+    )
+    llm_runtime_provider_polza_daily_request_limit: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_POLZA_DAILY_REQUEST_LIMIT",
+    )
+    llm_runtime_provider_gigachat_daily_request_soft_cap: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_GIGACHAT_DAILY_REQUEST_SOFT_CAP",
+    )
+    llm_runtime_provider_gigachat_daily_request_limit: int = Field(
+        0,
+        alias="LLM_RUNTIME_PROVIDER_GIGACHAT_DAILY_REQUEST_LIMIT",
+    )
     polza_api_key: str = Field("", alias="POLZA_API_KEY")
     polza_base_url: str = Field("https://polza.ai/api/v1", alias="POLZA_BASE_URL")
     polza_text_model: str = Field("google/gemma-3-12b-it", alias="POLZA_TEXT_MODEL")

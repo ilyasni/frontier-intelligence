@@ -162,8 +162,12 @@ def derive_provider_readiness(
         return READINESS_MAINTENANCE
     if normalized_quota in {"quota_exhausted"}:
         return READINESS_QUOTA_EXHAUSTED
+    if normalized_quota in {"runtime_hard_cap"}:
+        return READINESS_QUOTA_EXHAUSTED
     if normalized_quota in {"rate_limited", "quarantined"} or normalized_health == "quarantined":
         return READINESS_RATE_LIMITED
+    if normalized_quota in {"runtime_soft_cap"}:
+        return READINESS_DEGRADED
     if normalized_quota in {"low_credit", "low_balance", "unknown"} and not ready:
         return READINESS_DEGRADED
     if normalized_quota in {"low_credit", "low_balance"}:

@@ -7,7 +7,7 @@ from typing import Any
 
 from shared.config import get_settings
 from shared.llm_control_plane import BudgetWindowState
-from shared.llm_routing import normalize_provider
+from shared.llm_routing import PROVIDER_GIGACHAT, PROVIDER_OPENROUTER, PROVIDER_POLZA, PROVIDER_WORMSOFT, normalize_provider
 
 
 def _day_key() -> str:
@@ -111,6 +111,155 @@ class ProviderBudgetManager:
                 }
             )
         return scopes
+
+    def _scope_limits(
+        self,
+        *,
+        provider: str,
+        scope: str,
+        task_family: str = "",
+        execution_role: str = "",
+    ) -> tuple[float | None, float | None]:
+        settings = self._settings
+        normalized_provider = normalize_provider(provider)
+        soft_limit: float | None = None
+        hard_limit: float | None = None
+
+        if scope == "runtime_usage":
+            provider_soft_fields = {
+                PROVIDER_OPENROUTER: getattr(settings, "llm_runtime_provider_openrouter_daily_request_soft_cap", 0),
+                PROVIDER_WORMSOFT: getattr(settings, "llm_runtime_provider_wormsoft_daily_request_soft_cap", 0),
+                PROVIDER_POLZA: getattr(settings, "llm_runtime_provider_polza_daily_request_soft_cap", 0),
+                PROVIDER_GIGACHAT: getattr(settings, "llm_runtime_provider_gigachat_daily_request_soft_cap", 0),
+            }
+            provider_hard_fields = {
+                PROVIDER_OPENROUTER: getattr(settings, "llm_runtime_provider_openrouter_daily_request_limit", 0),
+                PROVIDER_WORMSOFT: getattr(settings, "llm_runtime_provider_wormsoft_daily_request_limit", 0),
+                PROVIDER_POLZA: getattr(settings, "llm_runtime_provider_polza_daily_request_limit", 0),
+                PROVIDER_GIGACHAT: getattr(settings, "llm_runtime_provider_gigachat_daily_request_limit", 0),
+            }
+            soft_limit = float(provider_soft_fields.get(normalized_provider) or 0.0) or None
+            hard_limit = float(provider_hard_fields.get(normalized_provider) or 0.0) or None
+            if normalized_provider == PROVIDER_OPENROUTER and soft_limit is None:
+                fallback_cap = float(getattr(settings, "openrouter_free_rpd_soft_cap", 0) or 0.0)
+                soft_limit = fallback_cap or None
+        elif scope == "runtime_execution_role" and execution_role == "shadow":
+            soft_limit = float(getattr(settings, "llm_runtime_shadow_daily_request_soft_cap", 0) or 0.0) or None
+            hard_limit = float(getattr(settings, "llm_runtime_shadow_daily_request_limit", 0) or 0.0) or None
+        elif scope == "runtime_task_family" and task_family == "embeddings":
+            soft_limit = float(getattr(settings, "llm_runtime_embeddings_daily_request_soft_cap", 0) or 0.0) or None
+            hard_limit = float(getattr(settings, "llm_runtime_embeddings_daily_request_limit", 0) or 0.0) or None
+
+        return soft_limit, hard_limit
+
+    async def _scope_snapshot(
+        self,
+        *,
+        provider: str,
+        scope: str,
+        model: str = "",
+        task_family: str = "",
+        execution_role: str = "",
+    ) -> BudgetWindowState:
+        redis = await self._client()
+        now = time.time()
+        key = self._runtime_budget_key(
+            provider,
+            scope=scope,
+            model=model,
+            task_family=task_family,
+            execution_role=execution_role,
+        )
+        try:
+            raw = await redis.hgetall(key) if redis is not None else {}
+        except Exception:
+            raw = {}
+
+        def _num(name: str) -> float:
+            try:
+                return float(raw.get(name) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        reserved_units = _num("reserved_units")
+        committed_units = _num("committed_units")
+        active_requests = _num("active_requests")
+        soft_limit, hard_limit = self._scope_limits(
+            provider=provider,
+            scope=scope,
+            task_family=task_family,
+            execution_role=execution_role,
+        )
+        outstanding = max(0.0, active_requests)
+        current_load = committed_units + outstanding
+        effective_limit = hard_limit if hard_limit is not None else soft_limit
+        remaining = None if effective_limit is None else max(0.0, effective_limit - current_load)
+        status = "ok" if raw else "empty"
+        if hard_limit is not None and current_load >= hard_limit:
+            status = "hard_limited"
+        elif soft_limit is not None and current_load >= soft_limit:
+            status = "soft_limited"
+        return BudgetWindowState(
+            provider=normalize_provider(provider),
+            scope=scope,
+            window_label=_day_key(),
+            model=str(raw.get("model") or model or ""),
+            task_family=str(raw.get("task_family") or task_family or ""),
+            execution_role=str(raw.get("execution_role") or execution_role or ""),
+            limit=hard_limit,
+            soft_limit=soft_limit,
+            remaining=remaining,
+            used=committed_units,
+            reserved=reserved_units,
+            committed=committed_units,
+            released=_num("released_requests"),
+            outstanding=outstanding,
+            unit=str(raw.get("unit") or "requests"),
+            status=status,
+            refreshed_at=_num("updated_at") or now,
+        )
+
+    async def allow_reservation(
+        self,
+        *,
+        provider: str,
+        model: str,
+        task_family: str,
+        execution_role: str = "primary",
+    ) -> tuple[bool, str, list[BudgetWindowState]]:
+        scopes = self._reservation_scopes(
+            {
+                "provider": provider,
+                "model": model,
+                "task_family": task_family,
+                "execution_role": execution_role,
+            }
+        )
+        snapshots: list[BudgetWindowState] = []
+        for scope in scopes:
+            snapshot = await self._scope_snapshot(
+                provider=scope["provider"],
+                scope=scope["scope"],
+                model=scope["model"],
+                task_family=scope["task_family"],
+                execution_role=scope["execution_role"],
+            )
+            snapshots.append(snapshot)
+            if snapshot.status == "hard_limited":
+                reason_parts = [snapshot.scope]
+                if snapshot.task_family:
+                    reason_parts.append(snapshot.task_family)
+                if snapshot.execution_role:
+                    reason_parts.append(snapshot.execution_role)
+                return False, f"runtime_hard_cap:{'/'.join(reason_parts)}", snapshots
+            if snapshot.status == "soft_limited":
+                reason_parts = [snapshot.scope]
+                if snapshot.task_family:
+                    reason_parts.append(snapshot.task_family)
+                if snapshot.execution_role:
+                    reason_parts.append(snapshot.execution_role)
+                return False, f"runtime_soft_cap:{'/'.join(reason_parts)}", snapshots
+        return True, "ok", snapshots
 
     async def reserve(
         self,
@@ -318,34 +467,13 @@ class ProviderBudgetManager:
                 except Exception:
                     raw = {}
 
-                def _num(name: str) -> float:
-                    try:
-                        return float(raw.get(name) or 0.0)
-                    except (TypeError, ValueError):
-                        return 0.0
-
-                reserved_units = _num("reserved_units")
-                committed_units = _num("committed_units")
-                active_requests = _num("active_requests")
-                released_requests = _num("released_requests")
                 result.append(
-                    BudgetWindowState(
+                    await self._scope_snapshot(
                         provider=provider,
                         scope=descriptor["scope"],
-                        window_label=_day_key(),
-                        model=str(raw.get("model") or descriptor["model"] or ""),
-                        task_family=str(raw.get("task_family") or descriptor["task_family"] or ""),
-                        execution_role=str(raw.get("execution_role") or descriptor["execution_role"] or ""),
-                        limit=None,
-                        remaining=None,
-                        used=committed_units,
-                        reserved=reserved_units,
-                        committed=committed_units,
-                        released=released_requests,
-                        outstanding=max(0.0, active_requests),
-                        unit=str(raw.get("unit") or "requests"),
-                        status="ok" if raw else "empty",
-                        refreshed_at=_num("updated_at") or now,
+                        model=descriptor["model"],
+                        task_family=descriptor["task_family"],
+                        execution_role=descriptor["execution_role"],
                     )
                 )
         return result

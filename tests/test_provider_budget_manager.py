@@ -35,7 +35,22 @@ class _FakeRedis:
 
 
 def _settings():
-    return SimpleNamespace(redis_url="redis://redis:6379")
+    return SimpleNamespace(
+        redis_url="redis://redis:6379",
+        openrouter_free_rpd_soft_cap=850,
+        llm_runtime_provider_openrouter_daily_request_soft_cap=0,
+        llm_runtime_provider_openrouter_daily_request_limit=0,
+        llm_runtime_shadow_daily_request_soft_cap=250,
+        llm_runtime_shadow_daily_request_limit=0,
+        llm_runtime_embeddings_daily_request_soft_cap=0,
+        llm_runtime_embeddings_daily_request_limit=0,
+        llm_runtime_provider_wormsoft_daily_request_soft_cap=0,
+        llm_runtime_provider_wormsoft_daily_request_limit=0,
+        llm_runtime_provider_polza_daily_request_soft_cap=0,
+        llm_runtime_provider_polza_daily_request_limit=0,
+        llm_runtime_provider_gigachat_daily_request_soft_cap=0,
+        llm_runtime_provider_gigachat_daily_request_limit=0,
+    )
 
 
 @pytest.mark.asyncio
@@ -77,3 +92,29 @@ async def test_provider_budget_manager_tracks_runtime_commit_snapshot() -> None:
     assert family_window.committed == 379.0
     assert role_window.execution_role == "primary"
     assert role_window.committed == 379.0
+
+
+@pytest.mark.asyncio
+async def test_provider_budget_manager_blocks_soft_capped_openrouter_usage() -> None:
+    settings = _settings()
+    settings.llm_runtime_provider_openrouter_daily_request_soft_cap = 1
+    manager = ProviderBudgetManager(redis=_FakeRedis(), settings=settings)
+
+    reservation = await manager.reserve(
+        provider="openrouter",
+        model="openrouter/free",
+        task_family="text_generation",
+        requested_units=1.0,
+    )
+    await manager.commit(reservation, actual_units=1.0)
+
+    allowed, reason, snapshots = await manager.allow_reservation(
+        provider="openrouter",
+        model="openrouter/free",
+        task_family="text_generation",
+    )
+
+    assert allowed is False
+    assert reason == "runtime_soft_cap:runtime_usage"
+    provider_window = next(item for item in snapshots if item.scope == "runtime_usage")
+    assert provider_window.status == "soft_limited"

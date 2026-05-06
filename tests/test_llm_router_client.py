@@ -15,6 +15,7 @@ from shared.llm_control_plane import (
 from worker.llm_router_client import LLMRouterClient
 from worker.llm_types import GigaChatResponse
 from worker.openrouter_client import OpenRouterVisionError
+from worker.provider_budget_manager import ProviderBudgetManager
 
 
 class _FakeGiga:
@@ -404,8 +405,8 @@ class _FakeRedis:
         return True
 
 
-def _settings(embed_dim: int = 2560):
-    return SimpleNamespace(
+def _settings(embed_dim: int = 2560, **overrides):
+    values = dict(
         redis_url="redis://redis:6379",
         embed_dim=embed_dim,
         gigachat_model="GigaChat-2",
@@ -425,7 +426,22 @@ def _settings(embed_dim: int = 2560):
         polza_text_model="google/gemma-3-12b-it",
         polza_synthesis_model="mistralai/mistral-small-3.1-24b-instruct",
         polza_api_key="polza-key",
+        openrouter_free_rpd_soft_cap=850,
+        llm_runtime_provider_openrouter_daily_request_soft_cap=0,
+        llm_runtime_provider_openrouter_daily_request_limit=0,
+        llm_runtime_shadow_daily_request_soft_cap=250,
+        llm_runtime_shadow_daily_request_limit=0,
+        llm_runtime_embeddings_daily_request_soft_cap=0,
+        llm_runtime_embeddings_daily_request_limit=0,
+        llm_runtime_provider_wormsoft_daily_request_soft_cap=0,
+        llm_runtime_provider_wormsoft_daily_request_limit=0,
+        llm_runtime_provider_polza_daily_request_soft_cap=0,
+        llm_runtime_provider_polza_daily_request_limit=0,
+        llm_runtime_provider_gigachat_daily_request_soft_cap=0,
+        llm_runtime_provider_gigachat_daily_request_limit=0,
     )
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 @pytest.mark.asyncio
@@ -799,3 +815,38 @@ async def test_llm_router_shadow_eval_runs_alternative_chain_and_publishes_resul
     assert payload["shadow_receipt"]["actual_provider"] == "gigachat"
     assert payload["comparison"]["status_match"] is True
     assert payload["comparison"]["provider_match"] is False
+
+
+@pytest.mark.asyncio
+async def test_llm_router_skips_openrouter_when_runtime_budget_soft_cap_reached(monkeypatch) -> None:
+    redis = _FakeRedis()
+    settings = _settings(llm_runtime_provider_openrouter_daily_request_soft_cap=1)
+    monkeypatch.setattr("worker.llm_router_client.get_settings", lambda: settings)
+    _install_dynamic_openrouter(monkeypatch, model_id="openrouter/free")
+    manager = ProviderBudgetManager(redis=redis, settings=settings)
+    reservation = await manager.reserve(
+        provider="openrouter",
+        model="openrouter/free",
+        task_family="text_generation",
+    )
+    await manager.commit(reservation, actual_units=1.0)
+    client = LLMRouterClient(
+        redis=redis,
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=False),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=False),
+        openrouter_text_client=_FakeOpenRouterText(available=True),
+        polza_text_client=_FakePolzaText(available=True),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    response = await client.chat(system="s", user="u", task="relevance")
+
+    assert response.provider == "polza"
+    assert client.last_routing_decision is not None
+    assert any(
+        item.get("reason") == "runtime_soft_cap:runtime_usage"
+        for item in client.last_routing_decision.skipped_candidates
+    )
