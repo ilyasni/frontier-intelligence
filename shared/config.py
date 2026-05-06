@@ -19,7 +19,17 @@ class Settings(BaseSettings):
     # Qdrant
     qdrant_url: str = Field("http://qdrant:6333", alias="QDRANT_URL")
     qdrant_collection: str = Field("frontier_docs", alias="QDRANT_COLLECTION")
+    qdrant_collection_alias: str = Field("", alias="QDRANT_COLLECTION_ALIAS")
     qdrant_trends_collection: str = Field("trend_clusters", alias="QDRANT_TRENDS_COLLECTION")
+    qdrant_trends_collection_alias: str = Field("", alias="QDRANT_TRENDS_COLLECTION_ALIAS")
+    qdrant_filter_embedding_version: bool = Field(
+        True,
+        alias="QDRANT_FILTER_EMBEDDING_VERSION",
+    )
+    qdrant_enforce_collection_schema: bool = Field(
+        True,
+        alias="QDRANT_ENFORCE_COLLECTION_SCHEMA",
+    )
 
     # Neo4j
     neo4j_url: str = Field("bolt://neo4j:7687", alias="NEO4J_URL")

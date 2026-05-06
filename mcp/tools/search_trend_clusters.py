@@ -44,6 +44,7 @@ async def search_trend_clusters(req: TrendClusterSearchRequest) -> dict:
             vector,
             req.workspace,
             limit=req.limit,
+            embedding_version=str(settings.gigachat_embeddings_model or "").strip() or None,
             pipeline=req.pipeline,
             signal_stage=req.stages,
             days_back=req.days_back,

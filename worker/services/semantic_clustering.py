@@ -288,6 +288,7 @@ def _trend_cluster_index_payload(
             "doc_count": len(doc_ids),
             "source_count": source_count,
             "doc_ids": doc_ids,
+            "embedding_version": get_settings().gigachat_embeddings_model,
             "semantic_cluster_ids": list(item.get("semantic_cluster_ids") or []),
             "keywords": list(item.get("keywords") or []),
             "evidence": list(item.get("evidence") or []),

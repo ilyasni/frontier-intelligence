@@ -8,9 +8,7 @@ import os
 from collections import defaultdict
 from typing import Any
 
-import httpx
 from fastapi import APIRouter
-from openai import AsyncOpenAI
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +37,11 @@ def _embed_cache_key(model: str, text: str) -> str:
 
 async def _get_embedding(query: str, settings) -> list[float]:
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
-    cache_key = _embed_cache_key(settings.gigachat_embeddings_model, query[:2000])
+    purpose = "query"
+    cache_key = _embed_cache_key(
+        settings.gigachat_embeddings_model,
+        f"{purpose}:{query[:2000]}",
+    )
 
     async with Redis.from_url(redis_url, decode_responses=False) as redis:
         cached = await redis.get(cache_key)
@@ -47,18 +49,11 @@ async def _get_embedding(query: str, settings) -> list[float]:
             logger.info("embedding_cache_hit", extra={"key": cache_key})
             return json.loads(cached)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0)) as http_client:
-            oai = AsyncOpenAI(
-                base_url=settings.openai_api_base,
-                api_key="gigachat",
-                http_client=http_client,
-                max_retries=3,
-            )
-            emb = await oai.embeddings.create(
-                model=settings.gigachat_embeddings_model,
-                input=query[:2000],
-            )
-            vector = emb.data[0].embedding
+        client = LLMRouterClient(service_name="mcp", redis=redis)
+        try:
+            vector = await client.embed(query[:2000], purpose=purpose)
+        finally:
+            await client.close()
 
         await redis.setex(cache_key, _EMBED_TTL, json.dumps(vector))
         return vector
@@ -269,6 +264,7 @@ async def run_search_request(
             req.workspace,
             limit=limit_override or req.limit,
             query_text=req.query,
+            embedding_version=str(settings.gigachat_embeddings_model or "").strip() or None,
             lang=req.lang,
             days_back=days_back_override if days_back_override is not None else req.days_back,
             valence=valence_override if valence_override is not None else req.valence,

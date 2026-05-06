@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from pydantic.fields import FieldInfo
@@ -97,3 +98,18 @@ def embedding_input_text(
     if normalized_purpose == "document" and spec.document_prefix:
         return f"{spec.document_prefix}{raw_text}"
     return raw_text
+
+
+def embedding_version_slug(model: str) -> str:
+    normalized = _normalize_model_name(model).lower()
+    if not normalized:
+        return "unknown"
+    slug = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    return slug or "unknown"
+
+
+def qdrant_collection_name_for_embedding(base_collection: str, model: str) -> str:
+    base = str(base_collection or "").strip() or "frontier_docs"
+    profile = embedding_profile(model)
+    index_family = str(profile.get("index_family") or "dense-unknown").replace("-", "_")
+    return f"{base}__{embedding_version_slug(model)}__{index_family}"

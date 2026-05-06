@@ -24,6 +24,7 @@ try:
 except ImportError:  # pragma: no cover - compatibility with older qdrant-client builds
     DatetimeRange = Range
 
+from shared.embedding_models import embedding_profile, qdrant_collection_name_for_embedding
 from shared.config import get_settings
 from shared.qdrant_sparse import sparse_encode as _sparse_encode
 
@@ -79,6 +80,7 @@ def _match_condition(key: str, value: str | list[str] | None) -> FieldCondition 
 def _build_payload_filter(
     workspace_id: str,
     *,
+    embedding_version: str | None = None,
     lang: str | None = None,
     valence: str | list[str] | None = None,
     signal_type: str | list[str] | None = None,
@@ -86,6 +88,14 @@ def _build_payload_filter(
     days_back: int | None = None,
 ) -> Filter:
     must = [FieldCondition(key="workspace_id", match=MatchValue(value=workspace_id))]
+    embedding_version_text = str(embedding_version or "").strip()
+    if embedding_version_text:
+        must.append(
+            FieldCondition(
+                key="embedding_version",
+                match=MatchValue(value=embedding_version_text),
+            )
+        )
     for condition in (
         _match_condition("lang", lang),
         _match_condition("valence", valence),
@@ -109,11 +119,20 @@ def _build_payload_filter(
 def _build_trend_filter(
     workspace_id: str,
     *,
+    embedding_version: str | None = None,
     pipeline: str | None = None,
     signal_stage: str | list[str] | None = None,
     days_back: int | None = None,
 ) -> Filter:
     must = [FieldCondition(key="workspace_id", match=MatchValue(value=workspace_id))]
+    embedding_version_text = str(embedding_version or "").strip()
+    if embedding_version_text:
+        must.append(
+            FieldCondition(
+                key="embedding_version",
+                match=MatchValue(value=embedding_version_text),
+            )
+        )
     for condition in (
         _match_condition("pipeline", pipeline),
         _match_condition("signal_stage", signal_stage),
@@ -148,9 +167,108 @@ def _trend_rank_score(raw_score: float, payload: dict[str, Any]) -> tuple[float,
 class QdrantFrontierClient:
     def __init__(self):
         settings = get_settings()
+        self.settings = settings
         self.client = AsyncQdrantClient(url=settings.qdrant_url, timeout=30)
-        self.collection = settings.qdrant_collection
-        self.trends_collection = settings.qdrant_trends_collection
+        self.collection_base = settings.qdrant_collection
+        self.collection_alias = str(settings.qdrant_collection_alias or "").strip()
+        self.collection = self.collection_alias or self.collection_base
+        self.versioned_collection = qdrant_collection_name_for_embedding(
+            self.collection_base,
+            settings.gigachat_embeddings_model,
+        )
+        self.trends_collection_base = settings.qdrant_trends_collection
+        self.trends_collection_alias = str(settings.qdrant_trends_collection_alias or "").strip()
+        self.trends_collection = self.trends_collection_alias or self.trends_collection_base
+        self.versioned_trends_collection = qdrant_collection_name_for_embedding(
+            self.trends_collection_base,
+            settings.gigachat_embeddings_model,
+        )
+        self.embedding_version = str(settings.gigachat_embeddings_model or "").strip()
+        self._documents_schema_checked = False
+        self._trends_schema_checked = False
+
+    def _effective_embedding_version(self, embedding_version: str | None) -> str | None:
+        if not self.settings.qdrant_filter_embedding_version:
+            return None
+        if embedding_version is not None:
+            text = str(embedding_version).strip()
+            return text or None
+        return self.embedding_version or None
+
+    @staticmethod
+    def _expected_dense_schema(model: str) -> tuple[int | None, str]:
+        profile = embedding_profile(model)
+        size = profile.get("dimension")
+        distance = str(profile.get("distance_metric") or "cosine").strip().lower()
+        return (int(size) if size else None, distance)
+
+    @staticmethod
+    def _distance_name(value: Any) -> str:
+        return str(getattr(value, "value", value) or "").strip().lower()
+
+    @classmethod
+    def _schema_mismatch_reason(
+        cls,
+        actual_size: int | None,
+        actual_distance: str,
+        expected_size: int | None,
+        expected_distance: str,
+    ) -> str:
+        if expected_size is not None and actual_size != expected_size:
+            return f"vector_size_mismatch actual={actual_size} expected={expected_size}"
+        if expected_distance and actual_distance and actual_distance != expected_distance:
+            return (
+                f"distance_metric_mismatch actual={actual_distance} "
+                f"expected={expected_distance}"
+            )
+        return ""
+
+    @classmethod
+    def _extract_dense_schema(cls, collection_info: Any) -> tuple[int | None, str]:
+        vectors = getattr(
+            getattr(getattr(collection_info, "config", None), "params", None),
+            "vectors",
+            None,
+        )
+        if isinstance(vectors, dict):
+            dense = vectors.get("dense")
+            return (
+                int(getattr(dense, "size", 0) or 0) or None,
+                cls._distance_name(getattr(dense, "distance", "")),
+            )
+        if vectors is not None:
+            return (
+                int(getattr(vectors, "size", 0) or 0) or None,
+                cls._distance_name(getattr(vectors, "distance", "")),
+            )
+        return None, ""
+
+    async def _ensure_collection_schema(
+        self,
+        *,
+        collection_name: str,
+        expected_model: str,
+        checked_attr: str,
+    ) -> None:
+        if not self.settings.qdrant_enforce_collection_schema:
+            return
+        if getattr(self, checked_attr, False):
+            return
+        info = await self.client.get_collection(collection_name=collection_name)
+        actual_size, actual_distance = self._extract_dense_schema(info)
+        expected_size, expected_distance = self._expected_dense_schema(expected_model)
+        mismatch = self._schema_mismatch_reason(
+            actual_size,
+            actual_distance,
+            expected_size,
+            expected_distance,
+        )
+        if mismatch:
+            raise RuntimeError(
+                f"qdrant_collection_schema_mismatch collection={collection_name} "
+                f"embedding_version={expected_model} {mismatch}"
+            )
+        setattr(self, checked_attr, True)
 
     async def upsert_document(
         self,
@@ -159,6 +277,11 @@ class QdrantFrontierClient:
         payload: dict[str, Any],
         text: str = "",
     ) -> None:
+        await self._ensure_collection_schema(
+            collection_name=self.collection,
+            expected_model=self.embedding_version,
+            checked_attr="_documents_schema_checked",
+        )
         sparse = _sparse_encode(text) if text else None
 
         vectors: dict = {"dense": dense_vector}
@@ -187,6 +310,11 @@ class QdrantFrontierClient:
 
     async def upsert_trend_clusters(self, clusters: list[dict[str, Any]]) -> int:
         """Upsert trend-cluster vectors into the secondary Qdrant index."""
+        await self._ensure_collection_schema(
+            collection_name=self.trends_collection,
+            expected_model=self.embedding_version,
+            checked_attr="_trends_schema_checked",
+        )
         points: list[PointStruct] = []
         for cluster in clusters:
             cluster_id = str(cluster.get("cluster_id") or "").strip()
@@ -253,6 +381,7 @@ class QdrantFrontierClient:
         limit: int = 10,
         query_text: str = "",
         *,
+        embedding_version: str | None = None,
         lang: str | None = None,
         days_back: int | None = None,
         valence: str | list[str] | None = None,
@@ -261,6 +390,7 @@ class QdrantFrontierClient:
     ) -> list[dict]:
         payload_filter = _build_payload_filter(
             workspace_id,
+            embedding_version=self._effective_embedding_version(embedding_version),
             lang=lang,
             days_back=days_back,
             valence=valence,
@@ -325,12 +455,14 @@ class QdrantFrontierClient:
         workspace_id: str,
         limit: int = 10,
         *,
+        embedding_version: str | None = None,
         pipeline: str | None = "stable",
         signal_stage: str | list[str] | None = None,
         days_back: int | None = None,
     ) -> list[dict]:
         payload_filter = _build_trend_filter(
             workspace_id,
+            embedding_version=self._effective_embedding_version(embedding_version),
             pipeline=pipeline,
             signal_stage=signal_stage,
             days_back=days_back,
