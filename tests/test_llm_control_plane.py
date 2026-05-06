@@ -7,6 +7,7 @@ from shared.llm_control_plane import (
     CIRCUIT_STATE_OPEN,
     CircuitState,
     default_routing_policy_v2,
+    derive_provider_readiness,
     normalize_wormsoft_model_snapshot,
     simulate_routing_decision,
 )
@@ -109,3 +110,24 @@ def test_normalize_wormsoft_model_snapshot_detects_capabilities() -> None:
     assert models[0].supports_text_generation is True
     assert models[0].supports_vision_generation is True
     assert models[1].supports_embeddings is True
+
+
+def test_derive_provider_readiness_handles_low_credit_and_unavailable() -> None:
+    assert (
+        derive_provider_readiness(
+            available=True,
+            ready=True,
+            health_status="ok",
+            quota_pressure="low_credit",
+        )
+        == "degraded"
+    )
+    assert (
+        derive_provider_readiness(
+            available=False,
+            ready=False,
+            health_status="missing_api_key",
+            quota_pressure="unknown",
+        )
+        == "unavailable"
+    )

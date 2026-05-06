@@ -87,6 +87,20 @@ CIRCUIT_LEVEL_PROVIDER = "provider"
 CIRCUIT_LEVEL_MODEL = "model"
 EXECUTION_ROLE_PRIMARY = "primary"
 EXECUTION_ROLE_SHADOW = "shadow"
+READINESS_READY = "ready"
+READINESS_DEGRADED = "degraded"
+READINESS_RATE_LIMITED = "rate_limited"
+READINESS_QUOTA_EXHAUSTED = "quota_exhausted"
+READINESS_MAINTENANCE = "maintenance"
+READINESS_UNAVAILABLE = "unavailable"
+READINESS_STATES = (
+    READINESS_READY,
+    READINESS_DEGRADED,
+    READINESS_RATE_LIMITED,
+    READINESS_QUOTA_EXHAUSTED,
+    READINESS_MAINTENANCE,
+    READINESS_UNAVAILABLE,
+)
 
 
 def normalize_task_family(value: Any) -> str:
@@ -126,6 +140,37 @@ def now_ts() -> float:
 def normalize_policy_mode(value: Any) -> str:
     raw = str(value or POLICY_MODE_DEGRADED).strip().lower()
     return raw if raw in POLICY_MODES else POLICY_MODE_DEGRADED
+
+
+def normalize_readiness_state(value: Any) -> str:
+    raw = str(value or READINESS_DEGRADED).strip().lower()
+    return raw if raw in READINESS_STATES else READINESS_DEGRADED
+
+
+def derive_provider_readiness(
+    *,
+    available: bool,
+    ready: bool,
+    health_status: str = "",
+    quota_pressure: str = "",
+) -> str:
+    normalized_health = str(health_status or "").strip().lower()
+    normalized_quota = str(quota_pressure or "").strip().lower()
+    if not available:
+        return READINESS_UNAVAILABLE
+    if normalized_health == "maintenance":
+        return READINESS_MAINTENANCE
+    if normalized_quota in {"quota_exhausted"}:
+        return READINESS_QUOTA_EXHAUSTED
+    if normalized_quota in {"rate_limited", "quarantined"} or normalized_health == "quarantined":
+        return READINESS_RATE_LIMITED
+    if normalized_quota in {"low_credit", "low_balance", "unknown"} and not ready:
+        return READINESS_DEGRADED
+    if normalized_quota in {"low_credit", "low_balance"}:
+        return READINESS_DEGRADED
+    if ready:
+        return READINESS_READY
+    return READINESS_DEGRADED
 
 
 class ProviderError(BaseModel):
@@ -176,7 +221,11 @@ class BudgetWindowState(BaseModel):
     provider: str
     scope: str = "provider"
     window_label: str = ""
+    model: str = ""
+    task_family: str = ""
+    execution_role: str = ""
     limit: float | None = None
+    soft_limit: float | None = None
     remaining: float | None = None
     used: float | None = None
     reserved: float | None = None
@@ -229,6 +278,7 @@ class ProviderStateSnapshot(BaseModel):
     provider: str
     available: bool = False
     ready: bool = False
+    readiness_state: str = READINESS_DEGRADED
     health_status: str = "unknown"
     latency_ms: float | None = None
     key_present: bool = False
@@ -243,6 +293,11 @@ class ProviderStateSnapshot(BaseModel):
     @classmethod
     def _validate_provider(cls, value: Any) -> str:
         return normalize_provider(value)
+
+    @field_validator("readiness_state", mode="before")
+    @classmethod
+    def _validate_readiness_state(cls, value: Any) -> str:
+        return normalize_readiness_state(value)
 
 
 class RoutingCandidate(BaseModel):

@@ -56,9 +56,24 @@ async def test_provider_budget_manager_tracks_runtime_commit_snapshot() -> None:
         billable_tokens=379,
     )
 
-    snapshot = await manager.snapshot(["wormsoft"])
+    snapshot = await manager.snapshot(
+        ["wormsoft"],
+        models_by_provider={"wormsoft": ["wormsoft/agent/medium"]},
+        task_families=["text_generation"],
+        execution_roles=["primary"],
+    )
 
-    assert len(snapshot) == 1
-    assert snapshot[0].provider == "wormsoft"
-    assert snapshot[0].committed == 379.0
-    assert snapshot[0].outstanding == 0.0
+    provider_window = next(item for item in snapshot if item.scope == "runtime_usage")
+    model_window = next(item for item in snapshot if item.scope == "runtime_model")
+    family_window = next(item for item in snapshot if item.scope == "runtime_task_family")
+    role_window = next(item for item in snapshot if item.scope == "runtime_execution_role")
+
+    assert provider_window.provider == "wormsoft"
+    assert provider_window.committed == 379.0
+    assert provider_window.outstanding == 0.0
+    assert model_window.model == "wormsoft/agent/medium"
+    assert model_window.committed == 379.0
+    assert family_window.task_family == "text_generation"
+    assert family_window.committed == 379.0
+    assert role_window.execution_role == "primary"
+    assert role_window.committed == 379.0

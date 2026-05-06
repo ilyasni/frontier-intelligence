@@ -33,6 +33,7 @@ from shared.llm_control_plane import (
     ProviderError,
     ProviderExecutionRequest,
     ProviderStateSnapshot,
+    derive_provider_readiness,
     embedding_profile_for_model,
     normalize_task_family,
     normalize_wormsoft_model_snapshot,
@@ -166,13 +167,21 @@ class WormsoftAdapter:
         guard_state = await self._guard.get_state()
         available = bool(self._text.is_available)
         ready = available and not bool(guard_state.get("quarantined"))
+        health_status = "quarantined" if guard_state.get("quarantined") else ("ok" if available else "missing_api_key")
+        quota_pressure = "quarantined" if guard_state.get("quarantined") else "unknown"
         return ProviderStateSnapshot(
             provider=self.provider_name,
             available=available,
             ready=ready,
-            health_status="quarantined" if guard_state.get("quarantined") else ("ok" if available else "missing_api_key"),
+            readiness_state=derive_provider_readiness(
+                available=available,
+                ready=ready,
+                health_status=health_status,
+                quota_pressure=quota_pressure,
+            ),
+            health_status=health_status,
             key_present=bool(getattr(self._settings, "wormsoft_api_key", "")),
-            quota_pressure="quarantined" if guard_state.get("quarantined") else "unknown",
+            quota_pressure=quota_pressure,
             metadata={"guard": guard_state},
         )
 
@@ -299,13 +308,23 @@ class OpenRouterAdapter:
         runtime_payload = await fetch_openrouter_runtime_state(service_name=self._service_name)
         health_payload = await fetch_openrouter_health_snapshot()
         key_payload = await fetch_openrouter_key()
+        available = bool(self._settings.openrouter_api_key)
+        ready = available and int(runtime_payload.get("usable_model_count") or 0) > 0
+        health_status = str(health_payload.get("status") or "unknown")
+        quota_pressure = "low_credit" if float(key_payload.get("limit_remaining") or 0.0) <= 0.0 else "ok"
         return ProviderStateSnapshot(
             provider=self.provider_name,
-            available=bool(self._settings.openrouter_api_key),
-            ready=bool(self._settings.openrouter_api_key) and int(runtime_payload.get("usable_model_count") or 0) > 0,
-            health_status=str(health_payload.get("status") or "unknown"),
-            key_present=bool(self._settings.openrouter_api_key),
-            quota_pressure="low_credit" if float(key_payload.get("limit_remaining") or 0.0) <= 0.0 else "ok",
+            available=available,
+            ready=ready,
+            readiness_state=derive_provider_readiness(
+                available=available,
+                ready=ready,
+                health_status=health_status,
+                quota_pressure=quota_pressure,
+            ),
+            health_status=health_status,
+            key_present=available,
+            quota_pressure=quota_pressure,
             budgets=[
                 BudgetWindowState(
                     provider=self.provider_name,
@@ -474,12 +493,21 @@ class PolzaAdapter:
         )
 
     async def check_health(self) -> ProviderStateSnapshot:
+        available = bool(self._settings.polza_api_key)
+        ready = bool(self._text.is_available)
+        health_status = "configured" if self._settings.polza_api_key else "missing_api_key"
         return ProviderStateSnapshot(
             provider=self.provider_name,
-            available=bool(self._settings.polza_api_key),
-            ready=bool(self._text.is_available),
-            health_status="configured" if self._settings.polza_api_key else "missing_api_key",
-            key_present=bool(self._settings.polza_api_key),
+            available=available,
+            ready=ready,
+            readiness_state=derive_provider_readiness(
+                available=available,
+                ready=ready,
+                health_status=health_status,
+                quota_pressure="unknown",
+            ),
+            health_status=health_status,
+            key_present=available,
             quota_pressure="unknown",
             metadata={
                 "text_model": self._text.default_model,
@@ -590,11 +618,18 @@ class GigaChatAdapter:
 
     async def check_health(self) -> ProviderStateSnapshot:
         available = bool(self._settings.gigachat_credentials)
+        health_status = "configured" if available else "missing_credentials"
         return ProviderStateSnapshot(
             provider=self.provider_name,
             available=available,
             ready=available,
-            health_status="configured" if available else "missing_credentials",
+            readiness_state=derive_provider_readiness(
+                available=available,
+                ready=available,
+                health_status=health_status,
+                quota_pressure="unknown",
+            ),
+            health_status=health_status,
             key_present=available,
             quota_pressure="unknown",
         )

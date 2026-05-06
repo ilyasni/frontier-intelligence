@@ -21,6 +21,7 @@ from shared.llm_control_plane import (
     ProviderStateSnapshot,
     ROUTING_EVENTS_REDIS_KEY,
     RoutingPolicyV2,
+    derive_provider_readiness,
     embedding_profile_for_model,
     normalize_wormsoft_model_snapshot,
     simulate_routing_decision,
@@ -57,13 +58,23 @@ async def _wormsoft_provider_state() -> ProviderStateSnapshot:
                 refreshed_at=limits_payload.get("fetched_at"),
             )
         )
+    available = bool(models_payload.get("available")) and bool(limits_payload.get("key_present"))
+    ready = available
+    health_status = "ok" if models_payload.get("available") else str(models_payload.get("status") or "unknown")
+    quota_pressure = "unknown"
     return ProviderStateSnapshot(
         provider=PROVIDER_WORMSOFT,
-        available=bool(models_payload.get("available")) and bool(limits_payload.get("key_present")),
-        ready=bool(models_payload.get("available")) and bool(limits_payload.get("key_present")),
-        health_status="ok" if models_payload.get("available") else str(models_payload.get("status") or "unknown"),
+        available=available,
+        ready=ready,
+        readiness_state=derive_provider_readiness(
+            available=available,
+            ready=ready,
+            health_status=health_status,
+            quota_pressure=quota_pressure,
+        ),
+        health_status=health_status,
         key_present=bool(limits_payload.get("key_present")),
-        quota_pressure="unknown",
+        quota_pressure=quota_pressure,
         subscriptions=list(limits_payload.get("plans") or []),
         budgets=budgets,
         catalog=catalog,
@@ -105,17 +116,27 @@ async def _openrouter_provider_state() -> ProviderStateSnapshot:
         for item in (catalog_payload.get("models") or [])
         if str(item.get("id") or "").strip()
     ]
+    available = bool(key_payload.get("available"))
+    ready = available and int(health_payload.get("usable_model_count") or 0) > 0
+    health_status = str(health_payload.get("status") or key_payload.get("status") or "unknown")
+    quota_pressure = (
+        "low_credit"
+        if float(key_payload.get("limit_remaining") or 0.0) <= 0.0
+        else "ok"
+    )
     return ProviderStateSnapshot(
         provider=PROVIDER_OPENROUTER,
-        available=bool(key_payload.get("available")),
-        ready=bool(key_payload.get("available")) and int(health_payload.get("usable_model_count") or 0) > 0,
-        health_status=str(health_payload.get("status") or key_payload.get("status") or "unknown"),
-        key_present=bool(get_settings().openrouter_api_key),
-        quota_pressure=(
-            "low_credit"
-            if float(key_payload.get("limit_remaining") or 0.0) <= 0.0
-            else "ok"
+        available=available,
+        ready=ready,
+        readiness_state=derive_provider_readiness(
+            available=available,
+            ready=ready,
+            health_status=health_status,
+            quota_pressure=quota_pressure,
         ),
+        health_status=health_status,
+        key_present=bool(get_settings().openrouter_api_key),
+        quota_pressure=quota_pressure,
         budgets=[
             BudgetWindowState(
                 provider=PROVIDER_OPENROUTER,
@@ -151,13 +172,23 @@ def _giga_provider_state(balance_payload: dict[str, Any]) -> ProviderStateSnapsh
     total = sum(float(item.get("value") or 0.0) for item in balance_items)
     settings = get_settings()
     embedding_model = str(settings.gigachat_embeddings_model or "").strip()
+    available = bool(settings.gigachat_credentials)
+    ready = available
+    health_status = str(balance_payload.get("status") or "unknown")
+    quota_pressure = "low_balance" if total <= float(balance_payload.get("alert_threshold") or 0.0) else "ok"
     return ProviderStateSnapshot(
         provider=PROVIDER_GIGACHAT,
-        available=bool(settings.gigachat_credentials),
-        ready=bool(settings.gigachat_credentials),
-        health_status=str(balance_payload.get("status") or "unknown"),
-        key_present=bool(settings.gigachat_credentials),
-        quota_pressure="low_balance" if total <= float(balance_payload.get("alert_threshold") or 0.0) else "ok",
+        available=available,
+        ready=ready,
+        readiness_state=derive_provider_readiness(
+            available=available,
+            ready=ready,
+            health_status=health_status,
+            quota_pressure=quota_pressure,
+        ),
+        health_status=health_status,
+        key_present=available,
+        quota_pressure=quota_pressure,
         budgets=[
             BudgetWindowState(
                 provider=PROVIDER_GIGACHAT,
@@ -198,12 +229,21 @@ def _giga_provider_state(balance_payload: dict[str, Any]) -> ProviderStateSnapsh
 
 def _polza_provider_state() -> ProviderStateSnapshot:
     settings = get_settings()
+    available = bool(settings.polza_api_key)
+    ready = bool(settings.polza_api_key and settings.polza_text_model)
+    health_status = "configured" if settings.polza_api_key else "missing_api_key"
     return ProviderStateSnapshot(
         provider=PROVIDER_POLZA,
-        available=bool(settings.polza_api_key),
-        ready=bool(settings.polza_api_key and settings.polza_text_model),
-        health_status="configured" if settings.polza_api_key else "missing_api_key",
-        key_present=bool(settings.polza_api_key),
+        available=available,
+        ready=ready,
+        readiness_state=derive_provider_readiness(
+            available=available,
+            ready=ready,
+            health_status=health_status,
+            quota_pressure="unknown",
+        ),
+        health_status=health_status,
+        key_present=available,
         quota_pressure="unknown",
         catalog=ModelCatalogSnapshot(
             provider=PROVIDER_POLZA,
@@ -232,9 +272,21 @@ async def fetch_provider_state_snapshot(policy: RoutingPolicyV2 | None = None) -
     gigachat_state = _giga_provider_state(gigachat_balance)
     polza_state = _polza_provider_state()
     states = [wormsoft_state, openrouter_state, polza_state, gigachat_state]
+    models_by_provider: dict[str, list[str]] = {}
+    for state in states:
+        models_by_provider[state.provider] = [
+            item.model
+            for item in ((state.catalog.models if state.catalog else []) or [])
+            if str(item.model or "").strip()
+        ]
     budget_manager = ProviderBudgetManager(redis=get_client())
     try:
-        runtime_budgets = await budget_manager.snapshot([state.provider for state in states])
+        runtime_budgets = await budget_manager.snapshot(
+            [state.provider for state in states],
+            models_by_provider=models_by_provider,
+            task_families=["text_generation", "vision_generation", "embeddings"],
+            execution_roles=["primary", "shadow"],
+        )
     finally:
         await budget_manager.close()
     runtime_budget_map: dict[str, list[BudgetWindowState]] = {}
