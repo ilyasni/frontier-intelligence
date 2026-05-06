@@ -850,3 +850,37 @@ async def test_llm_router_skips_openrouter_when_runtime_budget_soft_cap_reached(
         item.get("reason") == "runtime_soft_cap:runtime_usage"
         for item in client.last_routing_decision.skipped_candidates
     )
+
+
+@pytest.mark.asyncio
+async def test_llm_router_skips_openrouter_when_published_free_daily_cap_reached(monkeypatch) -> None:
+    redis = _FakeRedis()
+    redis.values["admin:openrouter_key:last_ok"] = json.dumps(
+        {
+            "available": True,
+            "usage_daily": 50,
+            "free_model_daily_limit": 50,
+            "limit_remaining": 0.0,
+        }
+    )
+    monkeypatch.setattr("worker.llm_router_client.get_settings", lambda: _settings())
+    _install_dynamic_openrouter(monkeypatch, model_id="qwen/qwen2.5-7b-instruct:free")
+    client = LLMRouterClient(
+        redis=redis,
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=False),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=False),
+        openrouter_text_client=_FakeOpenRouterText(available=True),
+        polza_text_client=_FakePolzaText(available=True),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    response = await client.chat(system="s", user="u", task="relevance")
+
+    assert response.provider == "polza"
+    assert any(
+        item.get("reason") == "published_hard_cap:openrouter_free_daily"
+        for item in client.last_routing_decision.skipped_candidates
+    )

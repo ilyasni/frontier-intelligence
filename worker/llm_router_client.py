@@ -59,6 +59,7 @@ from worker.provider_adapters import (
 )
 from worker.provider_budget_manager import ProviderBudgetManager
 from worker.provider_circuit_breaker import ProviderCircuitBreaker
+from worker.provider_quota_guard import ProviderPublishedQuotaGuard
 from worker.token_budget import fit_text_to_token_budget
 from worker.wormsoft_client import WormsoftTextClient, WormsoftTextError
 
@@ -111,6 +112,10 @@ class LLMRouterClient:
             settings=self._settings,
         )
         self._budget_manager = ProviderBudgetManager(redis=redis, settings=self._settings)
+        self._published_quota_guard = ProviderPublishedQuotaGuard(
+            redis=redis,
+            settings=self._settings,
+        )
         self._shadow_eval_semaphore = asyncio.Semaphore(
             max(1, int(getattr(self._settings, "llm_shadow_eval_max_concurrency", 2) or 2))
         )
@@ -150,6 +155,7 @@ class LLMRouterClient:
         if self._runtime_redis is not None:
             await self._runtime_redis.aclose()
         await self._budget_manager.close()
+        await self._published_quota_guard.close()
         await self._circuit_breaker.close()
         await self._openrouter_text_guard.close()
         await self._openrouter_guard.close()
@@ -516,6 +522,31 @@ class LLMRouterClient:
                         model=effective_model,
                         status="skipped",
                         reason=budget_reason,
+                    )
+                )
+                break
+
+            allowed_quota, quota_reason = await self._allow_published_quota(
+                attempt_provider,
+                effective_model,
+                execution_role=EXECUTION_ROLE_PRIMARY,
+            )
+            if not allowed_quota:
+                last_error = RuntimeError(quota_reason)
+                fallback_reason = fallback_reason or quota_reason
+                skipped_candidates.append(
+                    {
+                        "provider": attempt_provider,
+                        "model": effective_model,
+                        "reason": quota_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=attempt_provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=quota_reason,
                     )
                 )
                 break
@@ -918,6 +949,24 @@ class LLMRouterClient:
                     if attempt_provider == PROVIDER_OPENROUTER:
                         self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], budget_reason)
                         note_openrouter_vision_fallback(self._service_name, next_attempt[0], budget_reason)
+                    continue
+                break
+
+            allowed_quota, quota_reason = await self._allow_published_quota(
+                attempt_provider,
+                effective_model,
+                execution_role=EXECUTION_ROLE_PRIMARY,
+            )
+            if not allowed_quota:
+                last_error = RuntimeError(quota_reason)
+                if not fallback_reason:
+                    fallback_reason = quota_reason
+                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": quota_reason})
+                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=quota_reason))
+                if next_attempt:
+                    if attempt_provider == PROVIDER_OPENROUTER:
+                        self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], quota_reason)
+                        note_openrouter_vision_fallback(self._service_name, next_attempt[0], quota_reason)
                     continue
                 break
 
@@ -1584,6 +1633,29 @@ class LLMRouterClient:
                 )
                 continue
 
+            allowed_quota, quota_reason = await self._allow_published_quota(
+                provider,
+                effective_model,
+                execution_role=EXECUTION_ROLE_SHADOW,
+            )
+            if not allowed_quota:
+                skipped_candidates.append(
+                    {
+                        "provider": provider,
+                        "model": effective_model,
+                        "reason": quota_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=quota_reason,
+                    )
+                )
+                continue
+
             reservation = await self._budget_manager.reserve(
                 provider=provider,
                 model=effective_model,
@@ -1911,6 +1983,19 @@ class LLMRouterClient:
             execution_role=execution_role,
         )
         return allowed, reason
+
+    async def _allow_published_quota(
+        self,
+        provider: str,
+        model: str,
+        *,
+        execution_role: str = EXECUTION_ROLE_PRIMARY,
+    ) -> tuple[bool, str]:
+        return await self._published_quota_guard.allow(
+            provider=provider,
+            model=model,
+            execution_role=execution_role,
+        )
 
     async def _resolve_provider_model(
         self,
@@ -2289,6 +2374,42 @@ class LLMRouterClient:
                         to_provider=next_attempt[0],
                         to_model=next_attempt[1],
                         reason=budget_reason,
+                    )
+                    continue
+                break
+
+            allowed_quota, quota_reason = await self._allow_published_quota(
+                attempt_provider,
+                effective_model,
+                execution_role=EXECUTION_ROLE_PRIMARY,
+            )
+            if not allowed_quota:
+                last_error = RuntimeError(quota_reason)
+                skipped_candidates.append(
+                    {
+                        "provider": attempt_provider,
+                        "model": effective_model,
+                        "reason": quota_reason,
+                    }
+                )
+                attempt_outcomes.append(
+                    AttemptOutcome(
+                        provider=attempt_provider,
+                        model=effective_model,
+                        status="skipped",
+                        reason=quota_reason,
+                    )
+                )
+                if next_attempt:
+                    note_llm_fallback(
+                        self._service_name,
+                        task,
+                        from_provider=attempt_provider,
+                        from_requested_model=effective_model,
+                        from_actual_model="",
+                        to_provider=next_attempt[0],
+                        to_model=next_attempt[1],
+                        reason=quota_reason,
                     )
                     continue
                 break
