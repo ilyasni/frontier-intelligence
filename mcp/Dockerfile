@@ -45,6 +45,7 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then \
 
 COPY shared/ /app/shared/
 COPY worker/ /app/worker/
+COPY admin/ /app/admin/
 COPY mcp/ /app/mcp/
 
 ENV PYTHONPATH=/app

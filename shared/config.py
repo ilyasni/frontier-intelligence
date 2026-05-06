@@ -56,6 +56,32 @@ class Settings(BaseSettings):
         alias="WORMSOFT_MIN_REQUEST_INTERVAL_MS",
     )
     wormsoft_max_retries: int = Field(0, alias="WORMSOFT_MAX_RETRIES")
+    wormsoft_connect_timeout_sec: float = Field(5.0, alias="WORMSOFT_CONNECT_TIMEOUT_SEC")
+    wormsoft_read_timeout_sec: float = Field(45.0, alias="WORMSOFT_READ_TIMEOUT_SEC")
+    wormsoft_write_timeout_sec: float = Field(45.0, alias="WORMSOFT_WRITE_TIMEOUT_SEC")
+    wormsoft_pool_timeout_sec: float = Field(10.0, alias="WORMSOFT_POOL_TIMEOUT_SEC")
+    wormsoft_max_connections: int = Field(20, alias="WORMSOFT_MAX_CONNECTIONS")
+    wormsoft_max_keepalive_connections: int = Field(
+        5,
+        alias="WORMSOFT_MAX_KEEPALIVE_CONNECTIONS",
+    )
+    wormsoft_shared_guard_enabled: bool = Field(True, alias="WORMSOFT_SHARED_GUARD_ENABLED")
+    wormsoft_quarantine_rate_limit_sec: int = Field(
+        120,
+        alias="WORMSOFT_QUARANTINE_RATE_LIMIT_SEC",
+    )
+    wormsoft_quarantine_upstream_error_sec: int = Field(
+        180,
+        alias="WORMSOFT_QUARANTINE_UPSTREAM_ERROR_SEC",
+    )
+    wormsoft_failure_burst_threshold: int = Field(
+        3,
+        alias="WORMSOFT_FAILURE_BURST_THRESHOLD",
+    )
+    wormsoft_failure_burst_window_sec: int = Field(
+        300,
+        alias="WORMSOFT_FAILURE_BURST_WINDOW_SEC",
+    )
     openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
     openrouter_base_url: str = Field("https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL")
     openrouter_referrer: str = Field(
@@ -87,6 +113,26 @@ class Settings(BaseSettings):
     openrouter_quarantine_5xx_window_sec: int = Field(
         300,
         alias="OPENROUTER_QUARANTINE_5XX_WINDOW_SEC",
+    )
+    llm_circuit_provider_quarantine_sec: int = Field(
+        300,
+        alias="LLM_CIRCUIT_PROVIDER_QUARANTINE_SEC",
+    )
+    llm_circuit_model_quarantine_sec: int = Field(
+        180,
+        alias="LLM_CIRCUIT_MODEL_QUARANTINE_SEC",
+    )
+    llm_circuit_rate_limit_quarantine_sec: int = Field(
+        120,
+        alias="LLM_CIRCUIT_RATE_LIMIT_QUARANTINE_SEC",
+    )
+    llm_circuit_failure_threshold: int = Field(
+        3,
+        alias="LLM_CIRCUIT_FAILURE_THRESHOLD",
+    )
+    llm_circuit_failure_window_sec: int = Field(
+        300,
+        alias="LLM_CIRCUIT_FAILURE_WINDOW_SEC",
     )
     polza_api_key: str = Field("", alias="POLZA_API_KEY")
     polza_base_url: str = Field("https://polza.ai/api/v1", alias="POLZA_BASE_URL")

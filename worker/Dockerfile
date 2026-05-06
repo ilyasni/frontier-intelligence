@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir --timeout 300 \
 
 COPY shared/ /app/shared/
 COPY worker/ /app/worker/
+COPY admin/ /app/admin/
 RUN mkdir -p /app/scripts
 COPY scripts/enqueue_reindex_enriched_posts.py /app/scripts/enqueue_reindex_enriched_posts.py
 ENV PYTHONPATH=/app

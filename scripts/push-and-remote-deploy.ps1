@@ -53,6 +53,8 @@ if (-not $serviceList -or $serviceList.Count -eq 0) {
 $serviceArgs = $serviceList -join " "
 $remoteBuild = @"
 cd /opt/frontier-intelligence &&
+find scripts -type f -name '*.sh' -print0 | xargs -0 sed -i 's/\r$//' &&
+export PYTHON_BASE_IMAGE=`${PYTHON_BASE_IMAGE:-python:3.11-slim} &&
 export COMPOSE_PROFILES=core,ingest,xray,worker,crawl,paddleocr,mcp,admin &&
 bash scripts/server-build-stack.sh $serviceArgs &&
 docker compose -f docker-compose.yml up -d --force-recreate --wait $serviceArgs

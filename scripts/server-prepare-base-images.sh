@@ -33,6 +33,7 @@ collect_base_images() {
   local dockerfile="$1"
   awk '
     toupper($1) == "FROM" {
+      gsub(/\r$/, "", $2)
       print $2
     }
   ' "$dockerfile"
@@ -40,6 +41,7 @@ collect_base_images() {
 
 resolve_image_ref() {
   local image_ref="$1"
+  image_ref="${image_ref%$'\r'}"
 
   if [[ "$image_ref" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]+))?\}$ ]]; then
     local var_name="${BASH_REMATCH[1]}"

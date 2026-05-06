@@ -13,6 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from admin.backend.db import get_engine
 from admin.backend.services.gigachat_balance import fetch_gigachat_balance
 from admin.backend.services.gigachat_weekly_report import fetch_gigachat_weekly_report
+from admin.backend.services.llm_control_plane import (
+    fetch_budget_state_snapshot,
+    fetch_circuit_state_snapshot,
+    fetch_provider_state_snapshot,
+    fetch_routing_events,
+    simulate_control_plane_route,
+)
 from admin.backend.services.openrouter_catalog import fetch_openrouter_catalog
 from admin.backend.services.openrouter_health import fetch_openrouter_health_snapshot
 from admin.backend.services.openrouter_key import fetch_openrouter_key
@@ -20,6 +27,12 @@ from admin.backend.services.openrouter_picker import fetch_openrouter_runtime_st
 from admin.backend.services.wormsoft_limits import fetch_wormsoft_limits
 from admin.backend.services.wormsoft_models import fetch_wormsoft_models
 from shared.config import get_settings
+from shared.llm_control_plane import (
+    CONTROL_PLANE_POLICY_DB_KEY,
+    CONTROL_PLANE_POLICY_REDIS_KEY,
+    RoutingPolicyV2,
+    default_routing_policy_v2,
+)
 from shared.llm_routing import (
     RUNTIME_LLM_ROUTING_DB_KEY,
     RUNTIME_LLM_ROUTING_REDIS_KEY,
@@ -46,6 +59,15 @@ class RuntimeModeRequest(BaseModel):
 
 class LLMRoutingRequest(LLMRoutingSettings):
     pass
+
+
+class ControlPlanePolicyRequest(RoutingPolicyV2):
+    pass
+
+
+class RouteSimulationRequest(BaseModel):
+    task: str
+    task_family: str | None = None
 
 
 async def _ensure_runtime_settings_table() -> None:
@@ -205,11 +227,44 @@ async def _store_llm_routing(request: LLMRoutingRequest) -> dict:
     return await _llm_routing_payload(source="db+redis")
 
 
+async def _control_plane_policy_payload(source: str = "db") -> dict:
+    settings = get_settings()
+    runtime_mode = await _runtime_mode_payload()
+    legacy_routing_payload, _ = await _load_json_setting(RUNTIME_LLM_ROUTING_DB_KEY)
+    stored_payload, updated_at = await _load_json_setting(CONTROL_PLANE_POLICY_DB_KEY)
+    effective = default_routing_policy_v2(settings, runtime_mode["mode"], legacy_routing_payload)
+    if stored_payload:
+        effective = RoutingPolicyV2.model_validate(stored_payload)
+        try:
+            await _mirror_runtime_value(
+                CONTROL_PLANE_POLICY_REDIS_KEY,
+                json.dumps(stored_payload),
+            )
+        except Exception as exc:
+            logger.warning("control_plane_policy_redis_mirror_failed err=%s", exc)
+    return {
+        "source": source if stored_payload else "derived",
+        "updated_at": updated_at,
+        "effective": effective.model_dump(),
+    }
+
+
+async def _store_control_plane_policy(request: ControlPlanePolicyRequest) -> dict:
+    payload = request.model_dump()
+    await _store_json_setting(CONTROL_PLANE_POLICY_DB_KEY, payload)
+    try:
+        await _mirror_runtime_value(CONTROL_PLANE_POLICY_REDIS_KEY, json.dumps(payload))
+    except Exception as exc:
+        logger.warning("control_plane_policy_redis_mirror_failed err=%s", exc)
+    return await _control_plane_policy_payload(source="db+redis")
+
+
 @router.get("")
 async def get_admin_settings():
     settings = get_settings()
     runtime_mode = await _runtime_mode_payload()
     llm_routing = await _llm_routing_payload()
+    control_plane_policy = await _control_plane_policy_payload()
     effective = runtime_mode["effective"]
     return {
         "business": {
@@ -273,6 +328,7 @@ async def get_admin_settings():
         },
         "runtime_modes": runtime_mode,
         "llm_routing": llm_routing,
+        "control_plane_policy": control_plane_policy,
         "providers": {
             "wormsoft": {
                 "api_base": settings.wormsoft_api_base,
@@ -332,6 +388,51 @@ async def get_llm_routing():
 @router.post("/llm-routing")
 async def set_llm_routing(request: LLMRoutingRequest):
     return await _store_llm_routing(request)
+
+
+@router.get("/policy")
+async def get_control_plane_policy():
+    return await _control_plane_policy_payload()
+
+
+@router.post("/policy")
+async def set_control_plane_policy(request: ControlPlanePolicyRequest):
+    return await _store_control_plane_policy(request)
+
+
+@router.post("/simulate")
+async def simulate_control_plane(request: RouteSimulationRequest):
+    payload = await _control_plane_policy_payload()
+    policy = RoutingPolicyV2.model_validate(payload["effective"])
+    return await simulate_control_plane_route(
+        policy,
+        task=request.task,
+        task_family=request.task_family,
+    )
+
+
+@router.get("/provider-state")
+async def get_provider_state():
+    payload = await _control_plane_policy_payload()
+    policy = RoutingPolicyV2.model_validate(payload["effective"])
+    return await fetch_provider_state_snapshot(policy)
+
+
+@router.get("/budget-state")
+async def get_budget_state():
+    return await fetch_budget_state_snapshot()
+
+
+@router.get("/circuits")
+async def get_circuits():
+    payload = await _control_plane_policy_payload()
+    policy = RoutingPolicyV2.model_validate(payload["effective"])
+    return await fetch_circuit_state_snapshot(policy)
+
+
+@router.get("/routing-events")
+async def get_routing_events(limit: int = 50):
+    return await fetch_routing_events(limit=limit)
 
 
 @router.get("/providers/wormsoft/models")
