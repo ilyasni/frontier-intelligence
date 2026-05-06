@@ -84,6 +84,7 @@ Production snapshot на 2026-04-17: `frontier_docs` green, dense 2560d + sparse
 ```bash
 bash scripts/server-qdrant-alias-cutover.sh status
 bash scripts/server-qdrant-alias-cutover.sh prepare
+bash scripts/server-qdrant-backfill-versioned.sh --kind all
 bash scripts/server-qdrant-alias-cutover.sh preflight --kind all
 ```
 
