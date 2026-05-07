@@ -736,6 +736,25 @@ class ProviderBudgetManager:
             refreshed_at=_num_float("updated_at") or now,
         )
 
+    async def _discover_cost_models(self, provider: str) -> list[str]:
+        redis = await self._client()
+        if redis is None:
+            return []
+        scan_iter = getattr(redis, "scan_iter", None)
+        if not callable(scan_iter):
+            return []
+        pattern = f"llm:cost:runtime:{normalize_provider(provider)}:cost_model:*:{_day_key()}"
+        models: set[str] = set()
+        try:
+            async for key in scan_iter(match=pattern):
+                raw = await redis.hgetall(key)
+                model = str(raw.get("model") or "").strip()
+                if model:
+                    models.add(model)
+        except Exception:
+            return []
+        return sorted(models)
+
     async def snapshot_costs(
         self,
         providers: list[str],
@@ -766,6 +785,13 @@ class ProviderBudgetManager:
         normalized_families = sorted({str(family or "").strip() for family in (task_families or []) if str(family or "").strip()})
         normalized_workspaces = sorted({str(workspace_id or "").strip() for workspace_id in (workspace_ids or []) if str(workspace_id or "").strip()})
         for provider in sorted({normalize_provider(provider) for provider in providers}):
+            discovered_models = set(
+                str(item or "").strip()
+                for item in models_by_provider.get(provider, [])
+                if str(item or "").strip()
+            )
+            if not discovered_models:
+                discovered_models.update(await self._discover_cost_models(provider))
             scope_descriptors = [
                 {
                     "scope": "cost_provider",
@@ -775,7 +801,7 @@ class ProviderBudgetManager:
                     "workspace_id": "",
                 }
             ]
-            for model in sorted({str(item or "").strip() for item in models_by_provider.get(provider, []) if str(item or "").strip()}):
+            for model in sorted(discovered_models):
                 scope_descriptors.append(
                     {
                         "scope": "cost_model",

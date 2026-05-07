@@ -11,12 +11,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from admin.backend.services.llm_finops import fetch_llm_finops_snapshot
 from admin.backend.scheduler import scheduler_lifespan
 from admin.backend.scheduler import manual_job_metrics_snapshot
 from admin.backend.scheduler import scheduler_status
 from shared.config import get_settings
 from shared.metrics import set_admin_manual_job_metrics
 from shared.metrics import set_admin_scheduler_running
+from shared.metrics import set_llm_finops_snapshot
 from shared.metrics import set_redis_stream_metrics
 from shared.redis_streams import collect_redis_stream_snapshot
 
@@ -80,6 +82,7 @@ async def metrics():
             "admin",
             await manual_job_metrics_snapshot(),
         )
+        set_llm_finops_snapshot("admin", await fetch_llm_finops_snapshot())
         stream_snapshot = await collect_redis_stream_snapshot(get_settings().redis_url)
         set_redis_stream_metrics("admin", stream_snapshot)
     except Exception:

@@ -76,6 +76,36 @@ try:
         "Cumulative actual-minus-estimated LLM cost drift by provider and task family.",
         ["service", "provider", "task_family", "execution_role"],
     )
+    LLM_FINOPS_RUNTIME_ACTUAL_TOTAL = Gauge(
+        "frontier_llm_finops_runtime_actual_total",
+        "Current runtime actual LLM cost total by provider from admin finops reconciliation.",
+        ["service", "provider"],
+    )
+    LLM_FINOPS_RUNTIME_ESTIMATED_TOTAL = Gauge(
+        "frontier_llm_finops_runtime_estimated_total",
+        "Current runtime estimated LLM cost total by provider from admin finops reconciliation.",
+        ["service", "provider"],
+    )
+    LLM_FINOPS_RUNTIME_DRIFT_TOTAL = Gauge(
+        "frontier_llm_finops_runtime_drift_total",
+        "Current runtime cost drift total by provider from admin finops reconciliation.",
+        ["service", "provider"],
+    )
+    LLM_FINOPS_PUBLISHED_REMAINING = Gauge(
+        "frontier_llm_finops_published_remaining",
+        "Published remaining budget or balance by provider when available.",
+        ["service", "provider"],
+    )
+    LLM_FINOPS_RECONCILIATION_GAP = Gauge(
+        "frontier_llm_finops_reconciliation_gap",
+        "Gap between runtime and published provider accounting where units are comparable.",
+        ["service", "provider", "kind"],
+    )
+    LLM_FINOPS_STATUS = Gauge(
+        "frontier_llm_finops_status",
+        "One-hot finops reconciliation status by provider.",
+        ["service", "provider", "status"],
+    )
     GIGACHAT_PROMPT_TOKENS_TOTAL = Counter(
         "frontier_gigachat_prompt_tokens_total",
         "Total prompt tokens reported by GigaChat.",
@@ -306,6 +336,12 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     LLM_COST_ESTIMATE_TOTAL = None
     LLM_COST_ACTUAL_TOTAL = None
     LLM_COST_DRIFT_TOTAL = None
+    LLM_FINOPS_RUNTIME_ACTUAL_TOTAL = None
+    LLM_FINOPS_RUNTIME_ESTIMATED_TOTAL = None
+    LLM_FINOPS_RUNTIME_DRIFT_TOTAL = None
+    LLM_FINOPS_PUBLISHED_REMAINING = None
+    LLM_FINOPS_RECONCILIATION_GAP = None
+    LLM_FINOPS_STATUS = None
     GIGACHAT_PROMPT_TOKENS_TOTAL = None
     GIGACHAT_COMPLETION_TOKENS_TOTAL = None
     GIGACHAT_PRECACHED_PROMPT_TOKENS_TOTAL = None
@@ -475,6 +511,48 @@ def note_llm_cost(
         LLM_COST_ACTUAL_TOTAL.labels(**labels).inc(float(actual_cost))
     if LLM_COST_DRIFT_TOTAL is not None and cost_drift is not None:
         LLM_COST_DRIFT_TOTAL.labels(**labels).inc(float(cost_drift))
+
+
+def set_llm_finops_snapshot(service: str, payload: dict) -> None:
+    reconciliations = list(payload.get("reconciliations") or [])
+    if LLM_FINOPS_STATUS is not None:
+        LLM_FINOPS_STATUS.clear()
+    if LLM_FINOPS_RECONCILIATION_GAP is not None:
+        LLM_FINOPS_RECONCILIATION_GAP.clear()
+    for item in reconciliations:
+        provider = str(item.get("provider") or "")
+        if not provider:
+            continue
+        if LLM_FINOPS_RUNTIME_ACTUAL_TOTAL is not None:
+            LLM_FINOPS_RUNTIME_ACTUAL_TOTAL.labels(service=service, provider=provider).set(
+                float(item.get("runtime_actual_cost_total") or 0.0)
+            )
+        if LLM_FINOPS_RUNTIME_ESTIMATED_TOTAL is not None:
+            LLM_FINOPS_RUNTIME_ESTIMATED_TOTAL.labels(service=service, provider=provider).set(
+                float(item.get("runtime_estimated_cost_total") or 0.0)
+            )
+        if LLM_FINOPS_RUNTIME_DRIFT_TOTAL is not None:
+            LLM_FINOPS_RUNTIME_DRIFT_TOTAL.labels(service=service, provider=provider).set(
+                float(item.get("runtime_cost_drift_total") or 0.0)
+            )
+        if LLM_FINOPS_PUBLISHED_REMAINING is not None:
+            LLM_FINOPS_PUBLISHED_REMAINING.labels(service=service, provider=provider).set(
+                float(item.get("published_remaining") or 0.0)
+            )
+        gap_kind = str(item.get("gap_kind") or "none")
+        if LLM_FINOPS_RECONCILIATION_GAP is not None:
+            LLM_FINOPS_RECONCILIATION_GAP.labels(
+                service=service,
+                provider=provider,
+                kind=gap_kind,
+            ).set(float(item.get("gap_value") or 0.0))
+        status = str(item.get("status") or "unknown")
+        if LLM_FINOPS_STATUS is not None:
+            LLM_FINOPS_STATUS.labels(
+                service=service,
+                provider=provider,
+                status=status,
+            ).set(1)
 
 
 def note_gigachat_usage(

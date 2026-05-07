@@ -273,6 +273,32 @@ class CostAggregateState(BaseModel):
         return normalize_provider(value)
 
 
+class FinopsReconciliationState(BaseModel):
+    provider: str
+    status: str = "unknown"
+    runtime_request_count: int = 0
+    runtime_success_count: int = 0
+    runtime_error_count: int = 0
+    runtime_estimated_cost_total: float = 0.0
+    runtime_actual_cost_total: float = 0.0
+    runtime_cost_drift_total: float = 0.0
+    runtime_billable_tokens: int = 0
+    published_limit: float | None = None
+    published_usage: float | None = None
+    published_remaining: float | None = None
+    gap_value: float | None = None
+    gap_kind: str = ""
+    unit: str = "credits"
+    note: str = ""
+    refreshed_at: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _validate_provider(cls, value: Any) -> str:
+        return normalize_provider(value)
+
+
 class ModelCapabilitySnapshot(BaseModel):
     provider: str
     model: str
