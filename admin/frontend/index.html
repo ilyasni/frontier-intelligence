@@ -926,6 +926,22 @@ function settingsPill(label, tone) {
   return `<span class="settings-pill settings-pill-${tone}">${escapeHtml(label)}</span>`;
 }
 
+function settingsToneForStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+  if (['ok', 'ready', 'healthy', 'clear', 'tracked', 'live'].includes(value)) return 'ok';
+  if (['warn', 'degraded', 'pending', 'near_cap', 'stale', 'empty', 'unknown', 'low_balance'].includes(value)) return 'warn';
+  if (['error', 'quota_exhausted', 'drift', 'rate_limited', 'unavailable'].includes(value)) return 'error';
+  return 'warn';
+}
+
+function formatMetricValue(value, unit = '') {
+  if (value == null) return '-';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return escapeHtml(String(value));
+  const base = formatCompactNumber(num);
+  return unit ? `${base} ${escapeHtml(unit)}` : base;
+}
+
 function renderSettingsCells(items) {
   if (!items.length) return '<div class="empty">No data available yet.</div>';
   return `
@@ -1532,18 +1548,20 @@ function renderControlPlanePolicyPanel(payload) {
 
 function renderProviderStatePanel(payload) {
   const providers = Array.isArray(payload?.providers) ? payload.providers : [];
+  const nonReadyCount = providers.filter((item) => !item.ready).length;
   return renderSettingsPanel(
     'Provider state',
     'Unified health, readiness, and quota-pressure view across all text and fallback providers.',
-    providers.length ? 'Live' : 'Unavailable',
-    providers.length ? 'ok' : 'warn',
+    providers.length ? (nonReadyCount ? `${nonReadyCount} degraded` : 'Live') : 'Unavailable',
+    providers.length ? (nonReadyCount ? 'warn' : 'ok') : 'warn',
     `
       <div class="settings-stack">
         ${renderSettingsTable(
-          ['Provider', 'Ready', 'Health', 'Quota', 'Budgets'],
+          ['Provider', 'Ready', 'Readiness', 'Health', 'Quota', 'Budgets'],
           providers.map((item) => [
             escapeHtml(String(item.provider || '-')),
             escapeHtml(String(item.ready ? 'yes' : 'no')),
+            settingsPill(String(item.readiness_state || 'unknown'), settingsToneForStatus(item.readiness_state || 'unknown')),
             escapeHtml(String(item.health_status || '-')),
             escapeHtml(String(item.quota_pressure || '-')),
             escapeHtml(String((item.budgets || []).length)),
@@ -1558,6 +1576,9 @@ function renderProviderStatePanel(payload) {
 
 function renderBudgetStatePanel(payload) {
   const budgets = Array.isArray(payload?.budgets) ? payload.budgets : [];
+  const costs = Array.isArray(payload?.costs) ? payload.costs : [];
+  const summary = payload?.summary || {};
+  const providerCosts = costs.filter((item) => String(item.scope || '') === 'cost_provider');
   return renderSettingsPanel(
     'Budget state',
     'Budget and credit windows normalized across providers for reliability and finops work.',
@@ -1565,6 +1586,12 @@ function renderBudgetStatePanel(payload) {
     budgets.length ? 'ok' : 'warn',
     `
       <div class="settings-stack">
+        ${renderSettingsCells([
+          { label: 'Providers', value: String(Number(summary.provider_count || providerCosts.length || 0)), meta: 'Providers included in runtime finops totals.' },
+          { label: 'Runtime requests', value: formatCompactNumber(Number(summary.request_count || 0)), meta: 'Primary + shadow executions recorded in runtime aggregates.' },
+          { label: 'Actual cost total', value: formatCompactNumber(Number(summary.actual_cost_total || 0)), meta: 'Current cumulative runtime actual cost units.' },
+          { label: 'Cost drift total', value: formatCompactNumber(Number(summary.cost_drift_total || 0)), meta: 'Actual minus estimated cumulative drift across providers.' },
+        ])}
         ${renderSettingsTable(
           ['Provider', 'Scope', 'Window', 'Remaining', 'Status'],
           budgets.map((item) => [
@@ -1572,11 +1599,80 @@ function renderBudgetStatePanel(payload) {
             escapeHtml(String(item.scope || '-')),
             escapeHtml(String(item.window_label || '-')),
             item.remaining == null ? '-' : escapeHtml(String(item.remaining)),
-            escapeHtml(String(item.status || '-')),
+            settingsPill(String(item.status || '-'), settingsToneForStatus(item.status || 'unknown')),
           ]),
           'No normalized budget windows available yet.',
         )}
+        <div class="settings-note">Provider cost aggregates</div>
+        ${renderSettingsTable(
+          ['Provider', 'Requests', 'Success', 'Errors', 'Estimated', 'Actual', 'Drift'],
+          providerCosts.map((item) => [
+            escapeHtml(String(item.provider || '-')),
+            formatCompactNumber(Number(item.request_count || 0)),
+            formatCompactNumber(Number(item.success_count || 0)),
+            formatCompactNumber(Number(item.error_count || 0)),
+            formatCompactNumber(Number(item.estimated_cost_total || 0)),
+            formatCompactNumber(Number(item.actual_cost_total || 0)),
+            formatCompactNumber(Number(item.cost_drift_total || 0)),
+          ]),
+          'No provider-level cost aggregates yet.',
+        )}
         ${renderSettingsRawDetails(payload, 'Raw budget payload')}
+      </div>
+    `,
+  );
+}
+
+function renderFinopsReconciliationPanel(payload) {
+  const reconciliations = Array.isArray(payload?.reconciliations) ? payload.reconciliations : [];
+  const summary = payload?.summary || {};
+  const highestGap = reconciliations
+    .map((item) => Math.abs(Number(item.gap_value || 0)))
+    .reduce((max, value) => Math.max(max, value), 0);
+  const nonOkCount = reconciliations.filter((item) => String(item.status || '').toLowerCase() !== 'ok').length;
+  const statusLabel = reconciliations.length ? (nonOkCount ? `${nonOkCount} attention` : 'Stable') : 'Empty';
+  const statusTone = reconciliations.length ? (nonOkCount ? 'warn' : 'ok') : 'warn';
+  return renderSettingsPanel(
+    'FinOps reconciliation',
+    'Operator view of runtime accounting vs published provider snapshots, headroom, and reconciliation gaps.',
+    statusLabel,
+    statusTone,
+    `
+      <div class="settings-stack">
+        ${renderSettingsCells([
+          { label: 'Providers tracked', value: String(reconciliations.length), meta: 'Providers with reconciliation state in the current snapshot.' },
+          { label: 'Actual runtime total', value: formatCompactNumber(Number(summary.actual_cost_total || 0)), meta: 'Sum of current runtime actual cost aggregates.' },
+          { label: 'Runtime drift total', value: formatCompactNumber(Number(summary.cost_drift_total || 0)), meta: 'Actual minus estimated drift accumulated in runtime receipts.' },
+          { label: 'Largest gap', value: formatCompactNumber(highestGap), meta: 'Largest absolute published-vs-runtime reconciliation gap in the current snapshot.' },
+        ])}
+        ${renderSettingsTable(
+          ['Provider', 'Status', 'Runtime actual', 'Published remaining', 'Gap', 'Unit', 'Note'],
+          reconciliations.map((item) => [
+            escapeHtml(String(item.provider || '-')),
+            settingsPill(String(item.status || 'unknown'), settingsToneForStatus(item.status || 'unknown')),
+            formatCompactNumber(Number(item.runtime_actual_cost_total || 0)),
+            item.published_remaining == null ? '-' : formatCompactNumber(Number(item.published_remaining || 0)),
+            item.gap_value == null ? '-' : formatCompactNumber(Number(item.gap_value || 0)),
+            escapeHtml(String(item.unit || '-')),
+            escapeHtml(String(item.note || '-')),
+          ]),
+          'No reconciliation rows available yet.',
+        )}
+        <div class="settings-note">Reconciliation details</div>
+        ${renderSettingsTable(
+          ['Provider', 'Gap kind', 'Runtime requests', 'Success', 'Errors', 'Published limit', 'Published usage'],
+          reconciliations.map((item) => [
+            escapeHtml(String(item.provider || '-')),
+            `<span class="mono">${escapeHtml(String(item.gap_kind || '-'))}</span>`,
+            formatCompactNumber(Number(item.runtime_request_count || 0)),
+            formatCompactNumber(Number(item.runtime_success_count || 0)),
+            formatCompactNumber(Number(item.runtime_error_count || 0)),
+            item.published_limit == null ? '-' : formatCompactNumber(Number(item.published_limit || 0)),
+            item.published_usage == null ? '-' : formatCompactNumber(Number(item.published_usage || 0)),
+          ]),
+          'No detailed reconciliation data yet.',
+        )}
+        ${renderSettingsRawDetails(payload, 'Raw finops reconciliation payload')}
       </div>
     `,
   );
@@ -1700,6 +1796,7 @@ function renderSettingsSnapshot(data, balancePayload, streamPayload, weeklyRepor
       ${renderControlPlanePolicyPanel(data.control_plane_policy || {})}
       ${renderProviderStatePanel(providerState || {})}
       ${renderBudgetStatePanel(budgetState || {})}
+      ${renderFinopsReconciliationPanel(budgetState || {})}
       ${renderCapabilityMatrixPanel(capabilityMatrix || {})}
       ${renderCircuitStatePanel(circuitState || {})}
       ${renderRoutingEventsPanel(routingEvents || {})}
