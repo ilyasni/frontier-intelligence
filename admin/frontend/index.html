@@ -811,6 +811,11 @@ let graphCy = null;
 let sourceCatalog = { source_types: [], rss_presets: [] };
 let settingsRuntimeSnapshot = null;
 let wormsoftCatalogSnapshot = null;
+let settingsControlPlanePolicySnapshot = null;
+let settingsProviderStateSnapshot = null;
+let settingsBudgetStateSnapshot = null;
+let settingsCircuitStateSnapshot = null;
+let settingsRoutingEventsSnapshot = null;
 
 // Navigation
 document.querySelectorAll('.nav-link').forEach(link => {
@@ -940,6 +945,244 @@ function formatMetricValue(value, unit = '') {
   if (!Number.isFinite(num)) return escapeHtml(String(value));
   const base = formatCompactNumber(num);
   return unit ? `${base} ${escapeHtml(unit)}` : base;
+}
+
+function settingsSelectOptions(options, selectedValue) {
+  return (options || []).map((item) => {
+    const value = typeof item === 'string' ? item : item?.value;
+    const label = typeof item === 'string' ? item : (item?.label || item?.value);
+    const selected = String(value || '') === String(selectedValue || '') ? ' selected' : '';
+    return `<option value="${escapeHtmlAttr(String(value || ''))}"${selected}>${escapeHtml(String(label || value || ''))}</option>`;
+  }).join('');
+}
+
+function settingsRelativeDuration(unixSeconds) {
+  const target = Number(unixSeconds || 0);
+  if (!Number.isFinite(target) || target <= 0) return '-';
+  const deltaMs = (target * 1000) - Date.now();
+  const absMs = Math.abs(deltaMs);
+  const absSec = Math.round(absMs / 1000);
+  const value = absSec >= 3600
+    ? `${Math.round(absSec / 3600)}h`
+    : absSec >= 60
+      ? `${Math.round(absSec / 60)}m`
+      : `${absSec}s`;
+  return deltaMs >= 0 ? `in ${value}` : `${value} ago`;
+}
+
+function formatCandidateChain(candidates, emptyLabel = 'No candidates') {
+  const items = Array.isArray(candidates) ? candidates : [];
+  if (!items.length) return `<span class="empty">${escapeHtml(emptyLabel)}</span>`;
+  return items.map((item) => {
+    const provider = escapeHtml(String(item?.provider || '-'));
+    const model = escapeHtml(String(item?.model || '-'));
+    return `<span class="mono">${provider}/${model}</span>`;
+  }).join('<span style="color:#718096"> → </span>');
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set((values || []).map((item) => String(item || '').trim()).filter(Boolean)));
+}
+
+function controlPlaneDefaultFamilyForTask(task) {
+  const normalized = String(task || '').trim().toLowerCase();
+  if (normalized === 'vision') return 'vision_generation';
+  if (['embed', 'embedding', 'embeddings'].includes(normalized)) return 'embeddings';
+  return 'text_generation';
+}
+
+function controlPlaneSimTasks() {
+  return [
+    ...LLM_ROUTE_TASKS,
+    { id: 'vision', label: 'Vision analysis' },
+    { id: 'embeddings', label: 'Embeddings' },
+  ];
+}
+
+function syncControlPlaneSimulationFamily() {
+  const taskEl = document.getElementById('settings-sim-task');
+  const familyEl = document.getElementById('settings-sim-family');
+  if (!taskEl || !familyEl) return;
+  familyEl.value = controlPlaneDefaultFamilyForTask(taskEl.value);
+}
+
+function summarizeRoutingEvent(item) {
+  const event = String(item?.event || '-');
+  const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+  const base = {
+    event,
+    service: String(item?.service || '-'),
+    timestamp: Number(
+      item?.timestamp
+      || payload.timestamp
+      || payload.completed_at
+      || payload.decided_at
+      || payload.primary_receipt?.completed_at
+      || payload.shadow_receipt?.completed_at
+      || 0
+    ),
+    task: '',
+    taskFamily: '',
+    route: '',
+    role: '',
+    status: '',
+    latencyMs: null,
+    detail: '',
+    shadowGroupId: '',
+    shadowPrimaryRoute: '',
+    shadowRoute: '',
+    statusMatch: null,
+    providerMatch: null,
+    latencyDeltaMs: null,
+    costDelta: null,
+  };
+
+  if (event === 'routing_decision_made') {
+    const skippedCount = Array.isArray(payload.skipped_candidates) ? payload.skipped_candidates.length : 0;
+    return {
+      ...base,
+      task: String(payload.task || '-'),
+      taskFamily: String(payload.task_family || '-'),
+      route: `${String(payload.selected_provider || '-')}/${String(payload.selected_model || '-')}`,
+      role: 'primary',
+      status: skippedCount ? 'degraded' : 'ready',
+      detail: `${Number((payload.considered_candidates || []).length)} considered · ${skippedCount} skipped`,
+    };
+  }
+
+  if (event === 'routing_execution_finished') {
+    return {
+      ...base,
+      task: String(payload.task || '-'),
+      taskFamily: String(payload.task_family || '-'),
+      route: `${String(payload.actual_provider || '-')}/${String(payload.actual_model || '-')}`,
+      role: String(payload.execution_role || 'primary'),
+      status: String(payload.status || '-'),
+      latencyMs: Number(payload.latency_ms || 0),
+      detail: String(payload.fallback_reason || payload.provider_error?.reason || '-'),
+      shadowGroupId: String(payload.shadow_group_id || ''),
+    };
+  }
+
+  if (event === 'routing_shadow_plan') {
+    return {
+      ...base,
+      task: String(payload.task || '-'),
+      taskFamily: String(payload.task_family || '-'),
+      route: `${String(payload.selected_provider || '-')}/${String(payload.selected_model || '-')}`,
+      role: 'shadow',
+      status: 'planned',
+      detail: `${Number((payload.shadow_candidates || []).length)} shadow candidates`,
+      shadowGroupId: String(payload.shadow_group_id || ''),
+    };
+  }
+
+  if (event === 'routing_shadow_execution_started') {
+    return {
+      ...base,
+      task: String(payload.task || '-'),
+      taskFamily: String(payload.task_family || '-'),
+      route: formatCandidateChain(payload.attempts || [], 'No attempts'),
+      role: 'shadow',
+      status: 'running',
+      detail: `${Number((payload.attempts || []).length)} attempts queued`,
+      shadowGroupId: String(payload.shadow_group_id || ''),
+    };
+  }
+
+  if (event === 'routing_shadow_execution_finished') {
+    const primaryReceipt = payload.primary_receipt || {};
+    const shadowReceipt = payload.shadow_receipt || {};
+    const comparison = payload.comparison || {};
+    return {
+      ...base,
+      task: String(primaryReceipt.task || shadowReceipt.task || '-'),
+      taskFamily: String(primaryReceipt.task_family || shadowReceipt.task_family || '-'),
+      route: `${String(shadowReceipt.actual_provider || '-')}/${String(shadowReceipt.actual_model || '-')}`,
+      role: 'shadow',
+      status: String(shadowReceipt.status || '-'),
+      latencyMs: Number(shadowReceipt.latency_ms || 0),
+      detail: comparison.status_match ? 'shadow matched primary' : 'shadow diverged',
+      shadowGroupId: String(payload.group_id || ''),
+      shadowPrimaryRoute: `${String(primaryReceipt.actual_provider || '-')}/${String(primaryReceipt.actual_model || '-')}`,
+      shadowRoute: `${String(shadowReceipt.actual_provider || '-')}/${String(shadowReceipt.actual_model || '-')}`,
+      statusMatch: Boolean(comparison.status_match),
+      providerMatch: Boolean(comparison.provider_match),
+      latencyDeltaMs: comparison.latency_delta_ms == null ? null : Number(comparison.latency_delta_ms),
+      costDelta: comparison.cost_delta == null ? null : Number(comparison.cost_delta),
+    };
+  }
+
+  return {
+    ...base,
+    detail: Object.keys(payload).length ? 'See raw payload' : '-',
+  };
+}
+
+function renderControlPlaneSimulationResult(payload) {
+  const decision = payload?.decision || {};
+  const providerStates = Array.isArray(payload?.provider_states) ? payload.provider_states : [];
+  const circuits = Array.isArray(payload?.circuits) ? payload.circuits : [];
+  const skipped = Array.isArray(decision?.skipped_candidates) ? decision.skipped_candidates : [];
+  const degradedProviders = providerStates.filter((item) => String(item?.readiness_state || '').toLowerCase() !== 'ready').length;
+  return `
+    <div class="settings-stack">
+      ${renderSettingsCells([
+        { label: 'Selected route', value: `${String(decision.selected_provider || '-')} / ${String(decision.selected_model || '-')}`, meta: 'Resolved route after readiness, circuit, and quota checks.' },
+        { label: 'Requested route', value: `${String(decision.requested_provider || '-')} / ${String(decision.requested_model || '-')}`, meta: 'First candidate requested by the current control-plane policy.' },
+        { label: 'Fallback', value: decision.fallback_allowed ? 'allowed' : 'disabled', meta: decision.fallback_exception_only ? 'Fallback stays exception-only for this family.' : 'Fallback can move across the chain in the current mode.' },
+        { label: 'Skipped candidates', value: String(skipped.length), meta: 'Candidates excluded by readiness, circuits, quotas, or compatibility.' },
+        { label: 'Providers degraded', value: String(degradedProviders), meta: 'Providers not currently in readiness=ready.' },
+        { label: 'Open circuits', value: String(circuits.length), meta: 'Provider/model circuits considered during the simulation.' },
+      ])}
+      ${renderSettingsTable(
+        ['Candidate', 'Reason'],
+        skipped.map((item) => [
+          `<span class="mono">${escapeHtml(String(item.provider || '-'))}/${escapeHtml(String(item.model || '-'))}</span>`,
+          escapeHtml(String(item.reason || '-')),
+        ]),
+        'No skipped candidates for this simulation.',
+      )}
+    </div>
+  `;
+}
+
+async function runControlPlaneSimulation() {
+  const taskEl = document.getElementById('settings-sim-task');
+  const familyEl = document.getElementById('settings-sim-family');
+  const modeEl = document.getElementById('settings-sim-mode');
+  const resultEl = document.getElementById('settings-sim-result');
+  const button = document.getElementById('settings-sim-run');
+  if (!taskEl || !familyEl || !modeEl || !resultEl || !button) return;
+  button.disabled = true;
+  button.setAttribute('aria-disabled', 'true');
+  button.textContent = 'Simulating...';
+  resultEl.innerHTML = '<div class="empty">Running control-plane simulation...</div>';
+  try {
+    const body = {
+      task: taskEl.value || 'relevance',
+      task_family: familyEl.value || controlPlaneDefaultFamilyForTask(taskEl.value),
+      mode: modeEl.value || null,
+    };
+    const resp = await fetch(API + '/api/settings/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    let payload = {};
+    try {
+      payload = await resp.json();
+    } catch (e) {}
+    if (!resp.ok) {
+      resultEl.innerHTML = `<div class="empty">Simulation failed: ${escapeHtml(String(payload?.detail || 'request failed'))}</div>`;
+      return;
+    }
+    resultEl.innerHTML = renderControlPlaneSimulationResult(payload || {});
+  } finally {
+    button.disabled = false;
+    button.setAttribute('aria-disabled', 'false');
+    button.textContent = 'Simulate route';
+  }
 }
 
 function renderSettingsCells(items) {
@@ -1517,6 +1760,11 @@ function renderControlPlanePolicyPanel(payload) {
     ['Vision generation', effective.vision_generation],
     ['Embeddings', effective.embeddings],
   ];
+  const totalCandidates = families.reduce((sum, [, family]) => sum + Number((family?.candidates || []).length), 0);
+  const providerCount = uniqueStrings(
+    families.flatMap(([, family]) => (family?.candidates || []).map((item) => item.provider))
+  ).length;
+  const shadowFamilyCount = families.filter(([, family]) => String(family?.mode || '') === 'shadow-eval').length;
   return renderSettingsPanel(
     'Control plane policy',
     'Routing policy v2 by task family with explicit candidate chains and execution modes.',
@@ -1529,17 +1777,58 @@ function renderControlPlanePolicyPanel(payload) {
           { label: 'Default mode', value: String(effective.default_mode || 'degraded'), meta: 'Execution mode used by default across families.' },
           { label: 'Source', value: String(data.source || 'derived'), meta: data.source === 'derived' ? 'Derived from current runtime mode and legacy /llm-routing config.' : 'Stored v2 policy override from admin API.' },
           { label: 'Updated', value: data.updated_at ? formatTime(data.updated_at) : '-', meta: 'Last DB write for the explicit policy override.' },
+          { label: 'Candidate routes', value: String(totalCandidates), meta: 'Total provider/model candidates across all families.' },
+          { label: 'Providers', value: String(providerCount), meta: 'Distinct providers referenced by the active policy.' },
+          { label: 'Shadow families', value: String(shadowFamilyCount), meta: 'Families currently configured with shadow-eval mode.' },
         ])}
         ${renderSettingsTable(
-          ['Family', 'Mode', 'Candidates', 'Fallback'],
+          ['Family', 'Mode', 'Candidates', 'Candidate chain', 'Budget classes', 'Fallback'],
           families.map(([label, family]) => [
             label,
-            escapeHtml(String(family?.mode || '-')),
+            settingsPill(String(family?.mode || '-'), settingsToneForStatus(family?.mode || 'unknown')),
             escapeHtml(String((family?.candidates || []).length)),
-            escapeHtml(String(family?.fallback_exception_only ? 'exception-only' : 'always')),
+            formatCandidateChain(family?.candidates || []),
+            escapeHtml(uniqueStrings((family?.candidates || []).map((item) => item.budget_class)).join(', ') || '-'),
+            settingsPill(
+              String(family?.fallback_exception_only ? 'exception-only' : 'always'),
+              family?.fallback_exception_only ? 'ok' : 'warn',
+            ),
           ]),
           'No control-plane policy snapshot available.',
         )}
+        <div class="settings-note">Routing simulator</div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <div class="form-row" style="min-width:220px;margin:0">
+            <label>Task</label>
+            <select id="settings-sim-task" onchange="syncControlPlaneSimulationFamily()">
+              ${settingsSelectOptions(controlPlaneSimTasks().map((item) => ({ value: item.id, label: item.label })), 'relevance')}
+            </select>
+          </div>
+          <div class="form-row" style="min-width:220px;margin:0">
+            <label>Task family</label>
+            <select id="settings-sim-family">
+              ${settingsSelectOptions([
+                { value: 'text_generation', label: 'text_generation' },
+                { value: 'vision_generation', label: 'vision_generation' },
+                { value: 'embeddings', label: 'embeddings' },
+              ], 'text_generation')}
+            </select>
+          </div>
+          <div class="form-row" style="min-width:220px;margin:0">
+            <label>Mode override</label>
+            <select id="settings-sim-mode">
+              ${settingsSelectOptions([
+                { value: '', label: 'inherit from policy' },
+                { value: 'strict', label: 'strict' },
+                { value: 'degraded', label: 'degraded' },
+                { value: 'maintenance', label: 'maintenance' },
+                { value: 'shadow-eval', label: 'shadow-eval' },
+              ], '')}
+            </select>
+          </div>
+          <button class="btn btn-outline btn-sm" id="settings-sim-run" type="button" onclick="runControlPlaneSimulation()">Simulate route</button>
+        </div>
+        <div id="settings-sim-result" class="empty">Choose a task and run the control-plane simulation to inspect route selection and skipped candidates.</div>
         ${renderSettingsRawDetails(effective, 'Effective policy payload')}
       </div>
     `,
@@ -1712,6 +2001,9 @@ function renderCapabilityMatrixPanel(payload) {
 function renderCircuitStatePanel(payload) {
   const circuits = Array.isArray(payload?.circuits) ? payload.circuits : [];
   const wormsoftGuard = payload?.wormsoft_guard || {};
+  const providerCircuits = circuits.filter((item) => String(item.level || '') === 'provider');
+  const modelCircuits = circuits.filter((item) => String(item.level || '') === 'model');
+  const providersWithCircuits = uniqueStrings(circuits.map((item) => item.provider));
   return renderSettingsPanel(
     'Circuits',
     'Provider-level and model-level circuit breaker state, plus the shared Wormsoft guard.',
@@ -1721,17 +2013,38 @@ function renderCircuitStatePanel(payload) {
       <div class="settings-stack">
         ${renderSettingsCells([
           { label: 'Wormsoft guard', value: wormsoftGuard.quarantined ? 'quarantined' : 'clear', meta: wormsoftGuard.quarantine_until ? `Until ${formatTime(wormsoftGuard.quarantine_until * 1000)}` : 'No provider-level Wormsoft quarantine right now.' },
+          { label: 'Open circuits', value: String(circuits.length), meta: 'Total open provider/model circuits considered by runtime routing.' },
+          { label: 'Provider circuits', value: String(providerCircuits.length), meta: 'Provider-level breakers opened by repeated failures or quota pressure.' },
+          { label: 'Model circuits', value: String(modelCircuits.length), meta: 'Model-level breakers opened for a specific provider/model pair.' },
+          { label: 'Providers impacted', value: String(providersWithCircuits.length), meta: 'Distinct providers currently carrying an open circuit.' },
+          { label: 'Guard release', value: wormsoftGuard.quarantine_until ? settingsRelativeDuration(wormsoftGuard.quarantine_until) : '-', meta: 'Relative time until the current Wormsoft quarantine expires.' },
         ])}
         ${renderSettingsTable(
-          ['Level', 'Provider', 'Model', 'State', 'Reason'],
+          ['Level', 'Provider', 'Model', 'State', 'Reason', 'Until', 'Failures', 'Last error'],
           circuits.map((item) => [
             escapeHtml(String(item.level || '-')),
             escapeHtml(String(item.provider || '-')),
             `<span class="mono">${escapeHtml(String(item.model || '-'))}</span>`,
-            escapeHtml(String(item.state || '-')),
+            settingsPill(String(item.state || '-'), settingsToneForStatus(item.state || 'unknown')),
             escapeHtml(String(item.reason || '-')),
+            item.opened_until ? `${formatTime(item.opened_until * 1000)} (${settingsRelativeDuration(item.opened_until)})` : '-',
+            formatCompactNumber(Number(item.failure_count || 0)),
+            escapeHtml(String(item.last_error_category || '-')),
           ]),
           'No open provider/model circuits right now.',
+        )}
+        <div class="settings-note">Circuit pressure by provider</div>
+        ${renderSettingsTable(
+          ['Provider', 'Open circuits', 'Levels'],
+          providersWithCircuits.map((provider) => {
+            const items = circuits.filter((item) => String(item.provider || '') === provider);
+            return [
+              escapeHtml(provider),
+              formatCompactNumber(items.length),
+              escapeHtml(uniqueStrings(items.map((item) => item.level)).join(', ') || '-'),
+            ];
+          }),
+          'No provider circuit pressure right now.',
         )}
         ${renderSettingsRawDetails(payload, 'Raw circuit payload')}
       </div>
@@ -1741,6 +2054,14 @@ function renderCircuitStatePanel(payload) {
 
 function renderRoutingEventsPanel(payload) {
   const events = Array.isArray(payload?.events) ? payload.events : [];
+  const summarized = events.map(summarizeRoutingEvent);
+  const executionEvents = summarized.filter((item) => item.event === 'routing_execution_finished');
+  const shadowGroups = uniqueStrings(summarized.map((item) => item.shadowGroupId));
+  const shadowResults = summarized.filter((item) => item.event === 'routing_shadow_execution_finished');
+  const avgLatency = executionEvents.length
+    ? executionEvents.reduce((sum, item) => sum + Number(item.latencyMs || 0), 0) / executionEvents.length
+    : 0;
+  const errorCount = summarized.filter((item) => String(item.status || '').toLowerCase() === 'error').length;
   return renderSettingsPanel(
     'Routing events',
     'Recent routing_decision_made and routing_execution_finished events mirrored from runtime workers.',
@@ -1748,14 +2069,40 @@ function renderRoutingEventsPanel(payload) {
     events.length ? 'ok' : 'pending',
     `
       <div class="settings-stack">
+        ${renderSettingsCells([
+          { label: 'Events loaded', value: String(events.length), meta: 'Most recent control-plane routing events mirrored from Redis.' },
+          { label: 'Execution errors', value: String(errorCount), meta: 'Recent execution receipts with status=error.' },
+          { label: 'Shadow groups', value: String(shadowGroups.length), meta: 'Distinct shadow evaluation groups seen in the current sample.' },
+          { label: 'Avg primary latency', value: `${formatCompactNumber(avgLatency)} ms`, meta: 'Average latency across recent routing_execution_finished events.' },
+        ])}
         ${renderSettingsTable(
-          ['Event', 'Service', 'Timestamp'],
-          events.map((item) => [
+          ['Event', 'Task', 'Route', 'Role', 'Status', 'Detail', 'Timestamp'],
+          summarized.map((item) => [
             escapeHtml(String(item.event || '-')),
-            escapeHtml(String(item.service || '-')),
+            escapeHtml(String(item.task || '-')),
+            String(item.route || '').includes('<span ')
+              ? item.route
+              : `<span class="mono">${escapeHtml(String(item.route || '-'))}</span>`,
+            escapeHtml(String(item.role || '-')),
+            settingsPill(String(item.status || 'unknown'), settingsToneForStatus(item.status || 'unknown')),
+            escapeHtml(String(item.detail || '-')),
             item.timestamp ? formatTime(item.timestamp * 1000) : '-',
           ]),
           'No routing events in Redis yet.',
+        )}
+        <div class="settings-note">Shadow comparison traces</div>
+        ${renderSettingsTable(
+          ['Group', 'Primary route', 'Shadow route', 'Status match', 'Provider match', 'Δ latency', 'Δ cost'],
+          shadowResults.map((item) => [
+            `<span class="mono">${escapeHtml(String(item.shadowGroupId || '-'))}</span>`,
+            `<span class="mono">${escapeHtml(String(item.shadowPrimaryRoute || '-'))}</span>`,
+            `<span class="mono">${escapeHtml(String(item.shadowRoute || '-'))}</span>`,
+            settingsPill(item.statusMatch ? 'match' : 'mismatch', item.statusMatch ? 'ok' : 'warn'),
+            settingsPill(item.providerMatch ? 'match' : 'mismatch', item.providerMatch ? 'ok' : 'warn'),
+            item.latencyDeltaMs == null ? '-' : `${formatCompactNumber(item.latencyDeltaMs)} ms`,
+            item.costDelta == null ? '-' : formatCompactNumber(item.costDelta),
+          ]),
+          'No completed shadow comparisons in the current event window.',
         )}
         ${renderSettingsRawDetails(payload, 'Raw routing events')}
       </div>
@@ -2873,6 +3220,11 @@ async function loadSettings() {
     const balancePayload = balanceData || { available: false, status: 'unavailable', balance: [] };
     settingsRuntimeSnapshot = data.runtime || {};
     wormsoftCatalogSnapshot = wormsoftCatalog || { available: false, status: 'unavailable', key_present: false, models: [] };
+    settingsControlPlanePolicySnapshot = data.control_plane_policy || {};
+    settingsProviderStateSnapshot = providerState || { providers: [] };
+    settingsBudgetStateSnapshot = budgetState || { budgets: [] };
+    settingsCircuitStateSnapshot = circuitState || { circuits: [], wormsoft_guard: {} };
+    settingsRoutingEventsSnapshot = routingEvents || { events: [] };
     settingsDetail.innerHTML = renderSettingsSnapshot(
       data,
       balancePayload,
@@ -2887,6 +3239,7 @@ async function loadSettings() {
       circuitState || { circuits: [], wormsoft_guard: {} },
       routingEvents || { events: [] },
     );
+    syncControlPlaneSimulationFamily();
   } finally {
     if (refreshBtn) {
       refreshBtn.disabled = false;
