@@ -17,6 +17,16 @@
   [server-git-workflow.md](./server-git-workflow.md)
 - Remaining operational follow-ups for the multi-LLM rollout:
   [TODO_MULTI_LLM_ROLLOUT.md](./TODO_MULTI_LLM_ROLLOUT.md)
+- Единый аудит оркестратора LLM (as-is/to-be, best practices, roadmap):
+  [llm-orchestrator-audit.md](./llm-orchestrator-audit.md)
+- Operational runbook по классам LLM-alerts (trigger/diagnosis/action/rollback):
+  [runbooks/llm-orchestrator-alerts.md](./runbooks/llm-orchestrator-alerts.md)
+- SLI/SLO для text/vision/embeddings и error-budget эскалации:
+  [sre/llm-orchestrator-sli-slo.md](./sre/llm-orchestrator-sli-slo.md)
+- Шаблон еженедельного audit snapshot (включая delivery и post-deploy verification):
+  [audit/llm-orchestrator-weekly-snapshot.md](./audit/llm-orchestrator-weekly-snapshot.md)
+- Обязательный Context7-gate для policy/routing изменений:
+  [llm-orchestrator-context7-gate.md](./llm-orchestrator-context7-gate.md)
 - Runtime mode overlays:
   [runtime-modes.md](./runtime-modes.md)
 - Workspace hygiene and temporary-file policy live in:

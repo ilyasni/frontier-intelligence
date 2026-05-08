@@ -126,6 +126,33 @@ groups:
           summary: "Wormsoft local throttle events are spiking"
           description: "Local throttle events for Wormsoft (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Check pacing, guard settings, and credit-window caps."
 
+      - alert: FrontierProviderOutageFallbackBurst
+        expr: sum by (service, from_provider, task, reason) (increase(frontier_llm_fallbacks_total{service="worker",reason=~"provider_unavailable|upstream_5xx|timeout|connection"}[15m])) >= 10
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Provider outage fallback burst is rising"
+          description: "Fallbacks likely caused by provider outage for {{ $labels.from_provider }}/{{ $labels.task }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Validate upstream health before changing local throttle settings."
+
+      - alert: FrontierLocalThrottleVsOutageMismatch
+        expr: |
+          (
+            sum by (service) (increase(frontier_llm_throttle_events_total{service="worker"}[15m]))
+            /
+            clamp_min(sum by (service) (increase(frontier_llm_fallbacks_total{service="worker",reason=~"provider_unavailable|upstream_5xx"}[15m])), 1)
+          ) >= 5
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Local throttle dominates outage-like fallback profile"
+          description: "Throttle events are much higher than outage-like fallback events for {{ $labels.service }}. Re-check classification (`throttled_local` vs upstream outage), pacing, and circuit policy."
+
       - alert: FrontierOpenRouterRateLimitBurst
         expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="openrouter"}[10m])) >= 3
         for: 5m
