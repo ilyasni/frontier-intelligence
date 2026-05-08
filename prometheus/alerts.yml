@@ -115,6 +115,17 @@ groups:
           summary: "Wormsoft relevance gray-zone escalations are spiking"
           description: "Quality escalations from Wormsoft for {{ $labels.service }}/{{ $labels.task }} exceeded 30% with at least 30 events in 1 hour and persisted for 15 minutes. This usually means sustained gray-zone or ambiguous relevance cases and can materially raise Giga spend."
 
+      - alert: FrontierWormsoftLocalThrottleBurst
+        expr: sum by (service, reason) (increase(frontier_llm_throttle_events_total{service="worker",provider="wormsoft"}[15m])) >= 20
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Wormsoft local throttle events are spiking"
+          description: "Local throttle events for Wormsoft (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Check pacing, guard settings, and credit-window caps."
+
       - alert: FrontierOpenRouterRateLimitBurst
         expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="openrouter"}[10m])) >= 3
         for: 5m

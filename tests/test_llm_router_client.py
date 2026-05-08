@@ -444,6 +444,12 @@ def _settings(embed_dim: int = 2560, **overrides):
         llm_runtime_provider_polza_daily_request_limit=0,
         llm_runtime_provider_gigachat_daily_request_soft_cap=0,
         llm_runtime_provider_gigachat_daily_request_limit=0,
+        wormsoft_credit_throttle_enabled=False,
+        wormsoft_credit_window_seconds=18000,
+        wormsoft_credit_window_limit=500000.0,
+        wormsoft_credit_soft_cap_ratio=0.8,
+        wormsoft_credit_hard_cap_ratio=0.98,
+        wormsoft_credit_soft_cap_shadow_ratio=0.7,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -925,5 +931,42 @@ async def test_llm_router_skips_openrouter_when_published_free_daily_cap_reached
     assert response.provider == "polza"
     assert any(
         item.get("reason") == "published_hard_cap:openrouter_free_daily"
+        for item in client.last_routing_decision.skipped_candidates
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_router_skips_wormsoft_on_credit_soft_cap(monkeypatch) -> None:
+    redis = _FakeRedis()
+    settings = _settings(
+        wormsoft_credit_throttle_enabled=True,
+        wormsoft_credit_window_limit=500000.0,
+        wormsoft_credit_soft_cap_ratio=0.8,
+    )
+    monkeypatch.setattr("worker.llm_router_client.get_settings", lambda: settings)
+    _install_dynamic_openrouter(monkeypatch, model_id=None)
+    manager = ProviderBudgetManager(redis=redis, settings=settings)
+    await manager.add_credit_usage(
+        provider="wormsoft",
+        credits=410000.0,
+        window_seconds=18000,
+    )
+    client = LLMRouterClient(
+        redis=redis,
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=True),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=False),
+        openrouter_text_client=_FakeOpenRouterText(available=False),
+        polza_text_client=_FakePolzaText(available=True),
+        openrouter_guard=_FakeGuard((False, "guard_rpd_soft_cap")),
+        openrouter_text_guard=_FakeGuard((False, "guard_rpd_soft_cap")),
+    )
+
+    response = await client.chat(system="s", user="u", task="relevance")
+
+    assert response.provider == "polza"
+    assert any(
+        item.get("reason") == "wormsoft_credit_soft_cap"
         for item in client.last_routing_decision.skipped_candidates
     )

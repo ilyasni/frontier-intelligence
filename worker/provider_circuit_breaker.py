@@ -17,6 +17,7 @@ from shared.llm_control_plane import (
     ERROR_QUOTA_EXHAUSTED,
     ERROR_RATE_LIMITED,
     ERROR_TIMEOUT,
+    ERROR_THROTTLED_LOCAL,
     ERROR_UPSTREAM_5XX,
     ProviderError,
 )
@@ -144,6 +145,8 @@ class ProviderCircuitBreaker:
         return count
 
     def _cooldown_for_error(self, error: ProviderError, level: str) -> float:
+        if error.category == ERROR_THROTTLED_LOCAL:
+            return 0.0
         if error.category in {ERROR_RATE_LIMITED, ERROR_QUOTA_EXHAUSTED}:
             return float(self._settings.llm_circuit_rate_limit_quarantine_sec or 120)
         if error.category in {ERROR_PROVIDER_UNAVAILABLE, ERROR_UPSTREAM_5XX}:

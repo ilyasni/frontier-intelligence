@@ -28,11 +28,12 @@ from shared.llm_control_plane import (
     ERROR_QUOTA_EXHAUSTED,
     ERROR_RATE_LIMITED,
     ERROR_TIMEOUT,
+    ERROR_THROTTLED_LOCAL,
     ERROR_UNKNOWN,
     ERROR_UPSTREAM_5XX,
     ProviderError,
 )
-from shared.metrics import note_llm_request, note_llm_usage, note_rate_limit_event
+from shared.metrics import note_llm_request, note_llm_throttle_event, note_llm_usage, note_rate_limit_event
 from worker.llm_types import GigaChatResponse, usage_from_openai_response
 from worker.token_budget import BudgetedText, fit_text_to_token_budget
 from worker.wormsoft_guard import WormsoftSharedGuard
@@ -73,6 +74,15 @@ class WormsoftTextError(RuntimeError):
 
 
 class WormsoftTextClient:
+    @staticmethod
+    def _guard_reason_to_error(reason: str) -> tuple[str, bool]:
+        normalized = str(reason or "").strip().lower()
+        if normalized == "guard_interval":
+            return ERROR_THROTTLED_LOCAL, True
+        if normalized == "guard_quarantine":
+            return ERROR_THROTTLED_LOCAL, False
+        return ERROR_PROVIDER_UNAVAILABLE, False
+
     """OpenAI-compatible Wormsoft client for text tasks."""
 
     def __init__(self, redis=None, *, service_name: str = "worker"):
@@ -224,11 +234,13 @@ class WormsoftTextClient:
     ) -> Any:
         allowed, guard_reason = await self._guard.reserve_slot()
         if not allowed:
+            category, retryable = self._guard_reason_to_error(guard_reason)
+            note_llm_throttle_event(self._service_name, "wormsoft", guard_reason)
             raise WormsoftTextError(
                 f"wormsoft_guard_blocked: {guard_reason}",
                 reason=guard_reason,
-                category=ERROR_PROVIDER_UNAVAILABLE,
-                retryable=False,
+                category=category,
+                retryable=retryable,
             )
 
         await self._acquire_request_slot()

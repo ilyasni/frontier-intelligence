@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shared.llm_control_plane import ERROR_CONNECTION, ProviderError
+from shared.llm_control_plane import ERROR_CONNECTION, ERROR_THROTTLED_LOCAL, ProviderError
 from worker.provider_circuit_breaker import ProviderCircuitBreaker
 
 
@@ -57,3 +57,21 @@ async def test_provider_circuit_breaker_opens_model_circuit_after_burst() -> Non
 
     assert allowed is False
     assert reason == "wormsoft_connection"
+
+
+@pytest.mark.asyncio
+async def test_provider_circuit_breaker_ignores_local_throttle_errors() -> None:
+    breaker = ProviderCircuitBreaker(redis=_FakeRedis(), settings=_settings())
+    error = ProviderError(
+        provider="wormsoft",
+        category=ERROR_THROTTLED_LOCAL,
+        message="guard interval",
+        retryable=True,
+        reason="guard_interval",
+    )
+
+    await breaker.record_failure("wormsoft", "wormsoft/agent/medium", error)
+    allowed, reason = await breaker.reserve("wormsoft", "wormsoft/agent/medium")
+
+    assert allowed is True
+    assert reason == "ok"

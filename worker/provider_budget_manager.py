@@ -45,6 +45,17 @@ class ProviderBudgetManager:
         return self._managed_redis
 
     @staticmethod
+    def _credit_window_label(window_seconds: int) -> str:
+        now = int(time.time())
+        size = max(60, int(window_seconds or 3600))
+        return str(now // size)
+
+    @staticmethod
+    def _credit_window_key(provider: str, *, window_seconds: int) -> str:
+        normalized_provider = normalize_provider(provider)
+        return f"llm:budget:credit_window:{normalized_provider}:{window_seconds}:{ProviderBudgetManager._credit_window_label(window_seconds)}"
+
+    @staticmethod
     def _runtime_budget_key(
         provider: str,
         *,
@@ -255,6 +266,47 @@ class ProviderBudgetManager:
                 pass
         for method_name, args in commands:
             await getattr(redis, method_name)(*args)
+
+    async def add_credit_usage(
+        self,
+        *,
+        provider: str,
+        credits: float,
+        window_seconds: int,
+    ) -> float:
+        redis = await self._client()
+        if redis is None:
+            return 0.0
+        key = self._credit_window_key(provider, window_seconds=window_seconds)
+        ttl = max(2 * max(60, int(window_seconds or 3600)), 120)
+        try:
+            total = await redis.hincrbyfloat(key, "used_credits", float(max(0.0, credits or 0.0)))
+            await redis.hset(
+                key,
+                mapping={
+                    "provider": normalize_provider(provider),
+                    "window_seconds": str(max(60, int(window_seconds or 3600))),
+                    "updated_at": str(time.time()),
+                },
+            )
+            await redis.expire(key, ttl)
+            return float(total or 0.0)
+        except Exception:
+            return 0.0
+
+    async def credit_window_usage(self, *, provider: str, window_seconds: int) -> float:
+        redis = await self._client()
+        if redis is None:
+            return 0.0
+        key = self._credit_window_key(provider, window_seconds=window_seconds)
+        try:
+            raw = await redis.hgetall(key)
+        except Exception:
+            return 0.0
+        try:
+            return float((raw or {}).get("used_credits") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     async def _scope_snapshot(
         self,

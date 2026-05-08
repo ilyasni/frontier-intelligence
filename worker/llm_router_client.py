@@ -33,6 +33,7 @@ from shared.llm_control_plane import (
     fallback_allowed_for_mode,
     normalize_policy_mode,
     task_family_for_task as control_plane_family_for_task,
+    ERROR_THROTTLED_LOCAL,
 )
 from shared.llm_routing import (
     PROVIDER_GIGACHAT,
@@ -44,7 +45,7 @@ from shared.llm_routing import (
     effective_llm_routing,
     normalize_provider,
 )
-from shared.metrics import note_llm_cost, note_llm_fallback, note_openrouter_vision_fallback
+from shared.metrics import note_llm_cost, note_llm_fallback, note_llm_throttle_event, note_openrouter_vision_fallback
 from worker.gigachat_client import GigaChatClient, GigaChatResponse
 from worker.openrouter_client import OpenRouterVisionClient, OpenRouterVisionError
 from worker.openrouter_guard import OpenRouterFreeGuard, OpenRouterVisionGuard
@@ -1368,7 +1369,28 @@ class LLMRouterClient:
             cost_drift=finalized.cost_drift,
         )
         await self._budget_manager.record_execution_receipt(finalized)
+        await self._record_wormsoft_credit_window(finalized)
         return finalized
+
+    async def _record_wormsoft_credit_window(self, receipt: ExecutionReceipt) -> None:
+        if normalize_provider(receipt.actual_provider) != PROVIDER_WORMSOFT:
+            return
+        if not bool(getattr(self._settings, "wormsoft_credit_throttle_enabled", False)):
+            return
+        credits = float(receipt.actual_cost or 0.0)
+        if credits <= 0.0:
+            return
+        try:
+            await self._budget_manager.add_credit_usage(
+                provider=PROVIDER_WORMSOFT,
+                credits=credits,
+                window_seconds=max(
+                    60,
+                    int(getattr(self._settings, "wormsoft_credit_window_seconds", 18000) or 18000),
+                ),
+            )
+        except Exception:
+            logger.debug("wormsoft_credit_window_record_failed", exc_info=True)
 
     async def _publish_shadow_plan(
         self,
@@ -2026,7 +2048,10 @@ class LLMRouterClient:
         elif "connection" in reason or "connect" in reason:
             category = "connection"
             retryable = True
-        elif "unavailable" in reason or "guard_" in reason:
+        elif "guard_interval" in reason or "guard_quarantine" in reason:
+            category = ERROR_THROTTLED_LOCAL
+            retryable = "guard_interval" in reason
+        elif "unavailable" in reason:
             category = "provider_unavailable"
 
         return ProviderError(
@@ -2056,6 +2081,13 @@ class LLMRouterClient:
         task_family: str,
         execution_role: str = EXECUTION_ROLE_PRIMARY,
     ) -> tuple[bool, str]:
+        wormsoft_allowed, wormsoft_reason = await self._allow_wormsoft_credit_budget(
+            provider=provider,
+            execution_role=execution_role,
+        )
+        if not wormsoft_allowed:
+            note_llm_throttle_event(self._service_name, normalize_provider(provider), wormsoft_reason)
+            return False, wormsoft_reason
         allowed, reason, _ = await self._budget_manager.allow_reservation(
             provider=provider,
             model=model,
@@ -2063,6 +2095,45 @@ class LLMRouterClient:
             execution_role=execution_role,
         )
         return allowed, reason
+
+    async def _allow_wormsoft_credit_budget(
+        self,
+        *,
+        provider: str,
+        execution_role: str,
+    ) -> tuple[bool, str]:
+        if normalize_provider(provider) != PROVIDER_WORMSOFT:
+            return True, "ok"
+        if not bool(getattr(self._settings, "wormsoft_credit_throttle_enabled", False)):
+            return True, "ok"
+        window_seconds = max(
+            60,
+            int(getattr(self._settings, "wormsoft_credit_window_seconds", 18000) or 18000),
+        )
+        limit = float(getattr(self._settings, "wormsoft_credit_window_limit", 500000.0) or 0.0)
+        if limit <= 0:
+            return True, "ok"
+        soft_ratio = float(getattr(self._settings, "wormsoft_credit_soft_cap_ratio", 0.8) or 0.8)
+        hard_ratio = float(getattr(self._settings, "wormsoft_credit_hard_cap_ratio", 0.98) or 0.98)
+        if execution_role == EXECUTION_ROLE_SHADOW:
+            soft_ratio = float(
+                getattr(self._settings, "wormsoft_credit_soft_cap_shadow_ratio", soft_ratio) or soft_ratio
+            )
+        soft_cap = max(0.0, min(limit, limit * max(0.0, soft_ratio)))
+        hard_cap = max(0.0, min(limit, limit * max(0.0, hard_ratio)))
+        try:
+            used = await self._budget_manager.credit_window_usage(
+                provider=PROVIDER_WORMSOFT,
+                window_seconds=window_seconds,
+            )
+        except Exception:
+            logger.debug("wormsoft_credit_window_read_failed", exc_info=True)
+            return True, "ok"
+        if hard_cap > 0 and used >= hard_cap:
+            return False, "wormsoft_credit_hard_cap"
+        if soft_cap > 0 and used >= soft_cap:
+            return False, "wormsoft_credit_soft_cap"
+        return True, "ok"
 
     async def _allow_published_quota(
         self,

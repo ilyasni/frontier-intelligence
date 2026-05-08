@@ -61,6 +61,11 @@ try:
             "reason",
         ],
     )
+    LLM_THROTTLE_EVENTS_TOTAL = Counter(
+        "frontier_llm_throttle_events_total",
+        "Total local runtime throttle events by provider and reason.",
+        ["service", "provider", "reason"],
+    )
     LLM_COST_ESTIMATE_TOTAL = Counter(
         "frontier_llm_cost_estimate_total",
         "Cumulative estimated LLM cost by provider and task family.",
@@ -333,6 +338,7 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     LLM_BILLABLE_TOKENS_TOTAL = None
     LLM_REQUESTS_TOTAL = None
     LLM_FALLBACKS_TOTAL = None
+    LLM_THROTTLE_EVENTS_TOTAL = None
     LLM_COST_ESTIMATE_TOTAL = None
     LLM_COST_ACTUAL_TOTAL = None
     LLM_COST_DRIFT_TOTAL = None
@@ -486,6 +492,15 @@ def note_llm_fallback(
             to_provider=to_provider,
             to_model=to_model,
             reason=reason,
+        ).inc()
+
+
+def note_llm_throttle_event(service: str, provider: str, reason: str) -> None:
+    if LLM_THROTTLE_EVENTS_TOTAL is not None:
+        LLM_THROTTLE_EVENTS_TOTAL.labels(
+            service=service,
+            provider=provider,
+            reason=str(reason or "unknown"),
         ).inc()
 
 

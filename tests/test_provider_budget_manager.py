@@ -163,3 +163,18 @@ async def test_provider_budget_manager_tracks_cost_aggregates() -> None:
     assert provider_window.cost_drift_total == 2.5
     assert model_window.model == "wormsoft/agent/medium"
     assert role_window.execution_role == "primary"
+
+
+@pytest.mark.asyncio
+async def test_provider_budget_manager_tracks_credit_window_usage() -> None:
+    manager = ProviderBudgetManager(redis=_FakeRedis(), settings=_settings())
+
+    total = await manager.add_credit_usage(
+        provider="wormsoft",
+        credits=125.5,
+        window_seconds=18000,
+    )
+    usage = await manager.credit_window_usage(provider="wormsoft", window_seconds=18000)
+
+    assert total == pytest.approx(125.5)
+    assert usage == pytest.approx(125.5)
