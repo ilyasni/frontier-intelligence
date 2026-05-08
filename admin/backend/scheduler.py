@@ -28,6 +28,7 @@ from admin.backend.services.pipeline_jobs import (
 )
 from admin.backend.services.trend_alerts import run_urgent_trend_alerts
 from admin.backend.services.wormsoft_limits import fetch_wormsoft_limits
+from admin.backend.services.xray_health import run_xray_health_check
 from shared.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ _openrouter_key_lock = asyncio.Lock()
 _openrouter_health_lock = asyncio.Lock()
 _openrouter_reconcile_lock = asyncio.Lock()
 _trend_alert_lock = asyncio.Lock()
+_xray_health_lock = asyncio.Lock()
 _manual_jobs_table_ready = False
 
 
@@ -702,6 +704,26 @@ async def scheduled_urgent_trend_alerts() -> dict[str, Any]:
         return result
 
 
+async def scheduled_xray_health_check() -> dict[str, Any]:
+    if _xray_health_lock.locked():
+        logger.warning("Skipping xray_health_check: previous run is still in progress")
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "job_name": "xray_health_check",
+        }
+    async with _xray_health_lock:
+        result = await run_xray_health_check()
+        logger.info(
+            "Completed xray_health_check status=%s failed=%s/%s streak=%s",
+            result.get("status"),
+            result.get("targets_failed"),
+            result.get("targets_total"),
+            result.get("streak"),
+        )
+        return result
+
+
 def get_scheduler() -> AsyncIOScheduler | None:
     return _scheduler
 
@@ -843,6 +865,16 @@ def _build_scheduler() -> AsyncIOScheduler:
         jitter=min(60, settings.admin_scheduler_max_jitter_seconds),
         **common_kwargs,
     )
+    scheduler.add_job(
+        scheduled_xray_health_check,
+        CronTrigger.from_crontab(
+            settings.admin_xray_health_cron,
+            timezone=timezone,
+        ),
+        id="xray_health_check",
+        jitter=min(10, settings.admin_scheduler_max_jitter_seconds),
+        **common_kwargs,
+    )
     return scheduler
 
 
@@ -863,6 +895,7 @@ async def scheduler_lifespan():
     await _run_startup_step("refresh_openrouter_catalog", scheduled_refresh_openrouter_catalog)
     await _run_startup_step("refresh_openrouter_key", scheduled_refresh_openrouter_key)
     await _run_startup_step("probe_openrouter_health", scheduled_probe_openrouter_health)
+    await _run_startup_step("xray_health_check", scheduled_xray_health_check)
     await _run_startup_step(
         "reconcile_openrouter_state",
         scheduled_reconcile_openrouter_state,
@@ -873,7 +906,8 @@ async def scheduler_lifespan():
             "cluster_cron=%s, signal_cron=%s, gigachat_balance_cron=%s, "
             "wormsoft_limits_cron=%s, openrouter_catalog_cron=%s, "
             "openrouter_key_cron=%s, openrouter_health_cron=%s, "
-            "openrouter_reconcile_cron=%s, trend_alert_cron=%s"
+            "openrouter_reconcile_cron=%s, trend_alert_cron=%s, "
+            "xray_health_cron=%s"
         ),
         settings.admin_scheduler_timezone,
         settings.admin_source_score_refresh_cron,
@@ -886,6 +920,7 @@ async def scheduler_lifespan():
         settings.admin_openrouter_health_refresh_cron,
         settings.admin_openrouter_reconcile_cron,
         settings.admin_trend_alert_cron,
+        settings.admin_xray_health_cron,
     )
     try:
         yield

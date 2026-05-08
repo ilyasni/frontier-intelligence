@@ -14,6 +14,10 @@ from admin.backend.services.telegram_alerts import (
     send_telegram_alert_message,
     telegram_alerts_enabled,
 )
+from admin.backend.services.xray_health import (
+    get_xray_health_snapshot,
+    run_xray_health_check,
+)
 from shared.config import get_settings
 
 router = APIRouter()
@@ -165,3 +169,13 @@ async def alertmanager_webhook(request: Request) -> dict[str, Any]:
         "alerts": len(alerts),
         "receiver": payload.get("receiver"),
     }
+
+
+@router.get("/xray/health")
+async def xray_health_snapshot() -> dict[str, Any]:
+    return await get_xray_health_snapshot()
+
+
+@router.post("/xray/health/run")
+async def run_xray_health() -> dict[str, Any]:
+    return await run_xray_health_check()

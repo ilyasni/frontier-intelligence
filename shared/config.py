@@ -114,8 +114,28 @@ class Settings(BaseSettings):
         1,
         alias="OPENROUTER_HEALTH_PROBE_MAX_TOKENS",
     )
+    openrouter_health_probe_batch_size: int = Field(
+        8,
+        alias="OPENROUTER_HEALTH_PROBE_BATCH_SIZE",
+    )
     openrouter_picker_sticky_sec: int = Field(600, alias="OPENROUTER_PICKER_STICKY_SEC")
     openrouter_rpd_safety_buffer: float = Field(0.1, alias="OPENROUTER_RPD_SAFETY_BUFFER")
+    openrouter_max_simultaneous_requests: int = Field(
+        4,
+        alias="OPENROUTER_MAX_SIMULTANEOUS_REQUESTS",
+    )
+    openrouter_min_request_interval_ms: int = Field(
+        100,
+        alias="OPENROUTER_MIN_REQUEST_INTERVAL_MS",
+    )
+    openrouter_fail_safe_enabled: bool = Field(
+        True,
+        alias="OPENROUTER_FAIL_SAFE_ENABLED",
+    )
+    openrouter_fail_safe_stale_sec: int = Field(
+        1800,
+        alias="OPENROUTER_FAIL_SAFE_STALE_SEC",
+    )
     openrouter_quarantine_5xx_threshold: int = Field(
         3,
         alias="OPENROUTER_QUARANTINE_5XX_THRESHOLD",
@@ -363,6 +383,10 @@ class Settings(BaseSettings):
         "25 * * * *",
         alias="ADMIN_TREND_ALERT_CRON",
     )
+    admin_xray_health_cron: str = Field(
+        "*/5 * * * *",
+        alias="ADMIN_XRAY_HEALTH_CRON",
+    )
     admin_scheduler_misfire_grace_seconds: int = Field(
         1800,
         alias="ADMIN_SCHEDULER_MISFIRE_GRACE_SECONDS",
@@ -464,6 +488,33 @@ class Settings(BaseSettings):
         alias="REDIS_STREAM_OLDEST_PENDING_AGE_ALERT_SECONDS",
     )
     prometheus_url: str = Field("http://prometheus:9090", alias="PROMETHEUS_URL")
+    xray_probe_proxy_url: str = Field("socks5://xray:10808", alias="XRAY_PROBE_PROXY_URL")
+    xray_probe_targets: list[str] = Field(
+        default=[
+            "https://medium.com/feed/tag/future",
+            "https://news.google.com/rss",
+            "https://www.mobilityhouse.com/usa_en/our-company/newsroom",
+        ],
+        alias="XRAY_PROBE_TARGETS",
+    )
+    xray_degradation_failure_ratio: float = Field(0.66, alias="XRAY_DEGRADATION_FAILURE_RATIO")
+    xray_degradation_consecutive_threshold: int = Field(
+        2,
+        alias="XRAY_DEGRADATION_CONSECUTIVE_THRESHOLD",
+    )
+    xray_alert_cooldown_seconds: int = Field(1800, alias="XRAY_ALERT_COOLDOWN_SECONDS")
+    xray_auto_remediation_enabled: bool = Field(
+        False,
+        alias="XRAY_AUTO_REMEDIATION_ENABLED",
+    )
+    xray_auto_remediation_webhook_url: str = Field(
+        "",
+        alias="XRAY_AUTO_REMEDIATION_WEBHOOK_URL",
+    )
+    xray_auto_remediation_cooldown_seconds: int = Field(
+        1800,
+        alias="XRAY_AUTO_REMEDIATION_COOLDOWN_SECONDS",
+    )
 
     @property
     def configured_embedding_dim_matches_model(self) -> bool:

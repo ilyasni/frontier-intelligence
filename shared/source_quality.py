@@ -39,6 +39,78 @@ def normalize_optional_bool(raw: Any) -> bool | None:
     return bool(raw)
 
 
+def _parse_dt(raw: Any) -> datetime | None:
+    if isinstance(raw, datetime):
+        return raw
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _compute_operational_status(
+    *,
+    source_type: str,
+    recent_success_count: int,
+    recent_error_count: int,
+    last_run_status: str | None,
+    last_error_text: str,
+    last_seen_published_at: Any,
+) -> dict[str, Any]:
+    total_runs = recent_success_count + recent_error_count
+    error_rate = recent_error_count / max(total_runs, 1)
+    state = "healthy"
+    reason = "stable"
+    review_level = "none"
+    last_run_is_error = (last_run_status or "").lower() == "error"
+    text = (last_error_text or "").lower()
+
+    if recent_error_count >= 3 and (error_rate >= 0.25 or last_run_is_error):
+        state = "critical"
+        reason = "repeated_errors"
+        review_level = "urgent"
+    elif recent_error_count >= 1 and (error_rate >= 0.1 or last_run_is_error):
+        state = "degraded"
+        reason = "intermittent_errors"
+        review_level = "soon"
+
+    if any(token in text for token in ("telegram_username_unresolved", "resolveusernamerequest")):
+        state = "critical"
+        reason = "invalid_source_handle"
+        review_level = "urgent"
+    elif any(token in text for token in ("connection attempts failed", "connecttimeout", "name or service not known")):
+        if state != "critical":
+            state = "degraded"
+            reason = "network_or_dns"
+            review_level = "soon"
+
+    # Для HTTP-источников отдельно помечаем stale по дате последней публикации.
+    stale_days: int | None = None
+    seen_dt = _parse_dt(last_seen_published_at)
+    if seen_dt and source_type in {"rss", "web", "api"}:
+        if seen_dt.tzinfo is None:
+            seen_dt = seen_dt.replace(tzinfo=UTC)
+        stale_days = max(0, int((datetime.now(UTC) - seen_dt).total_seconds() // 86400))
+        if stale_days >= 120 and state in {"healthy", "degraded"}:
+            state = "stale"
+            reason = "no_new_items_long_time"
+            review_level = "planned"
+
+    return {
+        "state": state,
+        "reason": reason,
+        "review_level": review_level,
+        "error_rate_14d": round(error_rate, 4),
+        "recent_success_count": recent_success_count,
+        "recent_error_count": recent_error_count,
+        "last_seen_published_at": seen_dt.isoformat() if seen_dt else None,
+        "stale_days": stale_days,
+    }
+
+
 def recommend_content_mode(
     *,
     source_type: str,
@@ -161,6 +233,14 @@ def source_quality_payload(row: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
     )
+    operational_status = _compute_operational_status(
+        source_type=str(row.get("source_type") or ""),
+        recent_success_count=success_count,
+        recent_error_count=error_count,
+        last_run_status=row.get("last_run_status"),
+        last_error_text=str(row.get("last_error") or row.get("last_run_error_text") or ""),
+        last_seen_published_at=row.get("last_seen_published_at"),
+    )
     return {
         "source_authority": breakdown.authority,
         "source_score": breakdown.composite,
@@ -172,6 +252,7 @@ def source_quality_payload(row: dict[str, Any]) -> dict[str, Any]:
             "freshness": round(breakdown.freshness, 4),
         },
         "recommended_content_mode": recommendation,
+        "operational_status": operational_status,
         "quality_tier": (
             row.get("quality_tier")
             or ((row.get("extra") or {}).get("quality_tier") if isinstance(row.get("extra"), dict) else None)
