@@ -157,6 +157,12 @@ flowchart TD
 Почему:
 - Меньше jitter по латентности и стабильнее качество ответов.
 
+### 6.5 Context7 references used for alignment
+
+- OpenRouter docs: ordered model fallbacks, free-tier limitations, key snapshot semantics (`/api/v1/key`) и fail-safe при stale catalog/key.
+- LangChain docs: retry для transient failures и fallback для provider/model unavailability как отдельные контуры.
+- Для текущего rollout это зафиксировано как gate: policy precedence, deterministic fallback order, hard limits и freshness checks.
+
 ## 7) Целевая модель (To-Be)
 
 ### 7.1 Policy profile
@@ -179,6 +185,19 @@ flowchart TD
 | Local throttle burst | Увеличить pacing headroom / monitor mode | `frontier_llm_throttle_events_total` | Вернуть предыдущее pacing значение |
 | Cost drift рост | Усилить budget caps и fallback gating | `frontier_llm_finops_runtime_drift_total` | Откат к прошлым cap ratio |
 | Catalog stale | Переключить на trusted static route | snapshot freshness alerts | Вернуть dynamic picker после восстановления |
+
+### 7.3 Strategy target vs runtime enforced now
+
+`Strategy target`
+- `text_generation`: `wormsoft -> openrouter -> polza -> gigachat`.
+- `vision_generation`: `wormsoft -> openrouter -> polza -> gigachat` с capability-aware skip, если провайдер в runtime не поддерживает vision.
+- `embeddings`: single-provider профиль в текущем релизе; multi-provider switch вынесен в deferred TODO.
+
+`Runtime enforced now`
+- Worker читает persisted v2 policy из Redis (`frontier:runtime:llm_control_plane_policy_v2`) и валидирует `RoutingPolicyV2`.
+- При невалидном payload применяется fallback на `default_routing_policy_v2`; источник фиксируется в routing events (`db_policy` / `default_policy` / `invalid_policy_fallback`).
+- Для `text_generation` и `vision_generation` кандидаты нормализуются в каноническом порядке `wormsoft -> openrouter -> polza -> gigachat` до mode/circuit/quota фильтров.
+- Для `embeddings` cost в FinOps заполняется через billable-token attribution, чтобы убрать постоянный ноль в `estimated_cost_total`/`actual_cost_total`.
 
 ## 8) Runbook checks
 

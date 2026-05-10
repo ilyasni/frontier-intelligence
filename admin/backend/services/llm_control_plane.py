@@ -229,6 +229,49 @@ def _giga_provider_state(balance_payload: dict[str, Any]) -> ProviderStateSnapsh
     )
 
 
+def _polza_synthetic_models(settings: Any) -> list[ModelCapabilitySnapshot]:
+    """???????? ???????????? ???? ????????????: ???????? POLZA_VISION_MODEL ?????????????????? ?? ?????????????????? ??? ???????????????? vision ???? ?????? ???? ????????????.
+
+    ?????????? `simulate_routing_decision` ?????????????? ???????????? ???????????? ???????????????? ???? ?????????? ???????????? ?????? vision ??? capability_mismatch.
+    """
+    text_model = str(settings.polza_text_model or "").strip()
+    synthesis_model = str(settings.polza_synthesis_model or "").strip()
+    vision_model = str(settings.polza_vision_model or "").strip()
+    out: list[ModelCapabilitySnapshot] = []
+    if text_model:
+        vision_on_text = bool(vision_model and vision_model == text_model)
+        out.append(
+            ModelCapabilitySnapshot(
+                provider=PROVIDER_POLZA,
+                model=text_model,
+                supports_text_generation=True,
+                supports_vision_generation=vision_on_text,
+                input_modalities=["text", "image"] if vision_on_text else ["text"],
+                output_modalities=["text"],
+            )
+        )
+    if synthesis_model and synthesis_model != text_model:
+        out.append(
+            ModelCapabilitySnapshot(
+                provider=PROVIDER_POLZA,
+                model=synthesis_model,
+                supports_text_generation=True,
+            )
+        )
+    if vision_model and vision_model != text_model:
+        out.append(
+            ModelCapabilitySnapshot(
+                provider=PROVIDER_POLZA,
+                model=vision_model,
+                supports_text_generation=True,
+                supports_vision_generation=True,
+                input_modalities=["text", "image"],
+                output_modalities=["text"],
+            )
+        )
+    return out
+
+
 def _polza_provider_state() -> ProviderStateSnapshot:
     settings = get_settings()
     available = bool(settings.polza_api_key)
@@ -253,11 +296,7 @@ def _polza_provider_state() -> ProviderStateSnapshot:
             fetched_at=time.time(),
             source="synthetic",
             status="configured" if settings.polza_api_key else "missing_api_key",
-            models=[
-                ModelCapabilitySnapshot(provider=PROVIDER_POLZA, model=str(settings.polza_text_model or "").strip(), supports_text_generation=True),
-                ModelCapabilitySnapshot(provider=PROVIDER_POLZA, model=str(settings.polza_synthesis_model or "").strip(), supports_text_generation=True),
-                ModelCapabilitySnapshot(provider=PROVIDER_POLZA, model=str(settings.polza_vision_model or "").strip(), supports_text_generation=bool(settings.polza_vision_model), supports_vision_generation=bool(settings.polza_vision_model), input_modalities=["text", "image"] if settings.polza_vision_model else [], output_modalities=["text"] if settings.polza_vision_model else []),
-            ],
+            models=_polza_synthetic_models(settings),
         ),
         metadata={
             "text_model": settings.polza_text_model,
@@ -466,3 +505,4 @@ async def simulate_control_plane_route(
         "provider_states": provider_states_payload.get("providers", []),
         "circuits": circuits_payload.get("circuits", []),
     }
+

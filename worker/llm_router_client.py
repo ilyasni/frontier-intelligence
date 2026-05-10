@@ -10,6 +10,7 @@ from typing import Any
 
 from shared.config import get_settings
 from shared.llm_control_plane import (
+    CONTROL_PLANE_POLICY_REDIS_KEY,
     EXECUTION_ROLE_PRIMARY,
     EXECUTION_ROLE_SHADOW,
     POLICY_MODE_DEGRADED,
@@ -20,6 +21,7 @@ from shared.llm_control_plane import (
     ProviderExecutionRequest,
     RoutingCandidate,
     RoutingDecision,
+    RoutingPolicyV2,
     ROUTING_EVENTS_MAXLEN,
     ROUTING_EVENTS_REDIS_KEY,
     ShadowComparison,
@@ -106,6 +108,8 @@ class LLMRouterClient:
         )
         self._routing_overrides_loaded_at = 0.0
         self._routing_overrides_payload: dict[str, Any] | None = None
+        self._control_plane_policy_payload: dict[str, Any] | None = None
+        self._control_plane_policy_source = "default_policy"
         self._runtime_redis = None
         self._circuit_breaker = ProviderCircuitBreaker(
             redis=redis,
@@ -198,11 +202,22 @@ class LLMRouterClient:
 
     @property
     def routing_policy(self):
-        return default_routing_policy_v2(
+        fallback_policy = default_routing_policy_v2(
             self._settings,
             self.runtime_mode,
             self._routing_overrides_payload,
         )
+        payload = self._control_plane_policy_payload
+        if not isinstance(payload, dict):
+            self._control_plane_policy_source = "default_policy"
+            return fallback_policy
+        try:
+            policy = RoutingPolicyV2.model_validate(payload)
+        except Exception:
+            self._control_plane_policy_source = "invalid_policy_fallback"
+            return fallback_policy
+        self._control_plane_policy_source = "db_policy"
+        return policy
 
     def _adapter_for_provider(self, provider: str):
         return self._provider_adapters[normalize_provider(provider)]
@@ -237,8 +252,18 @@ class LLMRouterClient:
                 raw_payload = raw_payload.decode("utf-8", errors="replace")
             if raw_payload:
                 self._routing_overrides_payload = json.loads(str(raw_payload))
+            raw_policy = await redis_client.get(CONTROL_PLANE_POLICY_REDIS_KEY)
+            if isinstance(raw_policy, bytes):
+                raw_policy = raw_policy.decode("utf-8", errors="replace")
+            if raw_policy:
+                self._control_plane_policy_payload = json.loads(str(raw_policy))
+            else:
+                self._control_plane_policy_payload = None
+                self._control_plane_policy_source = "default_policy"
         except Exception as exc:
             logger.debug("llm_routing_refresh_failed err=%s", exc)
+            self._control_plane_policy_payload = None
+            self._control_plane_policy_source = "default_policy"
 
     def setting_value(self, name: str, default: Any = None) -> Any:
         return self._giga.setting_value(name, default)
@@ -563,9 +588,17 @@ class LLMRouterClient:
                 vector = await adapter.embed(request)
                 latency_ms = (time.monotonic() - started_at) * 1000.0
                 await self._record_provider_success(attempt_provider, effective_model)
+                prompt_tokens = await self.count_tokens(effective_model, text) or 0
+                if prompt_tokens <= 0:
+                    # Fallback estimate when upstream token counter is unavailable.
+                    prompt_tokens = max(1, len(text) // 4)
+                billable_tokens = max(0, int(prompt_tokens))
+                estimated_cost = float(billable_tokens)
                 reservation = await self._budget_manager.commit(
                     reservation,
                     actual_units=1.0,
+                    prompt_tokens=prompt_tokens,
+                    billable_tokens=billable_tokens,
                 )
                 attempt_outcomes.append(
                     AttemptOutcome(
@@ -596,6 +629,8 @@ class LLMRouterClient:
                     actual_model=effective_model,
                     fallback_reason=fallback_reason,
                     latency_ms=latency_ms,
+                    cost_estimate=estimated_cost,
+                    actual_cost=estimated_cost,
                     budget_attribution=reservation,
                     decision=decision,
                     attempts=attempt_outcomes,
@@ -795,7 +830,12 @@ class LLMRouterClient:
 
     def _vision_provider_available(self, provider: str, model: str) -> tuple[bool, str]:
         normalized = normalize_provider(provider)
-        if normalized == PROVIDER_OPENROUTER:
+        if normalized == PROVIDER_WORMSOFT:
+            if not bool(getattr(self._wormsoft, "is_available", False)):
+                return False, "provider_unavailable"
+            if not str(model or "").strip():
+                return False, "model_missing"
+        elif normalized == PROVIDER_OPENROUTER:
             if not bool(getattr(self._openrouter, "is_available", True)):
                 return False, "provider_unavailable"
             if not str(model or "").strip():
@@ -824,7 +864,16 @@ class LLMRouterClient:
             provider_override=None,
             model_override=None,
         )
-        if self._vision_provider_for_quality_tier(quality_tier) != "openrouter":
+        wormsoft_in = any(candidate.provider == PROVIDER_WORMSOFT for candidate in candidates)
+        if wormsoft_in:
+            order = {
+                PROVIDER_WORMSOFT: 0,
+                PROVIDER_OPENROUTER: 1,
+                PROVIDER_POLZA: 2,
+                PROVIDER_GIGACHAT: 3,
+            }
+            candidates.sort(key=lambda item: order.get(item.provider, 99))
+        elif self._vision_provider_for_quality_tier(quality_tier) != "openrouter":
             candidates.sort(key=lambda item: 0 if item.provider == PROVIDER_GIGACHAT else 1)
         else:
             order = {
@@ -2009,6 +2058,7 @@ class LLMRouterClient:
             "event": event_type,
             "service": self._service_name,
             "payload": payload,
+            "policy_source": self._control_plane_policy_source,
             "timestamp": time.time(),
         }
         try:
@@ -2243,6 +2293,14 @@ class LLMRouterClient:
                 continue
             seen.add(pair)
             deduped.append(candidate)
+        if task_family in {TASK_FAMILY_TEXT_GENERATION, TASK_FAMILY_VISION_GENERATION}:
+            priority = {
+                PROVIDER_WORMSOFT: 0,
+                PROVIDER_OPENROUTER: 1,
+                PROVIDER_POLZA: 2,
+                PROVIDER_GIGACHAT: 3,
+            }
+            deduped.sort(key=lambda item: priority.get(normalize_provider(item.provider), 99))
         if task_family == TASK_FAMILY_VISION_GENERATION:
             providers_present = {candidate.provider for candidate in deduped}
             polza_model = str(getattr(self._polza, "default_model", "") or "").strip()

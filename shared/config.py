@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     wormsoft_api_key: str = Field("", alias="WORMSOFT_API_KEY")
     wormsoft_model_default: str = Field("wormsoft/agent/medium", alias="WORMSOFT_MODEL_DEFAULT")
     wormsoft_model_mcp_synthesis: str = Field("", alias="WORMSOFT_MODEL_MCP_SYNTHESIS")
+    # Пусто — не добавлять Wormsoft в цепочку vision (см. default_routing_policy_v2).
+    wormsoft_vision_model: str = Field("", alias="WORMSOFT_VISION_MODEL")
     wormsoft_max_simultaneous_requests: int = Field(
         1,
         alias="WORMSOFT_MAX_SIMULTANEOUS_REQUESTS",
@@ -244,9 +246,9 @@ class Settings(BaseSettings):
     )
     polza_api_key: str = Field("", alias="POLZA_API_KEY")
     polza_base_url: str = Field("https://polza.ai/api/v1", alias="POLZA_BASE_URL")
-    polza_text_model: str = Field("google/gemma-3-12b-it", alias="POLZA_TEXT_MODEL")
+    polza_text_model: str = Field("deepseek/deepseek-v3.2", alias="POLZA_TEXT_MODEL")
     polza_synthesis_model: str = Field(
-        "mistralai/mistral-small-3.1-24b-instruct",
+        "deepseek/deepseek-v3.2",
         alias="POLZA_SYNTHESIS_MODEL",
     )
     polza_vision_model: str = Field("", alias="POLZA_VISION_MODEL")

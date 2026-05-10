@@ -69,3 +69,24 @@ Runtime hotfix уже работает, но clean image rebuild всё ещё �
 
 - добавить Grafana panels для `openrouter picker skips`, `openrouter vision/text fallbacks`, `polza -> gigachat spillover`;
 - оформить короткие runbooks для `WormsoftRateLimitBurst`, `OpenRouterPickerSkipBurst`, `PolzaFallbackBurst`.
+
+### 6. Embeddings switch (deferred)
+
+Статус: **deferred (отложено отдельно от текущего выравнивания оркестратора)**.
+
+Что запланировано:
+
+- Ввести multi-provider routing для `embeddings` по схеме `wormsoft -> openrouter -> polza -> gigachat` только после подтверждения реальной поддержки embedding API у провайдеров.
+- Добавить capability registry для embeddings (dimension, max context, input-prefix profile, billing unit) и строгую валидацию совместимости с `EMBED_DIM`.
+- Реализовать policy-driven switch по embedding options моделей (dim/profile/cost tier), а не только по provider availability.
+
+Acceptance criteria:
+
+- Для каждого кандидата embeddings есть подтверждённые capability snapshots и стабильные runtime probes.
+- FinOps корректно считает `estimated_cost_total` и `actual_cost_total` по embeddings для всех включённых провайдеров.
+- Есть runbook аварийного отката в single-provider режим без потери индексационной совместимости.
+
+Dependencies:
+
+- Стабильный provider catalog + health snapshots для OpenRouter/Polza/Wormsoft embedding endpoints.
+- Подтверждённая стратегия миграции индексов при смене embedding profile (dimension/prefix family).

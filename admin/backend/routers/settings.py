@@ -72,6 +72,15 @@ class RouteSimulationRequest(BaseModel):
     mode: str | None = None
 
 
+def _assert_policy_consistency(policy: RoutingPolicyV2) -> None:
+    for family in ("text_generation", "vision_generation", "embeddings"):
+        family_policy = policy.family_policy(family)
+        if not family_policy.candidates:
+            raise ValueError(f"policy family={family} has empty candidates")
+        if not any(candidate.enabled for candidate in family_policy.candidates):
+            raise ValueError(f"policy family={family} has no enabled candidates")
+
+
 async def _ensure_runtime_settings_table() -> None:
     engine = get_engine()
     async with AsyncSession(engine) as session:
@@ -252,7 +261,9 @@ async def _control_plane_policy_payload(source: str = "db") -> dict:
 
 
 async def _store_control_plane_policy(request: ControlPlanePolicyRequest) -> dict:
-    payload = request.model_dump()
+    policy = RoutingPolicyV2.model_validate(request.model_dump())
+    _assert_policy_consistency(policy)
+    payload = policy.model_dump()
     await _store_json_setting(CONTROL_PLANE_POLICY_DB_KEY, payload)
     try:
         await _mirror_runtime_value(CONTROL_PLANE_POLICY_REDIS_KEY, json.dumps(payload))

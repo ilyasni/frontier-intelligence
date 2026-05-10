@@ -35,10 +35,10 @@ ROUTABLE_LLM_TASKS = (
 )
 
 DEFAULT_WORMSOFT_TEXT_MODEL = "wormsoft/agent/medium"
-DEFAULT_WORMSOFT_SYNTHESIS_MODEL = "wormsoft/agent/large"
+DEFAULT_WORMSOFT_SYNTHESIS_MODEL = "wormsoft/agent/high"
 DEFAULT_OPENROUTER_TEXT_MODEL = "openrouter/free"
-DEFAULT_POLZA_TEXT_MODEL = "google/gemma-3-12b-it"
-DEFAULT_POLZA_SYNTHESIS_MODEL = "mistralai/mistral-small-3.1-24b-instruct"
+DEFAULT_POLZA_TEXT_MODEL = "deepseek/deepseek-v3.2"
+DEFAULT_POLZA_SYNTHESIS_MODEL = "deepseek/deepseek-v3.2"
 
 
 def normalize_provider(value: str | None) -> str:

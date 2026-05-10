@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import random
 import time
@@ -34,7 +35,9 @@ from shared.llm_control_plane import (
     ProviderError,
 )
 from shared.metrics import note_llm_request, note_llm_throttle_event, note_llm_usage, note_rate_limit_event
+from worker.gigachat_client import VISION_PROMPT, _parse_vision_payload
 from worker.llm_types import GigaChatResponse, usage_from_openai_response
+from worker.openrouter_client import _detect_image_mime
 from worker.token_budget import BudgetedText, fit_text_to_token_budget
 from worker.wormsoft_guard import WormsoftSharedGuard
 
@@ -259,6 +262,86 @@ class WormsoftTextClient:
         finally:
             self._release_request_slot()
 
+    async def _vision_once(
+        self,
+        *,
+        prompt: str,
+        image_bytes: bytes,
+        model: str,
+        max_tokens: int,
+    ) -> Any:
+        allowed, guard_reason = await self._guard.reserve_slot()
+        if not allowed:
+            category, retryable = self._guard_reason_to_error(guard_reason)
+            note_llm_throttle_event(self._service_name, "wormsoft", guard_reason)
+            raise WormsoftTextError(
+                f"wormsoft_guard_blocked: {guard_reason}",
+                reason=guard_reason,
+                category=category,
+                retryable=retryable,
+            )
+
+        mime = _detect_image_mime(image_bytes)
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        await self._acquire_request_slot()
+        try:
+            raw = await self._client.chat.completions.with_raw_response.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                            },
+                        ],
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=max_tokens,
+            )
+            await self._guard.record_success()
+            return raw.parse()
+        finally:
+            self._release_request_slot()
+
+    async def _vision_with_retry(
+        self,
+        *,
+        prompt: str,
+        image_bytes: bytes,
+        model: str,
+        max_tokens: int,
+    ) -> Any:
+        max_retries = max(0, min(2, int(self._settings.wormsoft_max_retries or 0)))
+        last_error: WormsoftTextError | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return await self._vision_once(
+                    prompt=prompt,
+                    image_bytes=image_bytes,
+                    model=model,
+                    max_tokens=max_tokens,
+                )
+            except WormsoftTextError as exc:
+                last_error = exc
+            except Exception as exc:
+                last_error = self.normalize_error(exc, model=model)
+            if last_error is None:
+                break
+            await self._guard.record_failure(
+                status_code=last_error.status_code,
+                reason=last_error.category,
+                retryable=last_error.retryable,
+            )
+            if not last_error.retryable or attempt >= max_retries:
+                raise last_error
+            delay = min(3.0, 0.5 * (2**attempt) + random.uniform(0.0, 0.35))
+            await asyncio.sleep(delay)
+        raise last_error or WormsoftTextError("wormsoft_vision_failed")
+
     async def _chat_with_retry(
         self,
         *,
@@ -364,4 +447,69 @@ class WormsoftTextClient:
             error = self.normalize_error(exc, model=model)
             self._observe_rate_limit(error, task)
             note_llm_request(self._service_name, task, "wormsoft", model, "", "error")
+            raise error from exc
+
+    async def vision(
+        self,
+        image_bytes: bytes,
+        *,
+        prompt: str = "",
+        model_override: str | None = None,
+        max_tokens: int = 1024,
+    ) -> GigaChatResponse:
+        if not self.is_available:
+            raise WormsoftTextError(
+                "wormsoft_api_key_missing",
+                reason="wormsoft_api_key_missing",
+                category=ERROR_PROVIDER_UNAVAILABLE,
+                retryable=False,
+            )
+        model = str(model_override or getattr(self._settings, "wormsoft_vision_model", "") or "").strip()
+        if not model:
+            raise WormsoftTextError(
+                "wormsoft_vision_model_missing",
+                reason="wormsoft_model_missing",
+                category=ERROR_BAD_REQUEST,
+                retryable=False,
+            )
+        text_prompt = str(prompt or "").strip() or VISION_PROMPT
+        mt = max(256, min(8192, int(max_tokens or 1024)))
+        try:
+            resp = await self._vision_with_retry(
+                prompt=text_prompt,
+                image_bytes=image_bytes,
+                model=model,
+                max_tokens=mt,
+            )
+            usage = usage_from_openai_response(resp)
+            actual_model = str(getattr(resp, "model", model) or model)
+            raw_content = str((resp.choices[0].message.content or "") if resp.choices else "")
+            parsed = _parse_vision_payload(raw_content)
+            note_llm_request(self._service_name, "vision", "wormsoft", model, actual_model, "ok")
+            note_llm_usage(
+                self._service_name,
+                "vision",
+                "wormsoft",
+                model,
+                actual_model,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                billable_tokens=usage.billable_tokens,
+            )
+            return GigaChatResponse(
+                content=raw_content,
+                model=actual_model,
+                requested_model=model,
+                provider="wormsoft",
+                usage=usage,
+                parsed=parsed,
+            )
+        except WormsoftTextError as exc:
+            self._observe_rate_limit(exc, "vision")
+            note_llm_request(self._service_name, "vision", "wormsoft", model, "", "error")
+            raise
+        except Exception as exc:
+            error = self.normalize_error(exc, model=model)
+            self._observe_rate_limit(error, "vision")
+            note_llm_request(self._service_name, "vision", "wormsoft", model, "", "error")
             raise error from exc

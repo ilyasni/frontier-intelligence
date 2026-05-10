@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from shared.llm_control_plane import (
     POLICY_MODE_MAINTENANCE,
     POLICY_MODE_STRICT,
@@ -10,6 +12,8 @@ from shared.llm_control_plane import (
     derive_provider_readiness,
     normalize_wormsoft_model_snapshot,
     simulate_routing_decision,
+    RoutingCandidate,
+    TaskFamilyPolicy,
 )
 
 
@@ -122,6 +126,20 @@ def test_derive_provider_readiness_handles_low_credit_and_unavailable() -> None:
         )
         == "degraded"
     )
+
+
+def test_task_family_policy_requires_enabled_candidate() -> None:
+    with pytest.raises(ValueError, match="at least one candidate must be enabled"):
+        TaskFamilyPolicy(
+            family="text_generation",
+            candidates=[
+                RoutingCandidate(
+                    provider="wormsoft",
+                    model="wormsoft/agent/medium",
+                    enabled=False,
+                )
+            ],
+        )
     assert (
         derive_provider_readiness(
             available=False,

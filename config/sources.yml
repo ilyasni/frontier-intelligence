@@ -224,26 +224,26 @@ sources:
   - id: web_nvidia_autonomous_vehicles
     workspace_id: disruption
     source_type: web
-    name: NVIDIA Autonomous Vehicles
-    url: https://blogs.nvidia.com/blog/category/auto/
+    name: NVIDIA Developer Blog — DRIVE
+    url: https://developer.nvidia.com/blog/tag/drive/
     schedule_cron: "*/120 * * * *"
     extra:
       quality_tier: trusted
-      expected_signal_types: [autonomous, ai, chips]
-      source_authority: 0.66
+      expected_signal_types: [autonomous, ai, chips, drive_agx]
+      source_authority: 0.68
       parse:
         full_content: true
-        listing_selector: "h3"
-        link_selector: "a[href]"
-        title_selector: "a[href]"
-        date_selector: ""
+        listing_selector: "article, .blog-loop-card, .nv-blog-card, li"
+        link_selector: "a[href*='/blog/']"
+        title_selector: "h2, h3, a"
+        date_selector: "time"
         article_selector: "article, main"
 
   - id: web_bosch_software_driven_mobility
     workspace_id: disruption
     source_type: web
-    name: Bosch Software-Driven Mobility
-    url: https://www.bosch.com/stories/topics/software-driven-mobility/
+    name: Bosch Mobility — Software-defined vehicle
+    url: https://www.bosch-mobility.com/en/mobility-topics/software-defined-vehicle/
     schedule_cron: "*/120 * * * *"
     proxy_config:
       type: socks5
@@ -265,7 +265,7 @@ sources:
     workspace_id: disruption
     source_type: web
     name: Mobility House Newsroom
-    url: https://www.mobilityhouse.com/usa_en/our-company/newsroom
+    url: https://www.mobilityhouse.com/int_en/our-company/newsroom
     schedule_cron: "*/120 * * * *"
     proxy_config:
       type: socks5
@@ -289,6 +289,10 @@ sources:
     name: NNGroup Articles
     url: https://www.nngroup.com/articles/
     schedule_cron: "*/180 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: research
       expected_signal_types: [ux, usability, interaction_design]
@@ -309,6 +313,10 @@ sources:
     name: UX Journal
     url: https://ux-journal.ru
     schedule_cron: "*/120 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: exploratory
       expected_signal_types: [ux, product_design, interfaces]
@@ -318,6 +326,312 @@ sources:
         listing_selector: "article, .card, .post, .item, li"
         link_selector: "a[href]"
         title_selector: "h2, h3, a[href]"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  # batch:auto_ru — новые id выключены до смока и ручного включения (source-rollout-batches.md)
+  - id: tg_ru_autoruonline
+    workspace_id: disruption
+    source_type: telegram
+    name: Журнал Авто.ру online
+    tg_channel: "@autoruonline"
+    schedule_cron: "*/30 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_ru
+      quality_tier: trusted
+      expected_signal_types: [auto, ru_market, car_news]
+      source_authority: 0.74
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+      fetch:
+        lookback_hours: 72
+
+  - id: tg_ru_autostatis
+    workspace_id: disruption
+    source_type: telegram
+    name: АВТОСТАТ
+    tg_channel: "@autostatis"
+    schedule_cron: "*/45 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_ru
+      quality_tier: trusted
+      expected_signal_types: [market_stats, sales, ru_market, auto_market]
+      source_authority: 0.76
+      source_region: ru
+      market_scope: local
+      filters:
+        lang_allow: [ru]
+      fetch:
+        lookback_hours: 168
+
+  - id: rss_ru_drom_export
+    workspace_id: disruption
+    source_type: rss
+    name: Drom export RSS
+    url: https://www.drom.ru/export/
+    schedule_cron: "*/45 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_ru
+      preset: drom_export
+      quality_tier: trusted
+      expected_signal_types: [auto, ru_market, reviews, used_cars]
+      source_authority: 0.72
+      parse:
+        full_content: false
+
+  - id: web_ru_autoreview_news
+    workspace_id: disruption
+    source_type: web
+    name: Авторевю — Новости
+    url: https://autoreview.ru/news/
+    schedule_cron: "*/60 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_ru
+      quality_tier: trusted
+      expected_signal_types: [auto, expert_reviews, ru_market, industry]
+      source_authority: 0.7
+      parse:
+        full_content: false
+        listing_selector: "article, .card, .post, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3, a"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: web_ru_autonews_rbc
+    workspace_id: disruption
+    source_type: web
+    name: Autonews РБК
+    url: https://www.autonews.ru/
+    schedule_cron: "*/90 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_ru
+      quality_tier: trusted
+      expected_signal_types: [auto, law, ownership, ru_market]
+      source_authority: 0.68
+      parse:
+        full_content: false
+        listing_selector: "article, .card, .item, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: web_ru_kolesa_news
+    workspace_id: disruption
+    source_type: web
+    name: Kolesa.ru — Новости
+    url: https://www.kolesa.ru/news/
+    schedule_cron: "*/90 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_ru
+      quality_tier: exploratory
+      expected_signal_types: [auto, new_models, tuning, ru_market]
+      source_authority: 0.62
+      parse:
+        full_content: false
+        listing_selector: "article, .card, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  # batch:ev_tesla
+  - id: rss_insideevs_charging
+    workspace_id: disruption
+    source_type: rss
+    name: InsideEVs Charging
+    url: https://insideevs.com/rss/category/charging/
+    schedule_cron: "*/60 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:ev_tesla
+      preset: insideevs_charging
+      quality_tier: trusted
+      expected_signal_types: [charging, infrastructure, ev]
+      source_authority: 0.73
+      parse:
+        full_content: false
+
+  - id: rss_insideevs_battery_tech
+    workspace_id: disruption
+    source_type: rss
+    name: InsideEVs Battery Tech
+    url: https://insideevs.com/rss/category/battery-tech/
+    schedule_cron: "*/60 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:ev_tesla
+      preset: insideevs_battery_tech
+      quality_tier: trusted
+      expected_signal_types: [battery_tech, energy_storage, ev]
+      source_authority: 0.73
+      parse:
+        full_content: false
+
+  - id: web_notateslaapp_updates
+    workspace_id: disruption
+    source_type: web
+    name: Not a Tesla App — Software Updates
+    url: https://www.notateslaapp.com/software-updates/
+    schedule_cron: "*/120 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:ev_tesla
+      quality_tier: trusted
+      expected_signal_types: [tesla, software_updates, fsd, release_notes]
+      source_authority: 0.71
+      parse:
+        full_content: false
+        listing_selector: "article, .card, li, tr"
+        link_selector: "a[href]"
+        title_selector: "h2, h3, a"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: rss_teslarati
+    workspace_id: disruption
+    source_type: rss
+    name: TESLARATI
+    url: https://www.teslarati.com/feed/
+    schedule_cron: "*/60 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:ev_tesla
+      preset: teslarati
+      quality_tier: exploratory
+      expected_signal_types: [tesla, ev, robotaxi, energy]
+      source_authority: 0.64
+      parse:
+        full_content: false
+
+  # batch:global_mobility
+  - id: rss_techcrunch_transportation
+    workspace_id: disruption
+    source_type: rss
+    name: TechCrunch Transportation
+    url: https://techcrunch.com/category/transportation/feed/
+    schedule_cron: "*/60 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:global_mobility
+      preset: techcrunch_transportation
+      quality_tier: trusted
+      expected_signal_types: [mobility, startups, ev, autonomous, robotaxi]
+      source_authority: 0.77
+      parse:
+        full_content: true
+
+  - id: web_ieee_spectrum_autonomous
+    workspace_id: disruption
+    source_type: web
+    name: IEEE Spectrum — Autonomous Vehicles
+    url: https://spectrum.ieee.org/tag/autonomous-vehicles
+    schedule_cron: "*/120 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:global_mobility
+      quality_tier: trusted
+      expected_signal_types: [autonomous, robotics, research, engineering]
+      source_authority: 0.78
+      parse:
+        full_content: false
+        listing_selector: "article, .article-card, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: web_automotiveworld_sdv
+    workspace_id: disruption
+    source_type: web
+    name: Automotive World — SDV
+    url: https://www.automotiveworld.com/software-defined-vehicles/
+    schedule_cron: "*/180 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:global_mobility
+      quality_tier: trusted
+      expected_signal_types: [sdv, vehicle_os, adas, cybersecurity]
+      source_authority: 0.65
+      parse:
+        full_content: false
+        listing_selector: "article, .card, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  # batch:smart_city
+  - id: web_smartcitiesdive_transportation
+    workspace_id: disruption
+    source_type: web
+    name: Smart Cities Dive — Transportation
+    url: https://www.smartcitiesdive.com/topic/transportation/
+    schedule_cron: "*/180 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:smart_city
+      quality_tier: trusted
+      expected_signal_types: [urban_mobility, smart_city, policy, transit]
+      source_authority: 0.63
+      parse:
+        full_content: false
+        listing_selector: "article, .feed__item, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: web_uitp_news_views
+    workspace_id: disruption
+    source_type: web
+    name: UITP — News and Views
+    url: https://www.uitp.org/news-views/
+    schedule_cron: "*/240 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:smart_city
+      quality_tier: trusted
+      expected_signal_types: [public_transport, urban_mobility, policy]
+      source_authority: 0.6
+      parse:
+        full_content: false
+        listing_selector: "article, .card, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
         date_selector: "time"
         article_selector: "article, main"
 
@@ -649,6 +963,51 @@ sources:
       source_authority: 0.66
       filters:
         include_keywords: [ux, hmi, user experience, cockpit, interface, driver display]
+      parse:
+        full_content: false
+
+  # batch:design_ux — новые id выключены до смока
+  - id: web_baymard_blog
+    workspace_id: design
+    source_type: web
+    name: Baymard UX Research Blog
+    url: https://baymard.com/blog
+    schedule_cron: "*/180 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:design_ux
+      quality_tier: trusted
+      expected_signal_types: [ecommerce_ux, checkout, forms, product_design]
+      source_authority: 0.8
+      parse:
+        full_content: false
+        listing_selector: "article, .card, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: rss_smashingmagazine
+    workspace_id: design
+    source_type: rss
+    name: Smashing Magazine
+    url: https://www.smashingmagazine.com/feed/
+    schedule_cron: "*/120 * * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:design_ux
+      preset: smashingmagazine
+      quality_tier: exploratory
+      expected_signal_types: [frontend, ux, accessibility, design_systems]
+      source_authority: 0.58
       parse:
         full_content: false
 

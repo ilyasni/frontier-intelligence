@@ -2119,6 +2119,7 @@ function renderXrayHealthPanel(payload) {
   const streak = Number(data.streak || 0);
   const tone = status === 'ok' ? 'ok' : (status === 'degraded' ? 'warn' : 'warn');
   const rows = Array.isArray(data.results) ? data.results : [];
+  const history = Array.isArray(data.history) ? data.history : [];
   return renderSettingsPanel(
     'XRAY health',
     'Прокси-контур egress: детект деградации и сигнал для автореакции.',
@@ -2144,6 +2145,19 @@ function renderXrayHealthPanel(payload) {
             escapeHtml(String(item.error || '')),
           ]),
           'No xray probe results yet.',
+        )}
+        <div class="settings-note">History</div>
+        ${renderSettingsTable(
+          ['Checked', 'Status', 'Failed', 'Ratio', 'Streak', 'Alert'],
+          history.map((item) => [
+            escapeHtml(formatTime(item.checked_at) || String(item.checked_at || '-')),
+            settingsPill(String(item.status || 'unknown'), item.status === 'ok' ? 'ok' : 'warn'),
+            `${Number(item.targets_failed || 0)}/${Number(item.targets_total || 0)}`,
+            `${(Number(item.failure_ratio || 0) * 100).toFixed(0)}%`,
+            String(Number(item.streak || 0)),
+            item.alert_sent ? settingsPill('sent', 'warn') : settingsPill('no', 'ok'),
+          ]),
+          'No xray history yet.',
         )}
       </div>
     `,
@@ -3264,7 +3278,7 @@ async function loadSettings() {
   }
   settingsDetail.innerHTML = '<div class="empty" role="status" aria-live="polite">Loading settings...</div>';
   try {
-    const [data, balanceData, streamData, weeklyReport, wormsoftCatalog, wormsoftLimits, openRouterKey, providerState, budgetState, capabilityMatrix, circuitState, routingEvents, xrayHealth] = await Promise.all([
+    const [data, balanceData, streamData, weeklyReport, wormsoftCatalog, wormsoftLimits, openRouterKey, providerState, budgetState, capabilityMatrix, circuitState, routingEvents, xrayHealth, xrayHistory] = await Promise.all([
       apiGet('/api/settings').catch(() => null),
       apiGet('/api/settings/gigachat-balance').catch(() => null),
       apiGet('/api/pipeline/streams').catch(() => null),
@@ -3278,6 +3292,7 @@ async function loadSettings() {
       apiGet('/api/settings/circuits').catch(() => null),
       apiGet('/api/settings/routing-events?limit=25').catch(() => null),
       apiGet('/api/monitoring/xray/health').catch(() => null),
+      apiGet('/api/monitoring/xray/health/history?limit=15').catch(() => null),
     ]);
     if (!data) {
       settingsDetail.innerHTML = '<div class="empty" role="alert" aria-live="assertive">Failed to load settings.</div>';
@@ -3304,7 +3319,7 @@ async function loadSettings() {
       capabilityMatrix || { rows: [] },
       circuitState || { circuits: [], wormsoft_guard: {} },
       routingEvents || { events: [] },
-      xrayHealth || {},
+      { ...(xrayHealth || {}), history: (xrayHistory || {}).history || [] },
     );
     syncControlPlaneSimulationFamily();
   } finally {

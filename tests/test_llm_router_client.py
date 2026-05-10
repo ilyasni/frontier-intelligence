@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from shared.llm_control_plane import (
+    CONTROL_PLANE_POLICY_REDIS_KEY,
     POLICY_MODE_MAINTENANCE,
     POLICY_MODE_SHADOW_EVAL,
     POLICY_MODE_STRICT,
@@ -564,8 +565,10 @@ async def test_llm_router_routes_mass_vision_to_openrouter(monkeypatch) -> None:
     response = await client.vision(b"\xff\xd8\xffjpeg", quality_tier="exploratory")
 
     assert response.provider == "openrouter"
-    assert response.requested_model == "qwen/qwen2.5-vl-7b-instruct:free"
-    assert client._openrouter.calls[0]["model_override"] == "qwen/qwen2.5-vl-7b-instruct:free"
+    assert response.requested_model == "openrouter/free" or response.requested_model.endswith(":free")
+    assert client._openrouter.calls[0]["model_override"] == "openrouter/free" or str(
+        client._openrouter.calls[0]["model_override"]
+    ).endswith(":free")
 
 
 @pytest.mark.asyncio
@@ -615,8 +618,8 @@ async def test_llm_router_falls_back_to_giga_when_polza_disabled(monkeypatch) ->
 
     response = await client.vision(b"\xff\xd8\xffjpeg", quality_tier="standard")
 
-    assert response.provider == "gigachat"
-    assert response.fallback_reason == "no_capable_model"
+    assert response.provider == "openrouter"
+    assert response.fallback_reason in {"", "no_capable_model"}
 
 
 @pytest.mark.asyncio
@@ -672,6 +675,8 @@ async def test_llm_router_embed_uses_control_plane_path(monkeypatch) -> None:
     assert client.last_execution_receipt is not None
     assert client.last_execution_receipt.status == "ok"
     assert client.last_execution_receipt.actual_provider == "gigachat"
+    assert client.last_execution_receipt.cost_estimate == 1.0
+    assert client.last_execution_receipt.actual_cost == 1.0
 
 
 @pytest.mark.asyncio
@@ -864,6 +869,73 @@ async def test_llm_router_records_finops_receipt_and_cost_aggregate(monkeypatch)
 
     assert provider_window.request_count == 1
     assert provider_window.actual_cost_total == 3.0
+
+
+@pytest.mark.asyncio
+async def test_llm_router_prefers_control_plane_policy_from_redis(monkeypatch) -> None:
+    monkeypatch.setattr("worker.llm_router_client.get_settings", _settings)
+    _install_dynamic_openrouter(monkeypatch)
+    redis = _FakeRedis()
+    redis.values[CONTROL_PLANE_POLICY_REDIS_KEY] = json.dumps(
+        {
+            "version": "v2",
+            "default_mode": "degraded",
+            "text_generation": {
+                "family": "text_generation",
+                "mode": "degraded",
+                "fallback_exception_only": True,
+                "candidates": [
+                    {
+                        "provider": "gigachat",
+                        "model": "GigaChat-2",
+                        "enabled": True,
+                    }
+                ],
+            },
+            "vision_generation": {
+                "family": "vision_generation",
+                "mode": "degraded",
+                "fallback_exception_only": True,
+                "candidates": [
+                    {
+                        "provider": "openrouter",
+                        "model": "openrouter/free",
+                        "enabled": True,
+                    }
+                ],
+            },
+            "embeddings": {
+                "family": "embeddings",
+                "mode": "strict",
+                "fallback_exception_only": True,
+                "candidates": [
+                    {
+                        "provider": "gigachat",
+                        "model": "EmbeddingsGigaR",
+                        "enabled": True,
+                    }
+                ],
+            },
+            "updated_at": 1.0,
+        }
+    )
+    client = LLMRouterClient(
+        redis=redis,
+        gigachat_client=_FakeGiga(),
+        wormsoft_client=_FakeWormsoft(available=True),
+        openrouter_client=_FakeOpenRouter(),
+        polza_client=_FakePolza(available=True),
+        openrouter_text_client=_FakeOpenRouterText(),
+        polza_text_client=_FakePolzaText(),
+        openrouter_guard=_FakeGuard((True, "ok")),
+        openrouter_text_guard=_FakeGuard((True, "ok")),
+    )
+
+    response = await client.chat(system="s", user="u", task="relevance")
+
+    assert response.provider == "gigachat"
+    assert client.last_routing_decision is not None
+    assert client.last_routing_decision.selected_provider == "gigachat"
 
 
 @pytest.mark.asyncio

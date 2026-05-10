@@ -1,0 +1,41 @@
+# Вспомогательный ручной workflow: выбор тега батча раската источников.
+# Полезно для дисциплины релиза; CI-джобы можно расширить (lint YAML, pytest).
+name: Sources rollout helper
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "Тег батча из docs/source-rollout-batches.md"
+        required: true
+        type: choice
+        options:
+          - precheck
+          - fix_existing
+          - batch:auto_ru
+          - batch:ev_tesla
+          - batch:global_mobility
+          - batch:smart_city
+          - batch:design_ux
+      dry_run_note:
+        description: "Комментарий к запуску (например номер тикета)"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: sources-rollout-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  annotate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Echo rollout context
+        run: |
+          echo "batch=${{ inputs.batch }}"
+          echo "dry_run_note=${{ inputs.dry_run_note }}"
+          echo "See docs/source-rollout-batches.md and server sync / bootstrap on the host."

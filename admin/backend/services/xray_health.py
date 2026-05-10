@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -20,6 +21,8 @@ _XRAY_STREAK_KEY = "admin:xray:degradation_streak"
 _XRAY_LAST_ALERT_KEY = "admin:xray:last_alert_ts"
 _XRAY_LAST_REMEDIATE_KEY = "admin:xray:last_remediate_ts"
 _XRAY_LAST_RESULT_KEY = "admin:xray:last_result"
+_XRAY_HISTORY_KEY = "admin:xray:history"
+_XRAY_HISTORY_MAX_ITEMS = 100
 
 
 @dataclass(frozen=True)
@@ -175,7 +178,18 @@ async def run_xray_health_check() -> dict[str, Any]:
                 for item in results
             ],
         }
+        history_record = {
+            "status": payload["status"],
+            "failure_ratio": payload["failure_ratio"],
+            "targets_failed": payload["targets_failed"],
+            "targets_total": payload["targets_total"],
+            "streak": payload["streak"],
+            "alert_sent": payload["alert_sent"],
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
         await redis.set(_XRAY_LAST_RESULT_KEY, json.dumps(payload, ensure_ascii=False), ex=7 * 24 * 3600)
+        await redis.lpush(_XRAY_HISTORY_KEY, json.dumps(history_record, ensure_ascii=False))
+        await redis.ltrim(_XRAY_HISTORY_KEY, 0, _XRAY_HISTORY_MAX_ITEMS - 1)
         logger.info("xray_health_check %s", json.dumps(payload, ensure_ascii=False))
         return payload
     finally:
@@ -211,5 +225,24 @@ async def get_xray_health_snapshot() -> dict[str, Any]:
             }
         payload["streak"] = int(await redis.get(_XRAY_STREAK_KEY) or payload.get("streak") or 0)
         return payload
+    finally:
+        await redis.aclose()
+
+
+async def get_xray_health_history(*, limit: int = 20) -> list[dict[str, Any]]:
+    settings = get_settings()
+    count = max(1, min(int(limit or 20), 100))
+    redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        items = await redis.lrange(_XRAY_HISTORY_KEY, 0, count - 1)
+        history: list[dict[str, Any]] = []
+        for raw in items:
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                history.append(value)
+        return history
     finally:
         await redis.aclose()

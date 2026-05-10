@@ -15,6 +15,7 @@ from admin.backend.services.telegram_alerts import (
     telegram_alerts_enabled,
 )
 from admin.backend.services.xray_health import (
+    get_xray_health_history,
     get_xray_health_snapshot,
     run_xray_health_check,
 )
@@ -179,3 +180,8 @@ async def xray_health_snapshot() -> dict[str, Any]:
 @router.post("/xray/health/run")
 async def run_xray_health() -> dict[str, Any]:
     return await run_xray_health_check()
+
+
+@router.get("/xray/health/history")
+async def xray_health_history(limit: int = 20) -> dict[str, Any]:
+    return {"history": await get_xray_health_history(limit=limit)}

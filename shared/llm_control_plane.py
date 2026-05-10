@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from shared.embedding_models import embedding_profile
 from shared.llm_routing import (
@@ -395,6 +395,14 @@ class TaskFamilyPolicy(BaseModel):
     def _validate_mode(cls, value: Any) -> str:
         return normalize_policy_mode(value)
 
+    @model_validator(mode="after")
+    def _validate_candidates(self) -> "TaskFamilyPolicy":
+        if not self.candidates:
+            raise ValueError(f"{self.family}: candidates list cannot be empty")
+        if not any(candidate.enabled for candidate in self.candidates):
+            raise ValueError(f"{self.family}: at least one candidate must be enabled")
+        return self
+
 
 class RoutingPolicyV2(BaseModel):
     version: Literal["v2"] = "v2"
@@ -618,24 +626,28 @@ def default_routing_policy_v2(
                 )
             )
 
-    vision_candidates = [
+    # Vision: Wormsoft (multimodal alias, если заданы ключ и модель) → OpenRouter → Polza → GigaChat Pro/vision.
+    polza_vision = str(getattr(settings, "polza_vision_model", "") or "").strip()
+    wormsoft_key = str(getattr(settings, "wormsoft_api_key", "") or "").strip()
+    wormsoft_vision = str(getattr(settings, "wormsoft_vision_model", "") or "").strip()
+    vision_candidates: list[RoutingCandidate] = []
+    if wormsoft_key and wormsoft_vision:
+        vision_candidates.append(
+            RoutingCandidate(
+                provider=PROVIDER_WORMSOFT,
+                model=wormsoft_vision,
+                capability_tags=["vision", "text"],
+                budget_class="primary",
+            )
+        )
+    vision_candidates.append(
         RoutingCandidate(
             provider=PROVIDER_OPENROUTER,
             model=str(getattr(settings, "openrouter_vision_model", "") or DEFAULT_OPENROUTER_TEXT_MODEL),
             capability_tags=["vision", "text"],
             budget_class="exploratory",
         ),
-        RoutingCandidate(
-            provider=PROVIDER_GIGACHAT,
-            model=str(
-                getattr(settings, "gigachat_model_vision", "")
-                or getattr(settings, "gigachat_model_pro", "GigaChat-2-Pro")
-            ).strip(),
-            capability_tags=["vision", "text"],
-            budget_class="trusted",
-        ),
-    ]
-    polza_vision = str(getattr(settings, "polza_vision_model", "") or "").strip()
+    )
     if polza_vision:
         vision_candidates.append(
             RoutingCandidate(
@@ -645,6 +657,17 @@ def default_routing_policy_v2(
                 budget_class="fallback",
             )
         )
+    vision_candidates.append(
+        RoutingCandidate(
+            provider=PROVIDER_GIGACHAT,
+            model=str(
+                getattr(settings, "gigachat_model_vision", "")
+                or getattr(settings, "gigachat_model_pro", "GigaChat-2-Pro")
+            ).strip(),
+            capability_tags=["vision", "text"],
+            budget_class="trusted",
+        )
+    )
 
     embeddings_candidates = [
         RoutingCandidate(
@@ -792,23 +815,36 @@ def simulate_routing_decision(
     for candidate in considered:
         state = states.get(candidate.provider)
         if state and state.catalog and state.catalog.models:
-            matching_model = next(
-                (
+            if str(candidate.model or "").strip().lower() == "openrouter/free":
+                capable = [
                     item
                     for item in state.catalog.models
-                    if item.model == candidate.model or candidate.model == "openrouter/free"
-                ),
-                None,
-            )
-            if matching_model is not None and not model_supports_family(matching_model, family):
-                skipped.append(
-                    {
-                        "provider": candidate.provider,
-                        "model": candidate.model,
-                        "reason": "capability_mismatch",
-                    }
+                    if model_supports_family(item, family)
+                ]
+                matching_model = capable[0] if capable else None
+                if matching_model is None:
+                    skipped.append(
+                        {
+                            "provider": candidate.provider,
+                            "model": candidate.model,
+                            "reason": "no_capable_model",
+                        }
+                    )
+                    continue
+            else:
+                matching_model = next(
+                    (item for item in state.catalog.models if item.model == candidate.model),
+                    None,
                 )
-                continue
+                if matching_model is not None and not model_supports_family(matching_model, family):
+                    skipped.append(
+                        {
+                            "provider": candidate.provider,
+                            "model": candidate.model,
+                            "reason": "capability_mismatch",
+                        }
+                    )
+                    continue
         provider_circuit = provider_circuit_index.get(candidate.provider)
         model_circuit = circuit_index.get((candidate.provider, candidate.model))
         if state and not state.ready:

@@ -1,6 +1,7 @@
 """Provider adapter implementations for the LLM control plane."""
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -45,6 +46,8 @@ from shared.llm_routing import (
     PROVIDER_WORMSOFT,
     normalize_provider,
 )
+from shared.metrics import note_openrouter_picker_skip
+from shared.redis_client import get_client
 from worker.gigachat_client import GigaChatClient
 from worker.llm_types import GigaChatResponse
 from worker.openai_compat_text_client import OpenAICompatTextError
@@ -207,11 +210,19 @@ class WormsoftAdapter:
         )
 
     async def vision(self, request: ProviderExecutionRequest) -> GigaChatResponse:
-        raise WormsoftTextError(
-            "wormsoft_vision_not_supported_in_runtime",
-            reason="wormsoft_vision_unavailable",
-            category=ERROR_PROVIDER_UNAVAILABLE,
-            retryable=False,
+        image_bytes = request.image_bytes
+        if not image_bytes:
+            raise WormsoftTextError(
+                "wormsoft_vision_missing_image",
+                reason="wormsoft_vision_missing_image",
+                category=ERROR_BAD_REQUEST,
+                retryable=False,
+            )
+        return await self._text.vision(
+            image_bytes,
+            prompt=request.prompt,
+            model_override=request.model or None,
+            max_tokens=max(256, int(request.max_tokens or 1024)),
         )
 
     async def embed(self, request: ProviderExecutionRequest) -> list[float]:
@@ -266,6 +277,53 @@ class OpenRouterAdapter:
         self._vision = vision_client
         self._text_guard = text_guard
         self._vision_guard = vision_guard
+        self._openrouter_key_snapshot_key = "admin:openrouter_key:last_ok"
+        self._openrouter_catalog_snapshot_key = "or:catalog:snapshot"
+
+    async def _fail_safe_is_blocked(self) -> tuple[bool, str]:
+        if not bool(getattr(self._settings, "openrouter_fail_safe_enabled", True)):
+            return False, "ok"
+        stale_limit = max(60, int(getattr(self._settings, "openrouter_fail_safe_stale_sec", 1800) or 1800))
+        now = time.time()
+        redis = get_client()
+        try:
+            key_raw = await redis.get(self._openrouter_key_snapshot_key)
+            catalog_raw = await redis.get(self._openrouter_catalog_snapshot_key)
+        except Exception:
+            return True, "openrouter_fail_safe_snapshot_unavailable"
+
+        if not key_raw:
+            return True, "openrouter_fail_safe_key_missing"
+        if not catalog_raw:
+            return True, "openrouter_fail_safe_catalog_missing"
+        try:
+            key_payload = json.loads(key_raw)
+        except json.JSONDecodeError:
+            return True, "openrouter_fail_safe_key_invalid"
+        try:
+            catalog_payload = json.loads(catalog_raw)
+        except json.JSONDecodeError:
+            return True, "openrouter_fail_safe_catalog_invalid"
+        if not isinstance(key_payload, dict) or not isinstance(catalog_payload, dict):
+            return True, "openrouter_fail_safe_snapshot_invalid"
+
+        key_status = str(key_payload.get("status") or "unknown")
+        key_fetched_at = float(key_payload.get("fetched_at") or 0.0)
+        if key_status in {"request_error", "stale_request_error", "invalid_response"}:
+            return True, "openrouter_fail_safe_key_stale"
+        if key_fetched_at <= 0 or (now - key_fetched_at) > stale_limit:
+            return True, "openrouter_fail_safe_key_expired"
+
+        catalog_status = str(catalog_payload.get("status") or "unknown")
+        catalog_fetched_at = float(catalog_payload.get("fetched_at") or 0.0)
+        catalog_models = int(catalog_payload.get("model_count") or 0)
+        if catalog_status in {"request_error", "stale_request_error"}:
+            return True, "openrouter_fail_safe_catalog_stale"
+        if catalog_fetched_at <= 0 or (now - catalog_fetched_at) > stale_limit:
+            return True, "openrouter_fail_safe_catalog_expired"
+        if catalog_models <= 0:
+            return True, "openrouter_fail_safe_catalog_empty"
+        return False, "ok"
 
     async def discover_models(self) -> ModelCatalogSnapshot:
         payload = await fetch_openrouter_catalog()
@@ -349,7 +407,20 @@ class OpenRouterAdapter:
         normalized_family = normalize_task_family(request.task_family)
         requested = str(request.model or "").strip()
         if requested and requested != "openrouter/free" and not requested.endswith(":free"):
-            return requested, {}
+            note_openrouter_picker_skip(
+                self._service_name,
+                normalized_family,
+                "non_free_model_blocked",
+            )
+            return "", {"reason": "non_free_model_blocked"}
+        blocked, blocked_reason = await self._fail_safe_is_blocked()
+        if blocked:
+            note_openrouter_picker_skip(
+                self._service_name,
+                normalized_family,
+                blocked_reason,
+            )
+            return "", {"reason": blocked_reason}
         if normalized_family == "vision_generation":
             decision = await pick_model(
                 task_family_for_vision(request.quality_tier) or "vision_mass",
@@ -364,10 +435,10 @@ class OpenRouterAdapter:
         return picked_model, decision
 
     async def reserve_capacity(self, *, task_family: str, model: str) -> tuple[bool, str]:
-        if str(model or "").strip().lower() == "openrouter/free" or str(model or "").strip().lower().endswith(":free"):
-            if normalize_task_family(task_family) == "vision_generation":
-                return await self._vision_guard.reserve_slot()
-            return await self._text_guard.reserve_slot()
+        model_normalized = str(model or "").strip().lower()
+        if model_normalized == "openrouter/free" or model_normalized.endswith(":free"):
+            # Slot reservation already happens in picker; avoid double accounting.
+            return True, "ok"
         return True, "ok"
 
     async def execute(self, request: ProviderExecutionRequest) -> GigaChatResponse:

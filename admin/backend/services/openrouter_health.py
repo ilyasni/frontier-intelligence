@@ -16,11 +16,13 @@ from admin.backend.services.openrouter_picker import (
     reserve_model_slot,
 )
 from shared.config import get_settings
+from shared.redis_client import get_client
 
 _TINY_PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s8xR9wAAAAASUVORK5CYII="
 )
 _MAX_MODELS_PER_RUN = 4
+_CURSOR_KEY = "or:health:probe_cursor"
 
 
 def _health_profile(model: dict[str, Any]) -> str:
@@ -159,7 +161,32 @@ async def probe_openrouter_health() -> dict[str, Any]:
             int(not model.get("supports_vision")),
         )
     )
-    selected = candidates[:_MAX_MODELS_PER_RUN]
+    if not candidates:
+        return {
+            "status": "ok",
+            "fetched_at": time.time(),
+            "probed": 0,
+            "ok": 0,
+            "skipped": 0,
+            "models": [],
+        }
+    batch_size = max(
+        1,
+        min(
+            int(getattr(settings, "openrouter_health_probe_batch_size", _MAX_MODELS_PER_RUN) or _MAX_MODELS_PER_RUN),
+            len(candidates),
+        ),
+    )
+    redis = get_client()
+    cursor_raw = await redis.get(_CURSOR_KEY)
+    try:
+        cursor = int(cursor_raw or 0)
+    except (TypeError, ValueError):
+        cursor = 0
+    start = cursor % len(candidates)
+    selected = [candidates[(start + idx) % len(candidates)] for idx in range(batch_size)]
+    next_cursor = (start + batch_size) % len(candidates)
+    await redis.set(_CURSOR_KEY, str(next_cursor), ex=86400)
 
     timeout = httpx.Timeout(
         float(settings.openrouter_health_probe_timeout_sec or 20.0),

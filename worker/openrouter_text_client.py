@@ -22,8 +22,8 @@ class OpenRouterTextClient(OpenAICompatTextClient):
             base_url=settings.openrouter_base_url,
             api_key=settings.openrouter_api_key,
             default_model=settings.openrouter_text_model,
-            max_parallel_requests=settings.gigachat_max_simultaneous_requests,
-            min_request_interval_ms=settings.gigachat_min_request_interval_ms,
+            max_parallel_requests=settings.openrouter_max_simultaneous_requests,
+            min_request_interval_ms=settings.openrouter_min_request_interval_ms,
             default_headers={
                 "HTTP-Referer": settings.openrouter_referrer,
                 "X-Title": "Frontier Intelligence",

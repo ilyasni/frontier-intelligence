@@ -150,6 +150,30 @@ RSS_PRESETS: dict[str, dict[str, str]] = {
         "name": "InsideEVs User Experience",
         "url": "https://insideevs.com/rss/category/user-experience/",
     },
+    "insideevs_charging": {
+        "name": "InsideEVs Charging",
+        "url": "https://insideevs.com/rss/category/charging/",
+    },
+    "insideevs_battery_tech": {
+        "name": "InsideEVs Battery Tech",
+        "url": "https://insideevs.com/rss/category/battery-tech/",
+    },
+    "drom_export": {
+        "name": "Drom RSS export",
+        "url": "https://www.drom.ru/export/",
+    },
+    "techcrunch_transportation": {
+        "name": "TechCrunch Transportation",
+        "url": "https://techcrunch.com/category/transportation/feed/",
+    },
+    "teslarati": {
+        "name": "TESLARATI",
+        "url": "https://www.teslarati.com/feed/",
+    },
+    "smashingmagazine": {
+        "name": "Smashing Magazine",
+        "url": "https://www.smashingmagazine.com/feed/",
+    },
     "electrek": {
         "name": "Electrek",
         "url": "https://electrek.co/feed",

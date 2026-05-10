@@ -168,9 +168,8 @@ groups:
         expr: frontier_openrouter_key_limit_remaining{service="admin"} < 5
         for: 10m
         labels:
-          severity: warning
+          severity: info
           service: admin
-          notify: telegram
         annotations:
           summary: "OpenRouter remaining credit is low"
           description: "OpenRouter reported only {{ $value }} credits remaining for the current key. Free traffic may still work, but paid fallback headroom and future paid routing are limited."
@@ -241,6 +240,17 @@ groups:
           summary: "OpenRouter picker is repeatedly skipping requests"
           description: "OpenRouter picker skips for {{ $labels.service }}/{{ $labels.task_family }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. This usually means quarantine, cap pressure, or no compatible free model."
 
+      - alert: FrontierOpenRouterNonFreeModelBlocked
+        expr: sum by (service, task_family) (increase(frontier_openrouter_picker_skip_total{service="worker",reason="non_free_model_blocked"}[15m])) >= 1
+        for: 1m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "OpenRouter non-free model attempt was blocked"
+          description: "Runtime blocked non-free OpenRouter model usage for {{ $labels.service }}/{{ $labels.task_family }}. Check policy overrides and enforce free-only routing inputs."
+
       - alert: FrontierOpenRouterNearDailyCap
         expr: max by (service, model_id) (frontier_openrouter_rpd_used{service="admin"}) >= 750
         for: 10m
@@ -275,12 +285,11 @@ groups:
           description: "OpenRouter text fallbacks for {{ $labels.service }}/{{ $labels.task }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. The text chain is bypassing OR more often than expected."
 
       - alert: FrontierOpenRouterFinopsDrift
-        expr: abs(frontier_llm_finops_reconciliation_gap{service="admin",provider="openrouter",kind="openrouter_free_daily_requests"}) >= 10
-        for: 15m
+        expr: abs(frontier_llm_finops_reconciliation_gap{service="admin",provider="openrouter",kind="openrouter_free_daily_requests"}) >= 200
+        for: 60m
         labels:
           severity: warning
           service: admin
-          notify: telegram
         annotations:
           summary: "OpenRouter runtime usage is drifting from published daily accounting"
           description: "The gap between runtime free-request accounting and the cached OpenRouter daily usage snapshot stayed above {{ $value }} requests for 15 minutes. Check stale key refreshes, unexpected OR traffic, or accounting mismatches."
@@ -308,8 +317,8 @@ groups:
           description: "Provider {{ $labels.provider }} is being reconciled from stale cached state for more than 20 minutes. Refresh lag can hide quota pressure or accounting drift."
 
       - alert: FrontierPolzaRateLimitBurst
-        expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="polza"}[10m])) >= 3
-        for: 5m
+        expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="polza"}[10m])) >= 6
+        for: 10m
         labels:
           severity: warning
           service: worker
@@ -319,8 +328,8 @@ groups:
           description: "Polza 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. Spillover to GigaChat may accelerate."
 
       - alert: FrontierPolzaErrorBurst
-        expr: sum by (service, task) (increase(frontier_llm_requests_total{service="worker",provider="polza",status="error"}[15m])) >= 5
-        for: 10m
+        expr: sum by (service, task) (increase(frontier_llm_requests_total{service="worker",provider="polza",status="error"}[15m])) >= 10
+        for: 15m
         labels:
           severity: warning
           service: worker
@@ -330,8 +339,8 @@ groups:
           description: "Polza request errors for {{ $labels.service }}/{{ $labels.task }} increased by {{ $value }} in 15 minutes. Check provider health, model availability, and outbound connectivity."
 
       - alert: FrontierPolzaVisionErrorBurst
-        expr: sum by (service) (increase(frontier_polza_vision_requests_total{service="worker",status="error"}[15m])) >= 3
-        for: 10m
+        expr: sum by (service) (increase(frontier_polza_vision_requests_total{service="worker",status="error"}[15m])) >= 6
+        for: 15m
         labels:
           severity: warning
           service: worker
@@ -341,8 +350,8 @@ groups:
           description: "Polza vision errors for {{ $labels.service }} increased by {{ $value }} in 15 minutes. Mass-vision fallback may spill directly into GigaChat."
 
       - alert: FrontierPolzaFallbackBurst
-        expr: sum by (service, task, reason, to_provider) (increase(frontier_llm_fallbacks_total{service="worker",from_provider="polza"}[15m])) >= 3
-        for: 10m
+        expr: sum by (service, task, reason, to_provider) (increase(frontier_llm_fallbacks_total{service="worker",from_provider="polza"}[15m])) >= 8
+        for: 15m
         labels:
           severity: warning
           service: worker
@@ -352,8 +361,8 @@ groups:
           description: "Polza fallbacks for {{ $labels.service }}/{{ $labels.task }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Tertiary spillover to GigaChat is now material."
 
       - alert: FrontierRedisStreamLagHigh
-        expr: frontier_redis_stream_lag{service="admin"} > 1000
-        for: 5m
+        expr: frontier_redis_stream_lag{service="admin"} > 2000
+        for: 10m
         labels:
           severity: warning
           service: admin
@@ -373,8 +382,8 @@ groups:
           description: "{{ $labels.stream }}/{{ $labels.group }} lag is {{ $value }} for more than 10 minutes. New events are not being processed in time."
 
       - alert: FrontierRedisStreamPendingHigh
-        expr: frontier_redis_stream_pending{service="admin"} > 100
-        for: 5m
+        expr: frontier_redis_stream_pending{service="admin"} > 250
+        for: 10m
         labels:
           severity: warning
           service: admin
@@ -383,8 +392,8 @@ groups:
           description: "{{ $labels.stream }}/{{ $labels.group }} pending is {{ $value }}. Check consumer crashes, XAUTOCLAIM reclaim, and DLQ."
 
       - alert: FrontierRedisStreamOldestPendingTooOld
-        expr: frontier_redis_stream_oldest_pending_age_seconds{service="admin"} > 900
-        for: 5m
+        expr: frontier_redis_stream_oldest_pending_age_seconds{service="admin"} > 1800
+        for: 15m
         labels:
           severity: warning
           service: admin
