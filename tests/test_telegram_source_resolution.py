@@ -83,6 +83,38 @@ async def test_fetch_uses_cached_entity_id_when_username_changed(source):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_fetch_uses_latest_message_id_checkpoint_for_incremental_sync(source):
+    source._checkpoint = {
+        "cursor_json": {
+            "latest_message_id": 150,
+            "telegram_peer": {
+                "entity_id": 777001,
+                "username": "newhandle",
+            },
+        }
+    }
+    source.redis.redis.exists = AsyncMock(return_value=0)
+    msg_a = _make_msg(151, text="first new")
+    msg_b = _make_msg(152, text="second new")
+    client_mock = MagicMock()
+    client_mock.get_input_entity = AsyncMock(return_value="cached-peer")
+    client_mock.get_entity = AsyncMock(
+        return_value=SimpleNamespace(username="newhandle", id=777001, title="New Handle")
+    )
+    client_mock.iter_messages.return_value = _async_iter([msg_b, msg_a])
+    source.rotator.get_client = AsyncMock(return_value=client_mock)
+
+    events = await source.fetch()
+
+    assert len(events) == 2
+    client_mock.iter_messages.assert_called_once_with("cached-peer", limit=50, min_id=150)
+    cursor_json = source._checkpoint_updates["cursor_json"]
+    assert cursor_json["latest_message_id"] == 152
+    assert source._checkpoint_updates["last_seen_published_at"] == max(msg_a.date, msg_b.date)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_run_marks_error_on_semantic_username_failure_without_cached_peer(source):
     runtime_store = SimpleNamespace(
         start_run=AsyncMock(return_value="run-1"),

@@ -49,9 +49,10 @@ class WebSource(StructuredSource):
         date_selector = parse_cfg.get("date_selector") or "time"
         article_selector = parse_cfg.get("article_selector") or ""
 
-        link_el = raw_item.select_one(link_selector)
-        title_el = raw_item.select_one(title_selector)
-        date_el = raw_item.select_one(date_selector)
+        is_anchor_item = getattr(raw_item, "name", None) == "a"
+        link_el = raw_item if is_anchor_item and raw_item.get("href") else raw_item.select_one(link_selector)
+        title_el = raw_item if is_anchor_item else raw_item.select_one(title_selector)
+        date_el = None if is_anchor_item or not date_selector else raw_item.select_one(date_selector)
 
         href = link_el.get("href", "").strip() if link_el else ""
         if not href:

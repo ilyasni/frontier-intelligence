@@ -4,6 +4,7 @@
 *.env
 !.env.example
 !.env.balanced.example
+runtime/
 
 # Python artifacts
 __pycache__/

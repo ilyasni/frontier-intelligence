@@ -138,10 +138,17 @@ class RedisClient:
         min_idle_ms: int, start_id: str = "0-0", count: int = 10
     ) -> tuple[str, list]:
         """Claim messages idle > min_idle_ms from any consumer. Returns (next_id, messages)."""
-        result = await self.redis.xautoclaim(
-            stream, group, consumer, min_idle_ms,
-            start_id=start_id, count=count,
-        )
+        import redis.asyncio as aioredis
+        try:
+            result = await self.redis.xautoclaim(
+                stream, group, consumer, min_idle_ms,
+                start_id=start_id, count=count,
+            )
+        except aioredis.ResponseError as e:
+            if "NOGROUP" in str(e):
+                await self.ensure_consumer_group(stream, group)
+                return "0-0", []
+            raise
         # result is (next_start_id, [(msg_id, data), ...], [deleted_ids])
         next_id = result[0] if result else "0-0"
         messages = []

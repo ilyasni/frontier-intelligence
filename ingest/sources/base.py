@@ -176,12 +176,16 @@ class StructuredSource(AbstractSource):
         events: list[PostParsedEvent] = []
         newest_published_at: datetime | None = None
         new_seen = list(self._seen_ids)
+        batch_seen_ids: set[str] = set()
 
         normalized_items: list[NormalizedSourceItem] = []
         for raw in raw_items:
             item = await self.normalize_item(raw)
             if not item:
                 continue
+            if item.external_id in batch_seen_ids:
+                continue
+            batch_seen_ids.add(item.external_id)
             if self.is_duplicate(item):
                 continue
             if not self.matches_filters(item):

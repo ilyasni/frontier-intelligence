@@ -243,7 +243,7 @@ sources:
     workspace_id: disruption
     source_type: web
     name: Bosch Mobility — Software-defined vehicle
-    url: https://www.bosch-mobility.com/en/mobility-topics/software-defined-vehicle/
+    url: https://www.bosch.com/stories/topics/software-driven-mobility/
     schedule_cron: "*/120 * * * *"
     proxy_config:
       type: socks5
@@ -253,19 +253,21 @@ sources:
       quality_tier: trusted
       expected_signal_types: [mobility, software_defined_vehicle, automotive]
       source_authority: 0.62
+      filters:
+        include_keywords: [software, mobility, vehicle, automotive, autonomous, ai]
       parse:
-        full_content: false
-        listing_selector: "article, .card, .post, .item, li"
+        full_content: true
+        listing_selector: "div.A-Teaser-NavigationTeaser a[href*='/stories/'], div.A-Teaser-RelatedPageTeaser a[href*='/stories/'], div.a-link.a-link--button a[href*='/stories/']"
         link_selector: "a[href]"
-        title_selector: "h2, h3, a[href]"
-        date_selector: "time"
+        title_selector: "a[href]"
+        date_selector: ""
         article_selector: "article, main"
 
   - id: web_mobilityhouse_newsroom
     workspace_id: disruption
     source_type: web
     name: Mobility House Newsroom
-    url: https://www.mobilityhouse.com/int_en/our-company/newsroom
+    url: https://www.mobilityhouse.com/usa_en/our-company/newsroom
     schedule_cron: "*/120 * * * *"
     proxy_config:
       type: socks5
@@ -276,11 +278,11 @@ sources:
       expected_signal_types: [mobility, charging, energy]
       source_authority: 0.58
       parse:
-        full_content: false
-        listing_selector: "article, .card, .post, .item, li"
+        full_content: true
+        listing_selector: "a[href*='/our-company/newsroom/article/']"
         link_selector: "a[href]"
-        title_selector: "h2, h3, a[href]"
-        date_selector: "time"
+        title_selector: "a[href]"
+        date_selector: ""
         article_selector: "article, main"
 
   - id: web_nngroup_articles

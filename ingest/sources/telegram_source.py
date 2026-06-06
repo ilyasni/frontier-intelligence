@@ -86,6 +86,14 @@ class TelegramSource(AbstractSource):
         peer = cursor.get("telegram_peer") or {}
         return peer if isinstance(peer, dict) else {}
 
+    def _checkpoint_latest_message_id(self) -> int:
+        cursor = self.checkpoint_cursor()
+        raw = cursor.get("latest_message_id")
+        try:
+            return int(raw or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _remember_resolved_entity(self, entity: Any) -> None:
         entity_id = getattr(entity, "id", None)
         if entity_id is None:
@@ -292,14 +300,24 @@ class TelegramSource(AbstractSource):
         fetch_error: Exception | None = None
         target: Any = self.channel
         channel_clean = self.channel.lstrip("@")
+        latest_checkpoint_id = self._checkpoint_latest_message_id()
+        latest_seen_message_id = latest_checkpoint_id
+        newest_published_at: datetime | None = None
 
         try:
             target, channel_clean = await self._resolve_target(client)
-            async for msg in client.iter_messages(target, limit=self.limit):
+            iter_kwargs: dict[str, Any] = {"limit": self.limit}
+            if latest_checkpoint_id > 0:
+                iter_kwargs["min_id"] = latest_checkpoint_id
+            async for msg in client.iter_messages(target, **iter_kwargs):
                 if not isinstance(msg, Message):
                     continue
-                if msg.date < since:
+                self._fetched_count += 1
+                if latest_checkpoint_id <= 0 and msg.date < since:
                     break
+                latest_seen_message_id = max(latest_seen_message_id, int(msg.id or 0))
+                if msg.date and (newest_published_at is None or msg.date > newest_published_at):
+                    newest_published_at = msg.date
 
                 grouped_id = str(msg.grouped_id) if msg.grouped_id else None
 
@@ -333,6 +351,15 @@ class TelegramSource(AbstractSource):
 
         if fetch_error and not albums and not singles:
             raise fetch_error
+
+        if latest_seen_message_id > latest_checkpoint_id:
+            self._checkpoint_updates["cursor_json"] = {
+                **self.checkpoint_cursor(),
+                **(self._checkpoint_updates.get("cursor_json") or {}),
+                "latest_message_id": latest_seen_message_id,
+            }
+        if newest_published_at:
+            self._checkpoint_updates["last_seen_published_at"] = newest_published_at
 
         events: list[PostParsedEvent] = []
 

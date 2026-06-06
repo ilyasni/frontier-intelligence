@@ -34,6 +34,7 @@ from shared.llm_control_plane import (
     embedding_profile_for_model,
     fallback_allowed_for_mode,
     normalize_policy_mode,
+    refresh_policy_candidate_models_from_derived,
     task_family_for_task as control_plane_family_for_task,
     ERROR_THROTTLED_LOCAL,
 )
@@ -217,7 +218,7 @@ class LLMRouterClient:
             self._control_plane_policy_source = "invalid_policy_fallback"
             return fallback_policy
         self._control_plane_policy_source = "db_policy"
-        return policy
+        return refresh_policy_candidate_models_from_derived(policy, fallback_policy)
 
     def _adapter_for_provider(self, provider: str):
         return self._provider_adapters[normalize_provider(provider)]

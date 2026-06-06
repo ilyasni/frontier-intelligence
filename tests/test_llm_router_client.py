@@ -112,6 +112,25 @@ class _FakeWormsoft:
             ),
         )
 
+    async def vision(
+        self,
+        image_bytes: bytes,
+        *,
+        prompt: str = "",
+        model_override: str | None = None,
+        max_tokens: int = 1024,
+    ):
+        del max_tokens
+        self.calls.append({"vision": len(image_bytes), "prompt": prompt, "model_override": model_override})
+        model = str(model_override or "wormsoft/vision/medium").strip()
+        return GigaChatResponse(
+            content='{"scene":"test"}',
+            model=model,
+            requested_model=model,
+            provider="wormsoft",
+            usage=GigaChatUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+        )
+
     async def close(self) -> None:
         return None
 
@@ -266,7 +285,7 @@ def _policy_override(
             or [
                 RoutingCandidate(provider="wormsoft", model="wormsoft/agent/medium"),
                 RoutingCandidate(provider="openrouter", model="openrouter/free"),
-                RoutingCandidate(provider="polza", model="google/gemma-3-12b-it"),
+                RoutingCandidate(provider="polza", model="deepseek/deepseek-v3.2"),
                 RoutingCandidate(provider="gigachat", model="GigaChat-2"),
             ],
         ),
@@ -296,7 +315,7 @@ class _FakePolzaText:
 
     @property
     def default_model(self) -> str:
-        return "google/gemma-3-12b-it"
+        return "deepseek/deepseek-v3.2"
 
     @property
     def is_available(self) -> bool:
@@ -424,13 +443,13 @@ def _settings(embed_dim: int = 2560, **overrides):
         gigachat_model_valence="GigaChat-2",
         gigachat_model_mcp_synthesis="GigaChat-2-Pro",
         wormsoft_model_default="wormsoft/agent/medium",
-        wormsoft_model_mcp_synthesis="wormsoft/agent/large",
+        wormsoft_model_mcp_synthesis="wormsoft/agent/high",
         wormsoft_api_key="secret",
         openrouter_text_model="openrouter/free",
         openrouter_api_key="or-key",
         openrouter_referrer="https://frontier-intelligence.local",
-        polza_text_model="google/gemma-3-12b-it",
-        polza_synthesis_model="mistralai/mistral-small-3.1-24b-instruct",
+        polza_text_model="deepseek/deepseek-v3.2",
+        polza_synthesis_model="deepseek/deepseek-v3.2",
         polza_api_key="polza-key",
         openrouter_free_rpd_soft_cap=850,
         llm_runtime_provider_openrouter_daily_request_soft_cap=0,

@@ -1411,7 +1411,8 @@ function renderLLMRoutingPanel(payload, runtime, wormsoftCatalog, providerStatus
   const keyPresent = Boolean(wormsoftCatalog?.key_present);
   const catalogReachable = Boolean(wormsoftCatalog?.available);
   const editorRows = LLM_ROUTE_TASKS.map((task) => {
-    const value = configured[task.id] || effective[task.id] || {};
+    // effective уже учитывает merge с env; configured только дополняет отсутствующие поля
+    const value = { ...(configured[task.id] || {}), ...(effective[task.id] || {}) };
     return [
       escapeHtml(task.label),
       renderProviderSelect(`llm-route-${task.id}-provider`, providers, value.provider || 'gigachat', `syncLLMRouteTask('${task.id}')`),
@@ -1775,7 +1776,7 @@ function renderControlPlanePolicyPanel(payload) {
         ${renderSettingsCells([
           { label: 'Version', value: String(effective.version || 'v2'), meta: 'Policy schema version.' },
           { label: 'Default mode', value: String(effective.default_mode || 'degraded'), meta: 'Execution mode used by default across families.' },
-          { label: 'Source', value: String(data.source || 'derived'), meta: data.source === 'derived' ? 'Derived from current runtime mode and legacy /llm-routing config.' : 'Stored v2 policy override from admin API.' },
+          { label: 'Source', value: String(data.source || 'derived'), meta: data.source === 'derived' ? 'Derived from current runtime mode and legacy /llm-routing config.' : 'Stored v2 policy in Postgres; candidate models подтягиваются из текущего env при отображении и в воркере.' },
           { label: 'Updated', value: data.updated_at ? formatTime(data.updated_at) : '-', meta: 'Last DB write for the explicit policy override.' },
           { label: 'Candidate routes', value: String(totalCandidates), meta: 'Total provider/model candidates across all families.' },
           { label: 'Providers', value: String(providerCount), meta: 'Distinct providers referenced by the active policy.' },

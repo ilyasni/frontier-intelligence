@@ -35,6 +35,18 @@
 ## Current Runtime
 
 - Runtime LLM integration uses `openai==1.54.4` against `gpt2giga-proxy`.
+- Current production `xray` egress uses a runtime profile registry instead of a single `XRAY_VLESS_*` upstream.
+- Runtime registry files on the server:
+  - `/opt/frontier-intelligence/runtime/xray-profiles.json`
+  - `/opt/frontier-intelligence/runtime/xray-active-profile.txt`
+  - `/opt/frontier-intelligence/runtime/xray-previous-profile.txt`
+  - `/opt/frontier-intelligence/runtime/xray-reload.trigger`
+- Current failover order on `frontier-intelligence`:
+  1. `profile_a_primary` -> `185.192.21.125:443` (`VLESS + REALITY`, `flow=xtls-rprx-vision`)
+  2. `profile_c_reality_mtproxy_host` -> `79.132.143.207:24443` (`VLESS + REALITY`, empty `flow`)
+  3. `profile_b_reality_highport` -> `185.192.21.125:24443` (`VLESS + REALITY`, empty `flow`)
+- `profile_d_cdn_ws_pending` is a disabled placeholder for a future CDN-backed backup path and is not part of the active failover chain.
+- Operational note: `profile_c_reality_mtproxy_host` is a validated standby path on a separate host and currently passes both transport probes and source-smoke checks. `profile_b_reality_highport` remains the current active profile until we intentionally promote another one.
 - Current production-safe routing:
   - `GIGACHAT_MODEL=GigaChat-2`
   - `GIGACHAT_MODEL_LITE=GigaChat-2`
@@ -59,9 +71,36 @@
 curl -sS http://127.0.0.1:8100/healthz        # MCP
 curl -sS http://127.0.0.1:8101/api/health    # Admin
 curl -sS http://127.0.0.1:8100/metrics        # метрики MCP (Prometheus)
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/health
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/profiles
 ```
 
 Прочие сервисы: PaddleOCR `http://127.0.0.1:8008/readyz`, Prometheus `9090`, Grafana `3000` — см. `docs/security-git-preflight.md` и `docker compose ps`.
+
+### XRAY Runtime Operations
+
+Use the Admin API for checks and profile control:
+
+```bash
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/health
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/health/run
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/health/history
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/profiles
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/remediation/history
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/remediate/switch \
+  -H 'Content-Type: application/json' \
+  -d '{"profile_name":"profile_c_reality_mtproxy_host","reason":"manual_validation"}'
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/remediate/rollback \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"restore_previous_profile"}'
+```
+
+Health now has two layers:
+
+- `transport`: generic probe targets through `socks5://xray:10808`
+- `source_smoke`: real source URLs that matter for ingestion
+
+Automatic remediation is local to `admin` and switches to the next enabled profile only after the configured degraded streak and cooldown rules.
 
 ### Urgent Trend Alerts
 

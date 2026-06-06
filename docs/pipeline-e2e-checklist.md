@@ -62,6 +62,41 @@ LIMIT 30;
 - Repeated `running` rows should no longer accumulate; if they do, verify the ingest image is up to date.
 - If `posts.preview` looks HTML-ish, verify the source is using the current ingest build with RSS HTML normalization.
 
+## 3.1. XRAY profile and source-smoke checks
+
+Before changing parser logic for a blocked source, verify the active `xray` profile and the two-layer health output:
+
+```bash
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/health | jq .
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/profiles | jq .
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/remediation/history | jq .
+```
+
+Interpretation:
+
+- `transport.status=ok` means the tunnel itself is alive.
+- `source_smoke.status=degraded` means the current upstream still fails on real ingestion targets and may need a profile switch.
+- The current recommended fallback order is:
+  1. `profile_a_primary`
+  2. `profile_c_reality_mtproxy_host`
+  3. `profile_b_reality_highport`
+
+If you need a controlled switch for validation:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/remediate/switch \
+  -H 'Content-Type: application/json' \
+  -d '{"profile_name":"profile_c_reality_mtproxy_host","reason":"source_validation"}' | jq .
+```
+
+And rollback after the test:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/remediate/rollback \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"restore_previous_profile"}' | jq .
+```
+
 ## 4. Qdrant
 
 Коллекция по умолчанию: `QDRANT_COLLECTION` / `frontier_docs`.

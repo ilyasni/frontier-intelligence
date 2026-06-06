@@ -33,9 +33,14 @@ class ProbeResult:
     error: str | None
 
 
-def _probe_targets() -> list[str]:
+def _transport_probe_targets() -> list[str]:
     settings = get_settings()
     return [target.strip() for target in settings.xray_probe_targets if target.strip()]
+
+
+def _source_smoke_targets() -> list[str]:
+    settings = get_settings()
+    return [target.strip() for target in settings.xray_source_smoke_targets if target.strip()]
 
 
 async def _probe_once(url: str, *, proxy: str | None) -> ProbeResult:
@@ -49,6 +54,42 @@ async def _probe_once(url: str, *, proxy: str | None) -> ProbeResult:
         return ProbeResult(url=url, ok=response.status_code < 500, status_code=response.status_code, error=None)
     except Exception as exc:  # noqa: BLE001
         return ProbeResult(url=url, ok=False, status_code=None, error=str(exc))
+
+
+async def _run_probe_group(
+    *,
+    name: str,
+    targets: list[str],
+    proxy: str | None,
+) -> dict[str, Any]:
+    if not targets:
+        return {
+            "name": name,
+            "status": "disabled",
+            "targets_total": 0,
+            "targets_failed": 0,
+            "failure_ratio": 0.0,
+            "results": [],
+        }
+    results = [await _probe_once(url, proxy=proxy) for url in targets]
+    failed = [item for item in results if not item.ok]
+    failure_ratio = len(failed) / max(len(results), 1)
+    return {
+        "name": name,
+        "status": "degraded" if failed else "ok",
+        "targets_total": len(results),
+        "targets_failed": len(failed),
+        "failure_ratio": round(failure_ratio, 4),
+        "results": [
+            {
+                "url": item.url,
+                "ok": item.ok,
+                "status_code": item.status_code,
+                "error": item.error,
+            }
+            for item in results
+        ],
+    }
 
 
 async def _send_xray_alert(streak: int, failed: list[ProbeResult], total: int) -> None:
@@ -77,29 +118,27 @@ async def _send_xray_alert(streak: int, failed: list[ProbeResult], total: int) -
         logger.exception("xray_degradation_alert_delivery_failed")
 
 
-async def _trigger_remediation_webhook(streak: int, failed: list[ProbeResult], total: int) -> dict[str, Any]:
+async def _trigger_remediation_webhook(payload: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
-    if not settings.xray_auto_remediation_webhook_url.strip():
+    target_url = settings.xray_auto_remediation_webhook_url.strip()
+    if not target_url:
         return {"triggered": False, "reason": "webhook_not_configured"}
-    payload = {
-        "event": "xray_degradation",
-        "streak": streak,
-        "failed": len(failed),
-        "total": total,
-        "targets": [
-            {
-                "url": item.url,
-                "ok": item.ok,
-                "status_code": item.status_code,
-                "error": item.error,
-            }
-            for item in failed
-        ],
-    }
+    if (
+        "/api/monitoring/xray/remediate/failover" in target_url
+        and ("127.0.0.1" in target_url or "localhost" in target_url or "0.0.0.0" in target_url)
+    ):
+        from admin.backend.services.xray_runtime import failover_to_next_profile
+
+        result = await failover_to_next_profile(
+            reason=str(payload.get("reason") or payload.get("event") or "xray_degradation").strip(),
+            trigger="auto_failover",
+            metadata=payload,
+        )
+        return {"triggered": result.get("status") == "switched", "mode": "direct", "result": result}
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
-                settings.xray_auto_remediation_webhook_url,
+                target_url,
                 json=payload,
                 headers={"content-type": "application/json"},
             )
@@ -112,17 +151,29 @@ async def _trigger_remediation_webhook(streak: int, failed: list[ProbeResult], t
         return {"triggered": False, "reason": "request_failed", "error": str(exc)}
 
 
-async def run_xray_health_check() -> dict[str, Any]:
+async def run_xray_health_check(*, allow_remediation: bool = True) -> dict[str, Any]:
     settings = get_settings()
-    targets = _probe_targets()
-    if not targets:
+    transport_targets = _transport_probe_targets()
+    if not transport_targets:
         return {"status": "disabled", "reason": "no_probe_targets"}
 
     proxy = settings.xray_probe_proxy_url.strip() or None
-    results = [await _probe_once(url, proxy=proxy) for url in targets]
-    failed = [item for item in results if not item.ok]
-    failure_ratio = len(failed) / max(len(results), 1)
+    transport = await _run_probe_group(name="transport", targets=transport_targets, proxy=proxy)
+    source_smoke = await _run_probe_group(name="source_smoke", targets=_source_smoke_targets(), proxy=proxy)
+    transport_failed = [
+        ProbeResult(
+            url=str(item.get("url") or ""),
+            ok=bool(item.get("ok")),
+            status_code=item.get("status_code"),
+            error=item.get("error"),
+        )
+        for item in transport["results"]
+        if not item.get("ok")
+    ]
+    failure_ratio = float(transport["failure_ratio"])
     is_degraded = failure_ratio >= settings.xray_degradation_failure_ratio
+
+    from admin.backend.services.xray_runtime import get_runtime_state
 
     redis = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
@@ -144,39 +195,51 @@ async def run_xray_health_check() -> dict[str, Any]:
             if last_alert is not None:
                 can_alert = False
             if can_alert:
-                await _send_xray_alert(streak, failed, len(results))
+                await _send_xray_alert(streak, transport_failed, int(transport["targets_total"]))
                 alert_sent = True
                 await redis.set(_XRAY_LAST_ALERT_KEY, "1", ex=settings.xray_alert_cooldown_seconds)
 
             # Опциональная авторемедиация через внешний webhook.
-            if settings.xray_auto_remediation_enabled:
+            if allow_remediation and settings.xray_auto_remediation_enabled:
                 last_remediate = await redis.get(_XRAY_LAST_REMEDIATE_KEY)
                 if last_remediate is None:
-                    remediation = await _trigger_remediation_webhook(streak, failed, len(results))
+                    remediation_payload = {
+                        "event": "xray_degradation",
+                        "reason": "transport_degraded",
+                        "streak": streak,
+                        "health": {
+                            "status": "degraded",
+                            "proxy": proxy,
+                            "targets_total": transport["targets_total"],
+                            "targets_failed": transport["targets_failed"],
+                            "failure_ratio": transport["failure_ratio"],
+                            "results": transport["results"],
+                            "source_smoke": source_smoke,
+                            "runtime": get_runtime_state(),
+                        },
+                    }
+                    remediation = await _trigger_remediation_webhook(remediation_payload)
                     await redis.set(
                         _XRAY_LAST_REMEDIATE_KEY,
                         "1",
                         ex=settings.xray_auto_remediation_cooldown_seconds,
                     )
 
+        runtime = get_runtime_state()
         payload = {
             "status": "degraded" if is_degraded else "ok",
             "proxy": proxy,
-            "targets_total": len(results),
-            "targets_failed": len(failed),
+            "active_profile": runtime.get("active_profile"),
+            "runtime": runtime,
+            "targets_total": transport["targets_total"],
+            "targets_failed": transport["targets_failed"],
             "failure_ratio": round(failure_ratio, 4),
             "streak": streak,
             "alert_sent": alert_sent,
             "remediation": remediation,
-            "results": [
-                {
-                    "url": item.url,
-                    "ok": item.ok,
-                    "status_code": item.status_code,
-                    "error": item.error,
-                }
-                for item in results
-            ],
+            "results": transport["results"],
+            "transport": transport,
+            "source_smoke": source_smoke,
         }
         history_record = {
             "status": payload["status"],
@@ -185,6 +248,9 @@ async def run_xray_health_check() -> dict[str, Any]:
             "targets_total": payload["targets_total"],
             "streak": payload["streak"],
             "alert_sent": payload["alert_sent"],
+            "active_profile": payload["active_profile"],
+            "source_smoke_status": source_smoke["status"],
+            "source_smoke_failed": source_smoke["targets_failed"],
             "checked_at": datetime.now(UTC).isoformat(),
         }
         await redis.set(_XRAY_LAST_RESULT_KEY, json.dumps(payload, ensure_ascii=False), ex=7 * 24 * 3600)

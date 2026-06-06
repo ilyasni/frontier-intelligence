@@ -726,6 +726,55 @@ def default_routing_policy_v2(
     )
 
 
+def _refresh_family_candidate_models(
+    stored_family: TaskFamilyPolicy,
+    derived_family: TaskFamilyPolicy,
+) -> TaskFamilyPolicy:
+    """Подставляет model из derived для каждого кандидата stored по порядку вхождения провайдера."""
+    pools: dict[str, list[str]] = {}
+    for d in derived_family.candidates:
+        p = normalize_provider(d.provider)
+        pools.setdefault(p, []).append(str(d.model or "").strip())
+
+    consumed: dict[str, int] = {}
+    new_candidates: list[RoutingCandidate] = []
+    for c in stored_family.candidates:
+        p = normalize_provider(c.provider)
+        queue = pools.get(p, [])
+        idx = consumed.get(p, 0)
+        model = str(c.model or "").strip()
+        if idx < len(queue):
+            candidate_model = queue[idx]
+            if candidate_model:
+                model = candidate_model
+            consumed[p] = idx + 1
+        new_candidates.append(c.model_copy(update={"model": model}))
+    return stored_family.model_copy(update={"candidates": new_candidates})
+
+
+def refresh_policy_candidate_models_from_derived(
+    stored: RoutingPolicyV2,
+    derived: RoutingPolicyV2,
+) -> RoutingPolicyV2:
+    """Структура и флаги из сохранённой политики; актуальные model из derived (env/config).
+
+    Нужна чтобы админка и воркер не «залипали» на старых алиасах в Postgres/Redis после смены .env.
+    """
+    return stored.model_copy(
+        update={
+            "text_generation": _refresh_family_candidate_models(
+                stored.text_generation, derived.text_generation
+            ),
+            "vision_generation": _refresh_family_candidate_models(
+                stored.vision_generation, derived.vision_generation
+            ),
+            "embeddings": _refresh_family_candidate_models(
+                stored.embeddings, derived.embeddings
+            ),
+        }
+    )
+
+
 def policy_candidates_for_task(
     policy: RoutingPolicyV2,
     *,

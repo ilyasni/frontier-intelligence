@@ -155,6 +155,84 @@ bash scripts/server-build-ingest-fix.sh
 
 If a source works without proxy locally but fails on the server with network or reachability errors, first test the same source through `xray` before changing parser logic.
 
+## 8.1. XRAY runtime registry and failover
+
+`frontier-intelligence` no longer depends on a single `XRAY_VLESS_*` upstream in `.env`.
+The effective egress path is selected from a server-local runtime registry:
+
+- `/opt/frontier-intelligence/runtime/xray-profiles.json`
+- `/opt/frontier-intelligence/runtime/xray-active-profile.txt`
+- `/opt/frontier-intelligence/runtime/xray-previous-profile.txt`
+- `/opt/frontier-intelligence/runtime/xray-reload.trigger`
+
+Current recommended failover order:
+
+1. `profile_a_primary` -> `185.192.21.125:443`
+2. `profile_c_reality_mtproxy_host` -> `79.132.143.207:24443`
+3. `profile_b_reality_highport` -> `185.192.21.125:24443`
+
+`profile_d_cdn_ws_pending` is a disabled placeholder and should not be enabled until a separate CDN-backed backup contour exists.
+
+Operational meaning of the profiles:
+
+- `profile_a_primary`: canonical `REALITY + xtls-rprx-vision` path on `:443`
+- `profile_c_reality_mtproxy_host`: validated standby on a separate host; best first failover because it changes the failure domain, not just the port
+- `profile_b_reality_highport`: tactical high-port fallback on the same host as `profile_a`
+
+## 8.2. XRAY health and remediation API
+
+Use the Admin API for all runtime checks and profile actions:
+
+```bash
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/health
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/health/run
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/health/history
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/profiles
+curl -sS http://127.0.0.1:8101/api/monitoring/xray/remediation/history
+```
+
+Manual switch:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/remediate/switch \
+  -H 'Content-Type: application/json' \
+  -d '{"profile_name":"profile_c_reality_mtproxy_host","reason":"manual_validation"}'
+```
+
+Rollback to the previous profile:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8101/api/monitoring/xray/remediate/rollback \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"restore_previous_profile"}'
+```
+
+Health output is intentionally split:
+
+- `transport`: generic connectivity through `socks5://xray:10808`
+- `source_smoke`: real source URLs that matter to ingestion
+
+This distinction matters operationally:
+
+- `transport=ok` with `source_smoke=degraded` usually means the tunnel is alive but the current upstream is still poor for some real targets.
+- `profile_c_reality_mtproxy_host` is currently the reference standby because it has already passed both `transport` and `source_smoke`.
+
+## 8.3. Reload and build notes
+
+`xray` reads its effective config from the runtime registry and regenerates `/etc/xray/config.json` inside the container. A profile switch touches the reload trigger and recreates only the `xray` container.
+
+Important deployment notes:
+
+- `runtime/` is server-local and must not be overwritten from the workstation.
+- `.dockerignore` and `.rsync-exclude` already exclude `runtime/`; do not remove those rules.
+- If `/opt/frontier-intelligence/runtime` becomes root-owned after manual operations, fix ownership before rebuilding services that need the runtime files:
+
+```bash
+sudo chown -R ilyasni:ilyasni /opt/frontier-intelligence/runtime
+```
+
+If host-side `curl` to the Admin API behaves oddly, prefer calling the API from inside the `admin` container or over the Docker network before assuming the XRAY runtime itself is broken.
+
 ## 9. `source_runs` stuck in `running`
 
 Historical `running` rows can appear after hard restarts or container recreation.

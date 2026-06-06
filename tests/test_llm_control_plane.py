@@ -11,6 +11,7 @@ from shared.llm_control_plane import (
     default_routing_policy_v2,
     derive_provider_readiness,
     normalize_wormsoft_model_snapshot,
+    refresh_policy_candidate_models_from_derived,
     simulate_routing_decision,
     RoutingCandidate,
     TaskFamilyPolicy,
@@ -19,12 +20,14 @@ from shared.llm_control_plane import (
 
 def _settings():
     return SimpleNamespace(
+        wormsoft_api_key="worm-key",
+        wormsoft_vision_model="wormsoft/vision/medium",
         wormsoft_model_default="wormsoft/agent/medium",
-        wormsoft_model_mcp_synthesis="wormsoft/agent/large",
+        wormsoft_model_mcp_synthesis="wormsoft/agent/high",
         openrouter_text_model="openrouter/free",
         openrouter_vision_model="openrouter/free",
-        polza_text_model="google/gemma-3-12b-it",
-        polza_synthesis_model="mistralai/mistral-small-3.1-24b-instruct",
+        polza_text_model="deepseek/deepseek-v3.2",
+        polza_synthesis_model="deepseek/deepseek-v3.2",
         polza_vision_model="qwen3-vl-30b",
         gigachat_model_pro="GigaChat-2-Pro",
         gigachat_model_vision="GigaChat-2-Pro",
@@ -38,12 +41,56 @@ def _settings():
     )
 
 
+def test_refresh_policy_candidate_models_from_derived_updates_models() -> None:
+    """Сохранённая политика с устаревшим model для провайдера получает актуальный алиас из derived."""
+    derived = default_routing_policy_v2(_settings(), "custom", None)
+    stored = derived.model_copy(deep=True)
+    polza_idx = next(
+        i for i, c in enumerate(stored.text_generation.candidates) if c.provider == "polza"
+    )
+    candidates = list(stored.text_generation.candidates)
+    candidates[polza_idx] = candidates[polza_idx].model_copy(update={"model": "google/gemma-3-12b-it"})
+    stored = stored.model_copy(
+        update={
+            "text_generation": stored.text_generation.model_copy(update={"candidates": candidates}),
+        }
+    )
+    merged = refresh_policy_candidate_models_from_derived(stored, derived)
+    assert merged.text_generation.candidates[polza_idx].model == derived.text_generation.candidates[
+        polza_idx
+    ].model
+
+
 def test_default_routing_policy_v2_keeps_wormsoft_first_for_text() -> None:
     policy = default_routing_policy_v2(_settings(), "custom", None)
 
     assert policy.text_generation.candidates[0].provider == "wormsoft"
     assert policy.text_generation.candidates[0].model == "wormsoft/agent/medium"
     assert policy.embeddings.candidates[0].provider == "gigachat"
+
+
+def test_default_routing_policy_v2_vision_chain_openrouter_polza_then_giga() -> None:
+    """Цепочка vision: Wormsoft (ключ + алиас) → OpenRouter → Polza → GigaChat."""
+    policy = default_routing_policy_v2(_settings(), "custom", None)
+    v = policy.vision_generation.candidates
+    assert len(v) == 4
+    assert v[0].provider == "wormsoft"
+    assert v[0].model == "wormsoft/vision/medium"
+    assert v[1].provider == "openrouter"
+    assert v[2].provider == "polza"
+    assert v[2].model == "qwen3-vl-30b"
+    assert v[3].provider == "gigachat"
+
+
+def test_default_routing_policy_v2_vision_without_polza_skips_middle_hop() -> None:
+    s = _settings()
+    s.polza_vision_model = ""
+    policy = default_routing_policy_v2(s, "custom", None)
+    v = policy.vision_generation.candidates
+    assert len(v) == 3
+    assert v[0].provider == "wormsoft"
+    assert v[1].provider == "openrouter"
+    assert v[2].provider == "gigachat"
 
 
 def test_simulate_routing_decision_skips_open_model_circuit() -> None:

@@ -33,6 +33,7 @@ from shared.llm_control_plane import (
     CONTROL_PLANE_POLICY_REDIS_KEY,
     RoutingPolicyV2,
     default_routing_policy_v2,
+    refresh_policy_candidate_models_from_derived,
 )
 from shared.llm_routing import (
     RUNTIME_LLM_ROUTING_DB_KEY,
@@ -243,16 +244,19 @@ async def _control_plane_policy_payload(source: str = "db") -> dict:
     runtime_mode = await _runtime_mode_payload()
     legacy_routing_payload, _ = await _load_json_setting(RUNTIME_LLM_ROUTING_DB_KEY)
     stored_payload, updated_at = await _load_json_setting(CONTROL_PLANE_POLICY_DB_KEY)
-    effective = default_routing_policy_v2(settings, runtime_mode["mode"], legacy_routing_payload)
+    derived = default_routing_policy_v2(settings, runtime_mode["mode"], legacy_routing_payload)
     if stored_payload:
-        effective = RoutingPolicyV2.model_validate(stored_payload)
+        stored_policy = RoutingPolicyV2.model_validate(stored_payload)
+        effective = refresh_policy_candidate_models_from_derived(stored_policy, derived)
         try:
             await _mirror_runtime_value(
                 CONTROL_PLANE_POLICY_REDIS_KEY,
-                json.dumps(stored_payload),
+                json.dumps(effective.model_dump()),
             )
         except Exception as exc:
             logger.warning("control_plane_policy_redis_mirror_failed err=%s", exc)
+    else:
+        effective = derived
     return {
         "source": source if stored_payload else "derived",
         "updated_at": updated_at,

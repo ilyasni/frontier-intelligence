@@ -14,10 +14,10 @@ def _settings(**overrides):
         "gigachat_model_valence": "GigaChat-2",
         "gigachat_model_mcp_synthesis": "GigaChat-2-Pro",
         "wormsoft_model_default": "wormsoft/agent/medium",
-        "wormsoft_model_mcp_synthesis": "wormsoft/agent/large",
+        "wormsoft_model_mcp_synthesis": "wormsoft/agent/high",
         "openrouter_text_model": "openrouter/free",
-        "polza_text_model": "google/gemma-3-12b-it",
-        "polza_synthesis_model": "mistralai/mistral-small-3.1-24b-instruct",
+        "polza_text_model": "deepseek/deepseek-v3.2",
+        "polza_synthesis_model": "deepseek/deepseek-v3.2",
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -32,14 +32,14 @@ def test_effective_llm_routing_defaults_use_wormsoft_for_bulk_text() -> None:
     assert routing.relevance.fallback_model == "openrouter/free"
     assert routing.relevance.fallback_chain() == [
         ("openrouter", "openrouter/free"),
-        ("polza", "google/gemma-3-12b-it"),
+        ("polza", "deepseek/deepseek-v3.2"),
         ("gigachat", "GigaChat-2"),
     ]
     assert routing.mcp_synthesis.provider == "wormsoft"
-    assert routing.mcp_synthesis.model == "wormsoft/agent/large"
+    assert routing.mcp_synthesis.model == "wormsoft/agent/high"
     assert routing.mcp_synthesis.fallback_chain() == [
         ("openrouter", "openrouter/free"),
-        ("polza", "mistralai/mistral-small-3.1-24b-instruct"),
+        ("polza", "deepseek/deepseek-v3.2"),
         ("gigachat", "GigaChat-2-Pro"),
     ]
 

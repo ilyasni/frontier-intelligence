@@ -490,14 +490,38 @@ class Settings(BaseSettings):
         alias="REDIS_STREAM_OLDEST_PENDING_AGE_ALERT_SECONDS",
     )
     prometheus_url: str = Field("http://prometheus:9090", alias="PROMETHEUS_URL")
+    xray_profile_registry_path: str = Field(
+        "/runtime/xray-profiles.json",
+        alias="XRAY_PROFILE_REGISTRY_PATH",
+    )
+    xray_active_profile_path: str = Field(
+        "/runtime/xray-active-profile.txt",
+        alias="XRAY_ACTIVE_PROFILE_PATH",
+    )
+    xray_previous_profile_path: str = Field(
+        "/runtime/xray-previous-profile.txt",
+        alias="XRAY_PREVIOUS_PROFILE_PATH",
+    )
+    xray_reload_trigger_path: str = Field(
+        "/runtime/xray-reload.trigger",
+        alias="XRAY_RELOAD_TRIGGER_PATH",
+    )
     xray_probe_proxy_url: str = Field("socks5://xray:10808", alias="XRAY_PROBE_PROXY_URL")
     xray_probe_targets: list[str] = Field(
+        default=[
+            "https://example.com",
+            "https://www.google.com/generate_204",
+            "https://www.cloudflare.com/cdn-cgi/trace",
+        ],
+        alias="XRAY_PROBE_TARGETS",
+    )
+    xray_source_smoke_targets: list[str] = Field(
         default=[
             "https://medium.com/feed/tag/future",
             "https://news.google.com/rss",
             "https://www.mobilityhouse.com/usa_en/our-company/newsroom",
         ],
-        alias="XRAY_PROBE_TARGETS",
+        alias="XRAY_SOURCE_SMOKE_TARGETS",
     )
     xray_degradation_failure_ratio: float = Field(0.66, alias="XRAY_DEGRADATION_FAILURE_RATIO")
     xray_degradation_consecutive_threshold: int = Field(

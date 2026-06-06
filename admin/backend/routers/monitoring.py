@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 import redis.asyncio as aioredis
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request
 
 from admin.backend.services.telegram_alerts import (
@@ -19,12 +20,28 @@ from admin.backend.services.xray_health import (
     get_xray_health_snapshot,
     run_xray_health_check,
 )
+from admin.backend.services.xray_runtime import (
+    failover_to_next_profile,
+    get_remediation_history,
+    get_runtime_state,
+    rollback_profile,
+    switch_profile,
+)
 from shared.config import get_settings
 
 router = APIRouter()
 _ALERTMANAGER_BASIC_AUTH_USERNAME = "alertmanager"
 _ALERT_DEDUPE_TTL_SECONDS = 1800
 logger = logging.getLogger(__name__)
+
+
+class XraySwitchRequest(BaseModel):
+    profile_name: str = Field(..., min_length=1)
+    reason: str = Field("manual_switch", min_length=1)
+
+
+class XrayRollbackRequest(BaseModel):
+    reason: str = Field("manual_rollback", min_length=1)
 
 
 def _parse_basic_auth_password(header_value: str) -> str | None:
@@ -185,3 +202,49 @@ async def run_xray_health() -> dict[str, Any]:
 @router.get("/xray/health/history")
 async def xray_health_history(limit: int = 20) -> dict[str, Any]:
     return {"history": await get_xray_health_history(limit=limit)}
+
+
+@router.get("/xray/profiles")
+async def xray_profiles() -> dict[str, Any]:
+    return get_runtime_state()
+
+
+@router.get("/xray/remediation/history")
+async def xray_remediation_history(limit: int = 20) -> dict[str, Any]:
+    return {"history": await get_remediation_history(limit=limit)}
+
+
+@router.post("/xray/remediate/failover")
+async def xray_failover(request: Request) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if request.headers.get("content-length") not in {None, "", "0"}:
+        try:
+            parsed = await request.json()
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            payload = {}
+    reason = str(payload.get("reason") or payload.get("event") or "xray_failover").strip()
+    return await failover_to_next_profile(
+        reason=reason,
+        trigger="auto_failover" if payload else "manual_failover",
+        metadata=payload,
+    )
+
+
+@router.post("/xray/remediate/switch")
+async def xray_switch(payload: XraySwitchRequest) -> dict[str, Any]:
+    try:
+        return await switch_profile(
+            target_name=payload.profile_name,
+            reason=payload.reason,
+            trigger="manual_switch",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/xray/remediate/rollback")
+async def xray_rollback(payload: XrayRollbackRequest | None = None) -> dict[str, Any]:
+    reason = payload.reason if payload else "manual_rollback"
+    return await rollback_profile(reason=reason, trigger="manual_rollback")

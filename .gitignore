@@ -91,3 +91,5 @@ tmp/*
 tmp_*
 wormsoft_*.js
 wormsoft_*.html
+runtime/
+docker-compose.yml.bak.*
