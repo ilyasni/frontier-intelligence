@@ -192,7 +192,8 @@ async def probe_openrouter_health() -> dict[str, Any]:
         float(settings.openrouter_health_probe_timeout_sec or 20.0),
         connect=10.0,
     )
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    proxy = (getattr(settings, "xray_probe_proxy_url", "") or "").strip() or None
+    async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
         results = []
         for model in selected:
             results.append(await _probe_model(client, model))

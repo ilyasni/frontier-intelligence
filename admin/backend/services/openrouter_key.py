@@ -110,8 +110,9 @@ async def fetch_openrouter_key() -> dict[str, Any]:
         "X-Title": "Frontier Intelligence",
     }
 
+    proxy = (getattr(settings, "xray_probe_proxy_url", "") or "").strip() or None
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, proxy=proxy) as client:
             response = await client.get(key_url, headers=headers)
             response.raise_for_status()
             payload = _normalize_key_payload(response.json())

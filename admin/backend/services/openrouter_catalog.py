@@ -124,8 +124,9 @@ async def fetch_openrouter_catalog() -> dict[str, Any]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    proxy = (getattr(settings, "xray_probe_proxy_url", "") or "").strip() or None
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, proxy=proxy) as client:
             resp = await client.get(models_url, headers=headers)
             resp.raise_for_status()
             payload = resp.json()
