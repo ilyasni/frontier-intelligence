@@ -62,6 +62,7 @@ from worker.provider_adapters import (
     WormsoftAdapter,
 )
 from worker.provider_budget_manager import ProviderBudgetManager
+from worker.wormsoft_credit_guard import WormsoftCreditGuard
 from worker.provider_circuit_breaker import ProviderCircuitBreaker
 from worker.provider_quota_guard import ProviderPublishedQuotaGuard
 from worker.token_budget import fit_text_to_token_budget
@@ -118,6 +119,7 @@ class LLMRouterClient:
             settings=self._settings,
         )
         self._budget_manager = ProviderBudgetManager(redis=redis, settings=self._settings)
+        self._wormsoft_credit_guard = WormsoftCreditGuard(self._budget_manager, settings=self._settings)
         self._published_quota_guard = ProviderPublishedQuotaGuard(
             redis=redis,
             settings=self._settings,
@@ -402,6 +404,21 @@ class LLMRouterClient:
             return f"embedding_profile_mismatch_dim_{profile_dim}_vs_{expected_dim}"
         return ""
 
+    @staticmethod
+    def _note_skipped_candidate(
+        skipped_candidates: list[dict[str, str]],
+        attempt_outcomes: list[AttemptOutcome],
+        *,
+        provider: str,
+        model: str,
+        reason: str,
+    ) -> None:
+        """Record a candidate skipped by a guard into both routing-trace lists."""
+        skipped_candidates.append({"provider": provider, "model": model, "reason": reason})
+        attempt_outcomes.append(
+            AttemptOutcome(provider=provider, model=model, status="skipped", reason=reason)
+        )
+
     async def embed(self, text: str, *, purpose: str = "document") -> list[float]:
         await self.refresh_runtime_overrides()
         task = "embed"
@@ -462,20 +479,12 @@ class LLMRouterClient:
             if profile_reason:
                 last_error = RuntimeError(profile_reason)
                 fallback_reason = fallback_reason or profile_reason
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": profile_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=profile_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=profile_reason,
                 )
                 break
 
@@ -486,20 +495,12 @@ class LLMRouterClient:
             if not allowed_by_circuit:
                 last_error = RuntimeError(circuit_reason)
                 fallback_reason = fallback_reason or circuit_reason
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": circuit_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=circuit_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=circuit_reason,
                 )
                 break
 
@@ -511,20 +512,12 @@ class LLMRouterClient:
             if not allowed_capacity:
                 last_error = RuntimeError(capacity_reason)
                 fallback_reason = fallback_reason or capacity_reason
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": capacity_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=capacity_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=capacity_reason,
                 )
                 break
 
@@ -537,20 +530,12 @@ class LLMRouterClient:
             if not allowed_budget:
                 last_error = RuntimeError(budget_reason)
                 fallback_reason = fallback_reason or budget_reason
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": budget_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=budget_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=budget_reason,
                 )
                 break
 
@@ -562,20 +547,12 @@ class LLMRouterClient:
             if not allowed_quota:
                 last_error = RuntimeError(quota_reason)
                 fallback_reason = fallback_reason or quota_reason
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": quota_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=quota_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=quota_reason,
                 )
                 break
 
@@ -913,8 +890,7 @@ class LLMRouterClient:
                 last_error = RuntimeError(availability_reason)
                 if not fallback_reason:
                     fallback_reason = availability_reason
-                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": availability_reason})
-                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=availability_reason))
+                self._note_skipped_candidate(skipped_candidates, attempt_outcomes, provider=attempt_provider, model=effective_model, reason=availability_reason)
                 if next_attempt:
                     if attempt_provider == PROVIDER_OPENROUTER:
                         self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], availability_reason)
@@ -927,8 +903,7 @@ class LLMRouterClient:
                 last_error = RuntimeError(circuit_reason)
                 if not fallback_reason:
                     fallback_reason = circuit_reason
-                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": circuit_reason})
-                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=circuit_reason))
+                self._note_skipped_candidate(skipped_candidates, attempt_outcomes, provider=attempt_provider, model=effective_model, reason=circuit_reason)
                 if next_attempt:
                     if attempt_provider == PROVIDER_OPENROUTER:
                         self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], circuit_reason)
@@ -956,8 +931,7 @@ class LLMRouterClient:
                 last_error = RuntimeError(reason)
                 if not fallback_reason:
                     fallback_reason = reason
-                skipped_candidates.append({"provider": attempt_provider, "model": candidate.model, "reason": reason})
-                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=candidate.model, status="skipped", reason=reason))
+                self._note_skipped_candidate(skipped_candidates, attempt_outcomes, provider=attempt_provider, model=candidate.model, reason=reason)
                 if next_attempt:
                     self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], reason)
                     note_openrouter_vision_fallback(self._service_name, next_attempt[0], reason)
@@ -979,8 +953,7 @@ class LLMRouterClient:
                 last_error = RuntimeError(capacity_reason)
                 if not fallback_reason:
                     fallback_reason = capacity_reason
-                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": capacity_reason})
-                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=capacity_reason))
+                self._note_skipped_candidate(skipped_candidates, attempt_outcomes, provider=attempt_provider, model=effective_model, reason=capacity_reason)
                 if next_attempt:
                     if attempt_provider == PROVIDER_OPENROUTER:
                         self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], capacity_reason)
@@ -998,8 +971,7 @@ class LLMRouterClient:
                 last_error = RuntimeError(budget_reason)
                 if not fallback_reason:
                     fallback_reason = budget_reason
-                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": budget_reason})
-                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=budget_reason))
+                self._note_skipped_candidate(skipped_candidates, attempt_outcomes, provider=attempt_provider, model=effective_model, reason=budget_reason)
                 if next_attempt:
                     if attempt_provider == PROVIDER_OPENROUTER:
                         self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], budget_reason)
@@ -1016,8 +988,7 @@ class LLMRouterClient:
                 last_error = RuntimeError(quota_reason)
                 if not fallback_reason:
                     fallback_reason = quota_reason
-                skipped_candidates.append({"provider": attempt_provider, "model": effective_model, "reason": quota_reason})
-                attempt_outcomes.append(AttemptOutcome(provider=attempt_provider, model=effective_model, status="skipped", reason=quota_reason))
+                self._note_skipped_candidate(skipped_candidates, attempt_outcomes, provider=attempt_provider, model=effective_model, reason=quota_reason)
                 if next_attempt:
                     if attempt_provider == PROVIDER_OPENROUTER:
                         self._note_vision_provider_fallback(next_attempt[0], next_attempt[1], quota_reason)
@@ -1419,28 +1390,8 @@ class LLMRouterClient:
             cost_drift=finalized.cost_drift,
         )
         await self._budget_manager.record_execution_receipt(finalized)
-        await self._record_wormsoft_credit_window(finalized)
+        await self._wormsoft_credit_guard.record(finalized)
         return finalized
-
-    async def _record_wormsoft_credit_window(self, receipt: ExecutionReceipt) -> None:
-        if normalize_provider(receipt.actual_provider) != PROVIDER_WORMSOFT:
-            return
-        if not bool(getattr(self._settings, "wormsoft_credit_throttle_enabled", False)):
-            return
-        credits = float(receipt.actual_cost or 0.0)
-        if credits <= 0.0:
-            return
-        try:
-            await self._budget_manager.add_credit_usage(
-                provider=PROVIDER_WORMSOFT,
-                credits=credits,
-                window_seconds=max(
-                    60,
-                    int(getattr(self._settings, "wormsoft_credit_window_seconds", 18000) or 18000),
-                ),
-            )
-        except Exception:
-            logger.debug("wormsoft_credit_window_record_failed", exc_info=True)
 
     async def _publish_shadow_plan(
         self,
@@ -1649,16 +1600,12 @@ class LLMRouterClient:
             else:
                 available, reason = self._provider_available(provider, effective_model)
             if not available:
-                skipped_candidates.append(
-                    {"provider": provider, "model": effective_model, "reason": reason}
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=provider,
+                    model=effective_model,
+                    reason=reason,
                 )
                 continue
 
@@ -1667,20 +1614,12 @@ class LLMRouterClient:
                 effective_model,
             )
             if not allowed_by_circuit:
-                skipped_candidates.append(
-                    {
-                        "provider": provider,
-                        "model": effective_model,
-                        "reason": circuit_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=circuit_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=provider,
+                    model=effective_model,
+                    reason=circuit_reason,
                 )
                 continue
 
@@ -1691,16 +1630,12 @@ class LLMRouterClient:
             )
             if not effective_model:
                 reason = str(resolution_metadata.get("reason") or "no_capable_model")
-                skipped_candidates.append(
-                    {"provider": provider, "model": requested_model, "reason": reason}
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=provider,
-                        model=requested_model,
-                        status="skipped",
-                        reason=reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=provider,
+                    model=requested_model,
+                    reason=reason,
                 )
                 continue
             resolved_request = resolved_request.model_copy(
@@ -1716,20 +1651,12 @@ class LLMRouterClient:
             if task_family == TASK_FAMILY_EMBEDDINGS:
                 profile_reason = self._embedding_profile_reason(effective_model)
                 if profile_reason:
-                    skipped_candidates.append(
-                        {
-                            "provider": provider,
-                            "model": effective_model,
-                            "reason": profile_reason,
-                        }
-                    )
-                    attempt_outcomes.append(
-                        AttemptOutcome(
-                            provider=provider,
-                            model=effective_model,
-                            status="skipped",
-                            reason=profile_reason,
-                        )
+                    self._note_skipped_candidate(
+                        skipped_candidates,
+                        attempt_outcomes,
+                        provider=provider,
+                        model=effective_model,
+                        reason=profile_reason,
                     )
                     continue
 
@@ -1739,20 +1666,12 @@ class LLMRouterClient:
                 task_family=task_family,
             )
             if not allowed_capacity:
-                skipped_candidates.append(
-                    {
-                        "provider": provider,
-                        "model": effective_model,
-                        "reason": capacity_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=capacity_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=provider,
+                    model=effective_model,
+                    reason=capacity_reason,
                 )
                 continue
 
@@ -1763,20 +1682,12 @@ class LLMRouterClient:
                 execution_role=EXECUTION_ROLE_SHADOW,
             )
             if not allowed_budget:
-                skipped_candidates.append(
-                    {
-                        "provider": provider,
-                        "model": effective_model,
-                        "reason": budget_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=budget_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=provider,
+                    model=effective_model,
+                    reason=budget_reason,
                 )
                 continue
 
@@ -1786,20 +1697,12 @@ class LLMRouterClient:
                 execution_role=EXECUTION_ROLE_SHADOW,
             )
             if not allowed_quota:
-                skipped_candidates.append(
-                    {
-                        "provider": provider,
-                        "model": effective_model,
-                        "reason": quota_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=quota_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=provider,
+                    model=effective_model,
+                    reason=quota_reason,
                 )
                 continue
 
@@ -2132,7 +2035,7 @@ class LLMRouterClient:
         task_family: str,
         execution_role: str = EXECUTION_ROLE_PRIMARY,
     ) -> tuple[bool, str]:
-        wormsoft_allowed, wormsoft_reason = await self._allow_wormsoft_credit_budget(
+        wormsoft_allowed, wormsoft_reason = await self._wormsoft_credit_guard.allow(
             provider=provider,
             execution_role=execution_role,
         )
@@ -2146,45 +2049,6 @@ class LLMRouterClient:
             execution_role=execution_role,
         )
         return allowed, reason
-
-    async def _allow_wormsoft_credit_budget(
-        self,
-        *,
-        provider: str,
-        execution_role: str,
-    ) -> tuple[bool, str]:
-        if normalize_provider(provider) != PROVIDER_WORMSOFT:
-            return True, "ok"
-        if not bool(getattr(self._settings, "wormsoft_credit_throttle_enabled", False)):
-            return True, "ok"
-        window_seconds = max(
-            60,
-            int(getattr(self._settings, "wormsoft_credit_window_seconds", 18000) or 18000),
-        )
-        limit = float(getattr(self._settings, "wormsoft_credit_window_limit", 500000.0) or 0.0)
-        if limit <= 0:
-            return True, "ok"
-        soft_ratio = float(getattr(self._settings, "wormsoft_credit_soft_cap_ratio", 0.8) or 0.8)
-        hard_ratio = float(getattr(self._settings, "wormsoft_credit_hard_cap_ratio", 0.98) or 0.98)
-        if execution_role == EXECUTION_ROLE_SHADOW:
-            soft_ratio = float(
-                getattr(self._settings, "wormsoft_credit_soft_cap_shadow_ratio", soft_ratio) or soft_ratio
-            )
-        soft_cap = max(0.0, min(limit, limit * max(0.0, soft_ratio)))
-        hard_cap = max(0.0, min(limit, limit * max(0.0, hard_ratio)))
-        try:
-            used = await self._budget_manager.credit_window_usage(
-                provider=PROVIDER_WORMSOFT,
-                window_seconds=window_seconds,
-            )
-        except Exception:
-            logger.debug("wormsoft_credit_window_read_failed", exc_info=True)
-            return True, "ok"
-        if hard_cap > 0 and used >= hard_cap:
-            return False, "wormsoft_credit_hard_cap"
-        if soft_cap > 0 and used >= soft_cap:
-            return False, "wormsoft_credit_soft_cap"
-        return True, "ok"
 
     async def _allow_published_quota(
         self,
@@ -2399,20 +2263,12 @@ class LLMRouterClient:
             )
             if not available:
                 last_error = RuntimeError(availability_reason)
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": availability_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=availability_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=availability_reason,
                 )
                 if next_attempt:
                     note_llm_fallback(
@@ -2434,20 +2290,12 @@ class LLMRouterClient:
             )
             if not allowed_by_circuit:
                 last_error = RuntimeError(circuit_reason)
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": circuit_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=circuit_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=circuit_reason,
                 )
                 if next_attempt:
                     note_llm_fallback(
@@ -2480,20 +2328,12 @@ class LLMRouterClient:
             if not effective_model:
                 reason = str(resolution_metadata.get("reason") or "no_capable_model")
                 last_error = RuntimeError(reason)
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": candidate.model,
-                        "reason": reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=candidate.model,
-                        status="skipped",
-                        reason=reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=candidate.model,
+                    reason=reason,
                 )
                 if next_attempt:
                     note_llm_fallback(
@@ -2522,20 +2362,12 @@ class LLMRouterClient:
             )
             if not allowed_capacity:
                 last_error = RuntimeError(capacity_reason)
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": capacity_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=capacity_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=capacity_reason,
                 )
                 if next_attempt:
                     note_llm_fallback(
@@ -2559,20 +2391,12 @@ class LLMRouterClient:
             )
             if not allowed_budget:
                 last_error = RuntimeError(budget_reason)
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": budget_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=budget_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=budget_reason,
                 )
                 if next_attempt:
                     note_llm_fallback(
@@ -2595,20 +2419,12 @@ class LLMRouterClient:
             )
             if not allowed_quota:
                 last_error = RuntimeError(quota_reason)
-                skipped_candidates.append(
-                    {
-                        "provider": attempt_provider,
-                        "model": effective_model,
-                        "reason": quota_reason,
-                    }
-                )
-                attempt_outcomes.append(
-                    AttemptOutcome(
-                        provider=attempt_provider,
-                        model=effective_model,
-                        status="skipped",
-                        reason=quota_reason,
-                    )
+                self._note_skipped_candidate(
+                    skipped_candidates,
+                    attempt_outcomes,
+                    provider=attempt_provider,
+                    model=effective_model,
+                    reason=quota_reason,
                 )
                 if next_attempt:
                     note_llm_fallback(

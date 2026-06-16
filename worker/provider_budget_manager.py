@@ -1,6 +1,7 @@
 """Redis-backed runtime budget accounting for provider executions."""
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from shared.config import get_settings
 from shared.llm_control_plane import BudgetWindowState, CostAggregateState, ExecutionReceipt
 from shared.llm_routing import PROVIDER_GIGACHAT, PROVIDER_OPENROUTER, PROVIDER_POLZA, PROVIDER_WORMSOFT, normalize_provider
+
+logger = logging.getLogger(__name__)
 
 
 def _day_key() -> str:
@@ -41,6 +44,7 @@ class ProviderBudgetManager:
                     decode_responses=True,
                 )
             except Exception:
+                logger.debug("budget_redis_client_init_failed", exc_info=True)
                 return None
         return self._managed_redis
 
@@ -263,7 +267,7 @@ class ProviderBudgetManager:
                     await pipe.execute()
                 return
             except Exception:
-                pass
+                logger.debug("budget_pipeline_write_failed_fallback_sequential", exc_info=True)
         for method_name, args in commands:
             await getattr(redis, method_name)(*args)
 
@@ -292,6 +296,7 @@ class ProviderBudgetManager:
             await redis.expire(key, ttl)
             return float(total or 0.0)
         except Exception:
+            logger.warning("budget_add_credit_usage_failed", exc_info=True)
             return 0.0
 
     async def credit_window_usage(self, *, provider: str, window_seconds: int) -> float:
@@ -302,6 +307,7 @@ class ProviderBudgetManager:
         try:
             raw = await redis.hgetall(key)
         except Exception:
+            logger.warning("budget_credit_window_read_failed", exc_info=True)
             return 0.0
         try:
             return float((raw or {}).get("used_credits") or 0.0)
@@ -329,6 +335,7 @@ class ProviderBudgetManager:
         try:
             raw = await redis.hgetall(key) if redis is not None else {}
         except Exception:
+            logger.debug("budget_scope_snapshot_read_failed", exc_info=True)
             raw = {}
 
         def _num(name: str) -> float:
@@ -472,6 +479,7 @@ class ProviderBudgetManager:
                 )
                 await redis.expire(key, ttl)
         except Exception:
+            logger.warning("budget_reserve_write_failed", exc_info=True)
             return reservation
         return reservation
 
@@ -520,6 +528,7 @@ class ProviderBudgetManager:
                 await redis.hset(key, mapping={"updated_at": str(time.time())})
                 await redis.expire(key, ttl)
         except Exception:
+            logger.warning("budget_commit_write_failed", exc_info=True)
             return payload
         return payload
 
@@ -616,6 +625,7 @@ class ProviderBudgetManager:
             filtered = [item for item in normalized_commands if item[0] != "hset"]
             await self._write_many(filtered)
         except Exception:
+            logger.warning("budget_receipt_write_failed", exc_info=True)
             return
 
     async def release(self, reservation: dict[str, Any] | None) -> dict[str, Any]:
@@ -643,6 +653,7 @@ class ProviderBudgetManager:
                 await redis.hset(key, mapping={"updated_at": str(time.time())})
                 await redis.expire(key, ttl)
         except Exception:
+            logger.warning("budget_release_write_failed", exc_info=True)
             return payload
         return payload
 
@@ -716,6 +727,7 @@ class ProviderBudgetManager:
                 try:
                     raw = await redis.hgetall(key)
                 except Exception:
+                    logger.debug("budget_snapshot_scope_read_failed", exc_info=True)
                     raw = {}
 
                 result.append(
@@ -752,6 +764,7 @@ class ProviderBudgetManager:
         try:
             raw = await redis.hgetall(key) if redis is not None else {}
         except Exception:
+            logger.debug("budget_cost_snapshot_read_failed", exc_info=True)
             raw = {}
 
         def _num_float(name: str) -> float:
@@ -804,6 +817,7 @@ class ProviderBudgetManager:
                 if model:
                     models.add(model)
         except Exception:
+            logger.debug("budget_discover_cost_models_failed", exc_info=True)
             return []
         return sorted(models)
 

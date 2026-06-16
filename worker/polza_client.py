@@ -13,6 +13,7 @@ from shared.metrics import (
     note_rate_limit_event,
 )
 from worker.gigachat_client import VISION_PROMPT, _parse_vision_payload
+from worker.llm_http import DEFAULT_LLM_HTTP_TIMEOUT
 from worker.llm_types import GigaChatResponse, usage_from_openai_payload
 from worker.openrouter_client import _detect_image_mime, _extract_text_content
 
@@ -39,7 +40,7 @@ class PolzaVisionClient:
         settings = get_settings()
         self._settings = settings
         self._service_name = service_name
-        self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0))
+        self._http_client = httpx.AsyncClient(timeout=DEFAULT_LLM_HTTP_TIMEOUT)
 
     async def close(self) -> None:
         await self._http_client.aclose()

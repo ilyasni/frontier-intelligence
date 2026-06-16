@@ -133,6 +133,8 @@ class GigaChatClient:
         import httpx
         from openai import AsyncOpenAI
 
+        from worker.llm_http import DEFAULT_LLM_HTTP_TIMEOUT
+
         settings = get_settings()
         self._settings = settings
         self._redis = redis
@@ -153,7 +155,7 @@ class GigaChatClient:
         self._request_gap_lock = asyncio.Lock()
         self._last_request_started_at = 0.0
 
-        self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0))
+        self._http_client = httpx.AsyncClient(timeout=DEFAULT_LLM_HTTP_TIMEOUT)
         self._client = AsyncOpenAI(
             base_url=settings.openai_api_base,
             api_key="gigachat",

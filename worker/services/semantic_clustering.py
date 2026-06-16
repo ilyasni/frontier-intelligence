@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -16,6 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import get_settings
 from worker.integrations.qdrant_client import QdrantFrontierClient
+from worker.services.clustering_math import (
+    bucket_start as _bucket_start,
+    centroid as _centroid,
+    cosine as _cos,
+    digest as _digest,
+    freshness as _freshness,
+    jaccard as _jaccard,
+    json_ready as _json_ready,
+    terms as _terms,
+)
 from worker.services.missing_signals import run_missing_signals_analysis
 
 try:
@@ -62,30 +70,6 @@ _APRIL_FOOLS_CUES = (
 )
 
 
-def _digest(value: str, prefix: str) -> str:
-    return f"{prefix}:{hashlib.sha1(value.encode('utf-8')).hexdigest()[:16]}"
-
-
-def _cos(a: list[float], b: list[float]) -> float:
-    if not a or not b:
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    return 0.0 if na == 0 or nb == 0 else dot / (na * nb)
-
-
-def _freshness(dt: datetime) -> float:
-    age = max((datetime.now(UTC) - dt).total_seconds() / 3600.0, 0.0)
-    if age <= 24:
-        return 1.0
-    if age <= 72:
-        return 0.75
-    if age <= 168:
-        return 0.45
-    return 0.2
-
-
 def _cfg(value, default=None):
     if hasattr(value, "default"):
         return value.default
@@ -100,22 +84,6 @@ def _merge_cluster_settings(
         if key in merged and value is not None:
             merged[key] = value
     return merged
-
-
-def _jaccard(a: set[str], b: set[str]) -> float:
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    return len(a & b) / max(len(a | b), 1)
-
-
-def _bucket_start(dt: datetime, bucket_hours: int) -> datetime:
-    base = dt.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
-    if bucket_hours >= 24:
-        return base.replace(hour=0)
-    hour = base.hour - (base.hour % max(bucket_hours, 1))
-    return base.replace(hour=hour)
 
 
 def _is_april_fools_post(post: ClusterPost) -> bool:
@@ -148,27 +116,11 @@ def _april_fools_penalty(posts: list[ClusterPost], cluster_cfg: dict[str, Any]) 
     }
 
 
-def _terms(text: str) -> list[str]:
-    return re.findall(r"[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9\-_]{2,}", (text or "").lower())
-
-
 def _top_terms(posts: list[ClusterPost], limit: int = 8) -> list[str]:
     counter: Counter[str] = Counter()
     for post in posts:
         counter.update(_terms(post.title or post.content[:400]))
     return [name for name, _ in counter.most_common(limit)]
-
-
-def _centroid(vectors: list[list[float]]) -> list[float]:
-    if not vectors:
-        return []
-    dims = len(vectors[0])
-    acc = [0.0] * dims
-    for vector in vectors:
-        for idx, value in enumerate(vector):
-            acc[idx] += value
-    count = float(len(vectors))
-    return [value / count for value in acc]
 
 
 def _components(
@@ -224,15 +176,6 @@ def _coherence(posts: list[ClusterPost], centroid: list[float]) -> float:
         0.0
         if not posts or not centroid
         else sum(_cos(post.vector, centroid) for post in posts) / len(posts)
-    )
-
-
-def _json_ready(value: Any) -> Any:
-    return json.loads(
-        json.dumps(
-            value,
-            default=lambda item: item.isoformat() if isinstance(item, datetime) else str(item),
-        )
     )
 
 

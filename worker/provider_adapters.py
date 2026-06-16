@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
 
@@ -58,6 +59,8 @@ from worker.polza_client import PolzaVisionClient, PolzaVisionError
 from worker.polza_text_client import PolzaTextClient
 from worker.wormsoft_client import WormsoftTextClient, WormsoftTextError
 from worker.wormsoft_guard import WormsoftSharedGuard
+
+logger = logging.getLogger(__name__)
 
 
 def _usage_cost_estimate(response: GigaChatResponse | None) -> float | None:
@@ -500,7 +503,7 @@ class OpenRouterAdapter:
                 service_name=self._service_name,
             )
         except Exception:
-            pass
+            logger.warning("openrouter_record_call_result_failed", exc_info=True)
         if error is not None:
             try:
                 guard = (
@@ -513,6 +516,7 @@ class OpenRouterAdapter:
                     reset_at=error.reset_at,
                 )
             except Exception:
+                logger.warning("openrouter_guard_record_failure_failed", exc_info=True)
                 return
 
     def normalize_error(self, exc: Exception, *, model: str) -> ProviderError:

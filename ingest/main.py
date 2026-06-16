@@ -79,6 +79,7 @@ def build_source_config(row: dict) -> dict:
         try:
             proxy_config = json.loads(proxy_config)
         except Exception:
+            logger.warning("proxy_config_parse_failed source_id=%s", row.get("id"), exc_info=True)
             proxy_config = {}
 
     source_type = canonical_source_type(row.get("source_type", ""))

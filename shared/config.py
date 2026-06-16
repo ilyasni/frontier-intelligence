@@ -507,6 +507,7 @@ class Settings(BaseSettings):
         alias="XRAY_RELOAD_TRIGGER_PATH",
     )
     xray_probe_proxy_url: str = Field("socks5://xray:10808", alias="XRAY_PROBE_PROXY_URL")
+    crawl_browser_proxy_url: str = Field("socks5://xray:10808", alias="CRAWL_BROWSER_PROXY_URL")
     xray_probe_targets: list[str] = Field(
         default=[
             "https://example.com",

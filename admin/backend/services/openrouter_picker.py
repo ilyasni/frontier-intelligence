@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -17,6 +18,8 @@ from shared.metrics import (
     set_openrouter_model_usage,
 )
 from shared.redis_client import get_client
+
+logger = logging.getLogger(__name__)
 
 TASK_FAMILY_VISION_MASS = "vision_mass"
 TASK_FAMILY_TEXT_STRUCTURED = "text_structured"
@@ -295,7 +298,7 @@ async def reserve_model_slot(model_id: str, *, service_name: str = "worker") -> 
             )
             return ok, reason
         except Exception:
-            pass
+            logger.debug("openrouter_reserve_slot_lua_failed_fallback", exc_info=True)
 
     ok, reason, rpd_used, rpm_used = await _reserve_slot_fallback(redis, model_id)
     set_openrouter_model_usage(service_name, model_id, rpd_used=rpd_used, rpm_used=rpm_used)

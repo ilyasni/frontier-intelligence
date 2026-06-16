@@ -112,7 +112,7 @@ class EnrichmentEngine:
         if self._browser_context is None:
             self._browser = await self._playwright.chromium.launch(
                 headless=True,
-                proxy={"server": "socks5://xray:10808"},
+                proxy={"server": getattr(self._settings, "crawl_browser_proxy_url", "socks5://xray:10808")},
                 args=[
                     "--disable-dev-shm-usage",
                     "--disable-blink-features=AutomationControlled",
