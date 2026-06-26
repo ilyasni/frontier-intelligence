@@ -247,6 +247,10 @@ async def init_neo4j(settings):
         "CREATE CONSTRAINT trend_id IF NOT EXISTS FOR (t:TrendCluster) REQUIRE t.id IS UNIQUE",
         "CREATE INDEX concept_mentions IF NOT EXISTS FOR (c:Concept) ON (c.mentions)",
         "CREATE INDEX concept_workspace IF NOT EXISTS FOR (c:Concept) ON (c.workspace_id)",
+        # Контур D (RSI): MERGE концептов идёт по (norm, workspace_id). UNIQUE-constraint
+        # обязателен — иначе параллельные транзакции создают дубли (MERGE race). Он же даёт
+        # backing-индекс, отдельный CREATE INDEX не нужен.
+        "CREATE CONSTRAINT concept_norm_workspace IF NOT EXISTS FOR (c:Concept) REQUIRE (c.norm, c.workspace_id) IS UNIQUE",
         "CREATE INDEX document_workspace IF NOT EXISTS FOR (d:Document) ON (d.workspace_id)",
     ]
 

@@ -309,6 +309,54 @@ class EnrichmentTask:
             """), {"id": post_id, "score": score, "category": category})
             await session.commit()
 
+    async def _log_relevance_decision(
+        self,
+        *,
+        post_id: str,
+        workspace_id: str,
+        rel: dict,
+        threshold: float,
+        source_id: str | None,
+        content: str,
+    ) -> None:
+        """RSI Фаза 0: append-only лог решения Relevance Filter (пишется на reject'ах).
+
+        Субстрат для аудита тихих false-negative. Idempotent по post_id (upsert
+        последнего решения); audit_status человека сохраняется при reprocess.
+        """
+        decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{post_id}:reldec"))
+        async with self.Session() as session:
+            await session.execute(text("""
+                INSERT INTO relevance_decisions (
+                    id, post_id, workspace_id, relevant, score, threshold, category,
+                    reasoning, escalated, model, source_id, content_excerpt, audit_status,
+                    decided_at, created_at, updated_at
+                ) VALUES (
+                    :id, :post_id, :workspace_id, :relevant, :score, :threshold, :category,
+                    :reasoning, :escalated, :model, :source_id, :content_excerpt, NULL,
+                    NOW(), NOW(), NOW()
+                ) ON CONFLICT (id) DO UPDATE SET
+                    relevant = EXCLUDED.relevant, score = EXCLUDED.score,
+                    threshold = EXCLUDED.threshold, category = EXCLUDED.category,
+                    reasoning = EXCLUDED.reasoning, escalated = EXCLUDED.escalated,
+                    model = EXCLUDED.model, source_id = EXCLUDED.source_id,
+                    content_excerpt = EXCLUDED.content_excerpt, decided_at = NOW(), updated_at = NOW()
+            """), {
+                "id": decision_id,
+                "post_id": post_id,
+                "workspace_id": workspace_id,
+                "relevant": bool(rel.get("relevant", False)),
+                "score": float(rel.get("score", 0.0) or 0.0),
+                "threshold": float(threshold),
+                "category": rel.get("category"),
+                "reasoning": (rel.get("reasoning") or "")[:1000],
+                "escalated": bool(rel.get("_escalated", False)),
+                "model": rel.get("_actual_model") or rel.get("_requested_model"),
+                "source_id": source_id,
+                "content_excerpt": (content or "")[:500],
+            })
+            await session.commit()
+
     async def _update_post_tags(self, post_id: str, tags: list[str]):
         """Write tags to posts.tags column."""
         async with self.Session() as session:
@@ -655,6 +703,19 @@ class EnrichmentTask:
                 except Exception as exc:
                     logger.error(
                         "indexing_status dropped failed post=%s: %s", post_id[:8], exc
+                    )
+                try:
+                    await self._log_relevance_decision(
+                        post_id=post_id,
+                        workspace_id=event.workspace_id,
+                        rel=rel,
+                        threshold=threshold,
+                        source_id=getattr(event, "source_id", None),
+                        content=event.content,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "relevance_decision log failed post=%s: %s", post_id[:8], exc
                     )
                 await self.redis.xack(STREAM_IN, GROUP, msg_id)
                 logger.debug("Dropped %s score=%.2f", post_id[:8], rel["score"])

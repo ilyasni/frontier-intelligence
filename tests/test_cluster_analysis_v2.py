@@ -277,6 +277,147 @@ def test_signal_results_produce_stable_and_emerging_layers() -> None:
     assert any(item["signal_stage"] in {"weak", "emerging"} for item in emerging)
 
 
+def _weak_cluster_cfg(*, persist_weak_signals: bool) -> dict:
+    return {
+        "trend_cluster_similarity_threshold": 0.87,
+        "trend_cluster_max_gap_hours": 24 * 30,
+        "trend_cluster_min_semantic_clusters": 2,
+        "trend_cluster_min_docs": 4,
+        "trend_cluster_stable_threshold": 0.99,
+        "trend_cluster_emerging_threshold": 0.99,
+        "trend_cluster_min_source_diversity": 0.2,
+        "cluster_min_evidence_count": 2,
+        "signal_short_window_hours": 24,
+        "signal_baseline_window_days": 14,
+        "signal_velocity_weight": 0.14,
+        "signal_acceleration_weight": 0.1,
+        "change_point_method": "window",
+        "change_point_penalty": "auto",
+        "change_point_min_size": 2,
+        "change_point_jump": 1,
+        "change_point_recent_hours": 48,
+        "signal_merge_similarity_threshold": 0.72,
+        "signal_merge_doc_overlap_threshold": 0.25,
+        "signal_min_source_count": 1,
+        "persist_weak_signals": persist_weak_signals,
+        "weak_signal_min_score": 0.99,
+        "weak_signal_min_confidence": 0.99,
+        "weak_signal_min_source_diversity": 0.2,
+        "weak_signal_min_source_count": 1,
+    }
+
+
+def _weak_semantic_fixture() -> tuple[list[dict], dict]:
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    semantic = [
+        {
+            "cluster_id": "semantic-w",
+            "cluster_key": _digest("semantic-w", "ws"),
+            "workspace_id": "disruption",
+            "title": "Faint edge experiment",
+            "representative_post_id": "pw1",
+            "post_count": 2,
+            "source_count": 2,
+            "doc_ids": ["pw1", "pw2"],
+            "source_ids": ["sw1", "sw2"],
+            "top_concepts": ["faint", "edge"],
+            "evidence": [
+                {"post_id": "pw1", "source_id": "sw1"},
+                {"post_id": "pw2", "source_id": "sw2"},
+            ],
+            "posts": [
+                _post("pw1", "sw1", 2, 0.55, 0.5, [0.0, 1.0], title="Faint edge experiment"),
+                _post("pw2", "sw2", 4, 0.53, 0.5, [0.01, 0.99], title="Faint edge experiment"),
+            ],
+            "avg_relevance": 0.54,
+            "avg_source_score": 0.5,
+            "first_seen_at": now - timedelta(hours=4),
+            "last_seen_at": now - timedelta(hours=2),
+            "centroid": [0.005, 0.995],
+            "explainability": {"top_terms": ["faint", "edge"]},
+        },
+    ]
+    # Rising doc counts give velocity_score > 0 so the candidate stays "weak" (not "fading").
+    signal_series_by_id = {
+        "semantic-w": [
+            {
+                "window_start": now - timedelta(hours=72),
+                "window_end": now - timedelta(hours=48),
+                "doc_count": 1,
+                "avg_relevance": 0.5,
+                "avg_source_score": 0.5,
+                "freshness_score": 0.5,
+            },
+            {
+                "window_start": now - timedelta(hours=48),
+                "window_end": now - timedelta(hours=24),
+                "doc_count": 1,
+                "avg_relevance": 0.5,
+                "avg_source_score": 0.5,
+                "freshness_score": 0.7,
+            },
+            {
+                "window_start": now - timedelta(hours=24),
+                "window_end": now,
+                "doc_count": 2,
+                "avg_relevance": 0.54,
+                "avg_source_score": 0.5,
+                "freshness_score": 1.0,
+            },
+        ],
+    }
+    return semantic, signal_series_by_id
+
+
+def test_weak_snapshots_capture_kept_candidate() -> None:
+    semantic, series = _weak_semantic_fixture()
+    snaps: list[dict] = []
+    _stable, emerging = _signal_results(
+        semantic,
+        [],
+        [],
+        _weak_cluster_cfg(persist_weak_signals=True),
+        signal_series_by_id=series,
+        weak_snapshots_out=snaps,
+    )
+
+    assert any(item["signal_stage"] == "weak" for item in emerging)
+    assert len(snaps) == 1
+    snap = snaps[0]
+    assert snap["stage"] == "weak"
+    assert snap["suppressed"] is False
+    assert snap["source_count"] == 2
+    assert "burst_score" in snap and "confidence" in snap
+
+
+def test_weak_snapshots_capture_suppressed_false_negative() -> None:
+    semantic, series = _weak_semantic_fixture()
+    snaps: list[dict] = []
+    _stable, emerging = _signal_results(
+        semantic,
+        [],
+        [],
+        _weak_cluster_cfg(persist_weak_signals=False),
+        signal_series_by_id=series,
+        weak_snapshots_out=snaps,
+    )
+
+    # Suppressed from persisted output...
+    assert not any(item["signal_stage"] == "weak" for item in emerging)
+    # ...but still captured as the false-negative substrate.
+    assert len(snaps) == 1
+    assert snaps[0]["suppressed"] is True
+    assert snaps[0]["suppression_reason"]
+
+
+def test_weak_snapshots_opt_out_when_collector_absent() -> None:
+    semantic, series = _weak_semantic_fixture()
+    # No weak_snapshots_out -> behaviour unchanged, no error.
+    _stable, _emerging = _signal_results(
+        semantic, [], [], _weak_cluster_cfg(persist_weak_signals=False), signal_series_by_id=series
+    )
+
+
 def test_trend_cluster_index_points_are_qdrant_payload_ready() -> None:
     now = datetime.now(UTC)
     points = _trend_cluster_index_points(

@@ -357,6 +357,43 @@ class Settings(BaseSettings):
         "20 */8 * * *",
         alias="ADMIN_SIGNAL_CLUSTER_CRON",
     )
+    admin_retrospective_review_cron: str = Field(
+        "10 4 * * *",
+        alias="ADMIN_RETROSPECTIVE_REVIEW_CRON",
+    )
+    admin_novelty_judge_cron: str = Field(
+        "40 4 * * *",
+        alias="ADMIN_NOVELTY_JUDGE_CRON",
+    )
+    admin_relevance_audit_cron: str = Field(
+        "0 5 * * *",
+        alias="ADMIN_RELEVANCE_AUDIT_CRON",
+    )
+    admin_graph_maintenance_cron: str = Field(
+        "20 5 * * *",
+        alias="ADMIN_GRAPH_MAINTENANCE_CRON",
+    )
+    admin_entity_resolution_cron: str = Field(
+        "40 5 * * *",
+        alias="ADMIN_ENTITY_RESOLUTION_CRON",
+    )
+    # Контур D+ (RSI): семантический entity-resolution (акроним↔расшифровка + LLM-судья).
+    entity_resolution_enabled: bool = Field(True, alias="ENTITY_RESOLUTION_ENABLED")
+    entity_resolution_max_per_run: int = Field(30, alias="ENTITY_RESOLUTION_MAX_PER_RUN")
+    entity_resolution_min_cooccurrence: int = Field(2, alias="ENTITY_RESOLUTION_MIN_COOCCURRENCE")
+    entity_resolution_min_confidence: float = Field(0.7, alias="ENTITY_RESOLUTION_MIN_CONFIDENCE")
+    # Контур B (RSI): кросс-семейный novelty-judge для weak-кандидатов.
+    # Не-Giga семья (primary идёт на Gemma+GigaChat) — судит малый набор weak-снимков.
+    novelty_judge_enabled: bool = Field(True, alias="NOVELTY_JUDGE_ENABLED")
+    novelty_judge_model: str = Field("deepseek-ai/deepseek-v4-pro", alias="NOVELTY_JUDGE_MODEL")
+    novelty_judge_fallback_model: str = Field(
+        "deepseek/deepseek-v3.2", alias="NOVELTY_JUDGE_FALLBACK_MODEL"
+    )
+    novelty_judge_max_per_run: int = Field(15, alias="NOVELTY_JUDGE_MAX_PER_RUN")
+    # Output-токены судьи: DeepSeek-v4-pro — reasoning-модель, ей нужен бюджет на «думанье» + JSON;
+    # при 400 контент пустой (всё съедает reasoning), при 1500+ возвращает валидный JSON.
+    novelty_judge_token_budget: int = Field(2000, alias="NOVELTY_JUDGE_TOKEN_BUDGET")
+    novelty_judge_threshold: float = Field(0.6, alias="NOVELTY_JUDGE_THRESHOLD")
     admin_gigachat_balance_refresh_cron: str = Field(
         "*/5 * * * *",
         alias="ADMIN_GIGACHAT_BALANCE_REFRESH_CRON",

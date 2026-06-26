@@ -2,6 +2,7 @@
 
 ## Recent Docs
 
+- **RSI — рекурсивное самоулучшение детектора** (Фаза 0 + контуры A/B/C/D/D+, связка B→A, человек-гейты, кроны, MCP-инструменты, метрики/алерты): [rsi.md](./rsi.md) (2026-06-26).
 - Актуализация health-эндпоинтов и формулировок (reindex, workspace vs MCP-клиент): этот файл, `CLAUDE.md`, `AGENTS.md`, `docs/security-git-preflight.md`, `docs/server-git-workflow.md` (2026-04-18).
 - Rollout summary for the multi-connector production upgrade:
   [CHANGELOG-2026-03-28.md](./CHANGELOG-2026-03-28.md)

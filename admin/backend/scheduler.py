@@ -23,6 +23,11 @@ from admin.backend.services.openrouter_picker import reconcile_openrouter_state
 from admin.backend.services.pipeline_jobs import (
     list_active_workspace_ids,
     refresh_source_scores,
+    run_entity_resolution_job,
+    run_graph_maintenance_job,
+    run_novelty_judge_job,
+    run_relevance_audit_job,
+    run_retrospective_review_job,
     run_semantic_cluster_job,
     run_signal_analysis_job,
 )
@@ -44,6 +49,11 @@ _openrouter_health_lock = asyncio.Lock()
 _openrouter_reconcile_lock = asyncio.Lock()
 _trend_alert_lock = asyncio.Lock()
 _xray_health_lock = asyncio.Lock()
+_retrospective_lock = asyncio.Lock()
+_novelty_judge_lock = asyncio.Lock()
+_relevance_audit_lock = asyncio.Lock()
+_graph_maintenance_lock = asyncio.Lock()
+_entity_resolution_lock = asyncio.Lock()
 _manual_jobs_table_ready = False
 
 
@@ -78,6 +88,16 @@ def _manual_job_lock(job_name: str) -> asyncio.Lock | None:
         return _source_score_lock
     if job_name in {"run_semantic_clusters", "run_signal_analysis", "run_missing_signals"}:
         return _cluster_lock
+    if job_name == "run_retrospective_review":
+        return _retrospective_lock
+    if job_name == "run_novelty_judge":
+        return _novelty_judge_lock
+    if job_name == "run_relevance_audit":
+        return _relevance_audit_lock
+    if job_name in {"run_graph_maintenance", "run_graph_resolution"}:
+        return _graph_maintenance_lock
+    if job_name == "run_entity_resolution":
+        return _entity_resolution_lock
     if job_name == "refresh_gigachat_balance":
         return _gigachat_balance_lock
     if job_name == "refresh_wormsoft_limits":
@@ -538,6 +558,46 @@ async def scheduled_signal_analysis() -> dict[str, Any]:
     )
 
 
+async def scheduled_retrospective_review() -> dict[str, Any]:
+    return await _run_for_active_workspaces(
+        job_name="run_retrospective_review",
+        lock=_retrospective_lock,
+        runner=run_retrospective_review_job,
+    )
+
+
+async def scheduled_novelty_judge() -> dict[str, Any]:
+    return await _run_for_active_workspaces(
+        job_name="run_novelty_judge",
+        lock=_novelty_judge_lock,
+        runner=run_novelty_judge_job,
+    )
+
+
+async def scheduled_relevance_audit() -> dict[str, Any]:
+    return await _run_for_active_workspaces(
+        job_name="run_relevance_audit",
+        lock=_relevance_audit_lock,
+        runner=run_relevance_audit_job,
+    )
+
+
+async def scheduled_graph_maintenance() -> dict[str, Any]:
+    return await _run_for_active_workspaces(
+        job_name="run_graph_maintenance",
+        lock=_graph_maintenance_lock,
+        runner=run_graph_maintenance_job,
+    )
+
+
+async def scheduled_entity_resolution() -> dict[str, Any]:
+    return await _run_for_active_workspaces(
+        job_name="run_entity_resolution",
+        lock=_entity_resolution_lock,
+        runner=run_entity_resolution_job,
+    )
+
+
 async def scheduled_refresh_gigachat_balance() -> dict[str, Any]:
     if _gigachat_balance_lock.locked():
         logger.warning("Skipping refresh_gigachat_balance: previous run is still in progress")
@@ -792,6 +852,56 @@ def _build_scheduler() -> AsyncIOScheduler:
             timezone=timezone,
         ),
         id="run_signal_analysis",
+        jitter=settings.admin_scheduler_max_jitter_seconds,
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_retrospective_review,
+        CronTrigger.from_crontab(
+            settings.admin_retrospective_review_cron,
+            timezone=timezone,
+        ),
+        id="run_retrospective_review",
+        jitter=settings.admin_scheduler_max_jitter_seconds,
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_novelty_judge,
+        CronTrigger.from_crontab(
+            settings.admin_novelty_judge_cron,
+            timezone=timezone,
+        ),
+        id="run_novelty_judge",
+        jitter=settings.admin_scheduler_max_jitter_seconds,
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_relevance_audit,
+        CronTrigger.from_crontab(
+            settings.admin_relevance_audit_cron,
+            timezone=timezone,
+        ),
+        id="run_relevance_audit",
+        jitter=settings.admin_scheduler_max_jitter_seconds,
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_graph_maintenance,
+        CronTrigger.from_crontab(
+            settings.admin_graph_maintenance_cron,
+            timezone=timezone,
+        ),
+        id="run_graph_maintenance",
+        jitter=settings.admin_scheduler_max_jitter_seconds,
+        **common_kwargs,
+    )
+    scheduler.add_job(
+        scheduled_entity_resolution,
+        CronTrigger.from_crontab(
+            settings.admin_entity_resolution_cron,
+            timezone=timezone,
+        ),
+        id="run_entity_resolution",
         jitter=settings.admin_scheduler_max_jitter_seconds,
         **common_kwargs,
     )

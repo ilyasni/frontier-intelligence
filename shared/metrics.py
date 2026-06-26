@@ -27,6 +27,21 @@ try:
         "Total SearXNG requests.",
         ["service", "mode", "status"],
     )
+    NOVELTY_JUDGE_TOTAL = Counter(
+        "frontier_novelty_judge_total",
+        "Cross-family novelty-judge verdicts on weak candidates (RSI contour B).",
+        ["service", "verdict"],
+    )
+    RELEVANCE_AUDIT_GAUGE = Gauge(
+        "frontier_relevance_audit",
+        "Relevance-filter false-negative audit metrics (RSI contour C).",
+        ["service", "workspace", "metric"],
+    )
+    GRAPH_HEALTH_GAUGE = Gauge(
+        "frontier_graph_health",
+        "Neo4j concept-graph health metrics (RSI contour D).",
+        ["service", "workspace", "metric"],
+    )
     LLM_PROMPT_TOKENS_TOTAL = Counter(
         "frontier_llm_prompt_tokens_total",
         "Total prompt tokens reported by LLM providers.",
@@ -333,6 +348,9 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     CRAWL_SESSION_RECREATES_TOTAL = None
     RATE_LIMIT_EVENTS_TOTAL = None
     SEARXNG_REQUESTS_TOTAL = None
+    NOVELTY_JUDGE_TOTAL = None
+    RELEVANCE_AUDIT_GAUGE = None
+    GRAPH_HEALTH_GAUGE = None
     LLM_PROMPT_TOKENS_TOTAL = None
     LLM_COMPLETION_TOKENS_TOTAL = None
     LLM_BILLABLE_TOKENS_TOTAL = None
@@ -416,6 +434,21 @@ def note_rate_limit_event(service: str, upstream: str, operation: str) -> None:
         RATE_LIMIT_EVENTS_TOTAL.labels(
             service=service, upstream=upstream, operation=operation
         ).inc()
+
+
+def note_novelty_judge(service: str, verdict: str) -> None:
+    if NOVELTY_JUDGE_TOTAL is not None:
+        NOVELTY_JUDGE_TOTAL.labels(service=service, verdict=verdict).inc()
+
+
+def set_relevance_audit_metric(service: str, workspace: str, metric: str, value: float) -> None:
+    if RELEVANCE_AUDIT_GAUGE is not None:
+        RELEVANCE_AUDIT_GAUGE.labels(service=service, workspace=workspace, metric=metric).set(value)
+
+
+def set_graph_health_metric(service: str, workspace: str, metric: str, value: float) -> None:
+    if GRAPH_HEALTH_GAUGE is not None:
+        GRAPH_HEALTH_GAUGE.labels(service=service, workspace=workspace, metric=metric).set(value)
 
 
 def note_searxng_request(service: str, mode: str, status: str) -> None:

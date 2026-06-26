@@ -488,6 +488,19 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-frontier}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-frontier}
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      # Должны совпадать с worker/mcp: иначе admin-кластеризация читает пустую базовую коллекцию вместо алиаса.
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-frontier_docs}
+      QDRANT_COLLECTION_ALIAS: ${QDRANT_COLLECTION_ALIAS:-}
+      QDRANT_TRENDS_COLLECTION: ${QDRANT_TRENDS_COLLECTION:-trend_clusters}
+      QDRANT_TRENDS_COLLECTION_ALIAS: ${QDRANT_TRENDS_COLLECTION_ALIAS:-}
+      QDRANT_FILTER_EMBEDDING_VERSION: ${QDRANT_FILTER_EMBEDDING_VERSION:-true}
+      QDRANT_ENFORCE_COLLECTION_SCHEMA: ${QDRANT_ENFORCE_COLLECTION_SCHEMA:-true}
+      # admin запускает кластеризацию/signal-analysis/missing-signals — нужен тот же embedding/proxy/поиск, что у worker.
+      EMBED_DIM: ${EMBED_DIM:-2560}
+      GIGACHAT_EMBEDDINGS_MODEL: ${GIGACHAT_EMBEDDINGS_MODEL:-EmbeddingsGigaR}
+      OPENAI_API_BASE: http://gpt2giga-proxy:8090/v1
+      GIGACHAT_PROXY_URL: http://gpt2giga-proxy:8090
+      SEARXNG_URL: http://searxng:8080
       NEO4J_URL: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}

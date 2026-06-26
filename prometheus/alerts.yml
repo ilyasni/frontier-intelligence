@@ -488,7 +488,7 @@ groups:
           description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 5 minutes."
 
       - alert: FrontierControlPlaneServiceDown
-        expr: up{job=~"admin|mcp"} == 0
+        expr: up{job="mcp"} == 0
         for: 10m
         labels:
           severity: warning
@@ -506,3 +506,43 @@ groups:
         annotations:
           summary: "Support service is down"
           description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable for more than 10 minutes."
+
+  - name: frontier_rsi
+    rules:
+      # Admin держит ВЕСЬ планировщик (кластеризация, retro-петля, judge, audit, graph).
+      # Крэш-луп admin = up=0 = метрика scheduler_running вообще не приходит, поэтому
+      # FrontierAdminSchedulerNotRunning НЕ сработает. Ловим именно по up.
+      - alert: FrontierAdminDown
+        expr: up{job="admin"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Admin is down — весь ночной планировщик RSI стоит"
+          description: "admin недоступен для Prometheus >5м. Все ночные джобы (clustering, retro-review, novelty-judge, relevance-audit, graph-maintenance, entity-resolution) НЕ выполняются. Частая причина — крэш-луп из-за нехватки worker-зависимости в admin-образе; проверь docker inspect admin (RestartCount) и логи."
+
+      - alert: FrontierGraphDuplicateClustersRising
+        expr: max by (workspace) (frontier_graph_health{metric="duplicate_clusters"}) > 100
+        for: 30m
+        labels:
+          severity: warning
+          service: worker
+        annotations:
+          summary: "Дубли концепт-графа снова копятся в {{ $labels.workspace }}"
+          description: "duplicate_clusters = {{ $value }} для {{ $labels.workspace }}. Нормализация на записи или UNIQUE-constraint (norm, workspace_id) могли сломаться. Проверь constraint и запусти graph-resolution."
+
+      - alert: FrontierNoveltyJudgeFailing
+        expr: |
+          (sum(increase(frontier_novelty_judge_total{verdict="failed"}[6h])) >= 10)
+          and
+          (sum(increase(frontier_novelty_judge_total{verdict=~"underrated|confirmed_weak"}[6h])) == 0)
+        for: 30m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Кросс-семейный novelty-judge падает на всех кандидатах"
+          description: "За 6ч все вердикты судьи — failed, успешных ноль. Похоже, обе семьи DeepSeek (wormsoft + polza) недоступны. Судья слепых зон и ранний сигнал B→A фактически выключены."

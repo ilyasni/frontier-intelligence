@@ -5,7 +5,13 @@ import json
 import sys
 
 from admin.backend.services.pipeline_jobs import refresh_source_scores
+from admin.backend.services.pipeline_jobs import run_entity_resolution_job
+from admin.backend.services.pipeline_jobs import run_graph_maintenance_job
+from admin.backend.services.pipeline_jobs import run_graph_resolution_job
 from admin.backend.services.pipeline_jobs import run_missing_signals_job
+from admin.backend.services.pipeline_jobs import run_novelty_judge_job
+from admin.backend.services.pipeline_jobs import run_relevance_audit_job
+from admin.backend.services.pipeline_jobs import run_retrospective_review_job
 from admin.backend.services.pipeline_jobs import run_semantic_cluster_job
 from admin.backend.services.pipeline_jobs import run_signal_analysis_job
 
@@ -19,6 +25,18 @@ async def _dispatch(job_name: str, workspace_id: str | None) -> dict:
         return await run_signal_analysis_job(workspace_id)
     if job_name == "run_missing_signals":
         return await run_missing_signals_job(workspace_id)
+    if job_name == "run_retrospective_review":
+        return await run_retrospective_review_job(workspace_id)
+    if job_name == "run_novelty_judge":
+        return await run_novelty_judge_job(workspace_id)
+    if job_name == "run_relevance_audit":
+        return await run_relevance_audit_job(workspace_id)
+    if job_name == "run_graph_maintenance":
+        return await run_graph_maintenance_job(workspace_id)
+    if job_name == "run_graph_resolution":
+        return await run_graph_resolution_job(workspace_id)
+    if job_name == "run_entity_resolution":
+        return await run_entity_resolution_job(workspace_id)
     raise ValueError(f"Unsupported manual job: {job_name}")
 
 

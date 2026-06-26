@@ -1349,6 +1349,7 @@ def _signal_results(
     cluster_cfg: dict[str, Any],
     *,
     signal_series_by_id: dict[str, list[dict[str, Any]]] | None = None,
+    weak_snapshots_out: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     trend_posts: list[ClusterPost] = []
     semantic_by_id: dict[str, dict[str, Any]] = {}
@@ -1563,17 +1564,45 @@ def _signal_results(
         confidence = round(
             min(1.0, coherence_score * 0.45 + evidence_strength * 0.30 + source_diversity * 0.25), 4
         )
-        if (
+        below_weak_gate = (
+            signal_score < float(cluster_cfg.get("weak_signal_min_score", 0.42))
+            or confidence < float(cluster_cfg.get("weak_signal_min_confidence", 0.52))
+            or source_diversity < float(cluster_cfg.get("weak_signal_min_source_diversity", 0.2))
+            or len(source_ids) < int(cluster_cfg.get("weak_signal_min_source_count", 1))
+        )
+        suppressed = (
             stage == "weak"
             and not bool(cluster_cfg.get("persist_weak_signals", True))
-            and (
-                signal_score < float(cluster_cfg.get("weak_signal_min_score", 0.42))
-                or confidence < float(cluster_cfg.get("weak_signal_min_confidence", 0.52))
-                or source_diversity
-                < float(cluster_cfg.get("weak_signal_min_source_diversity", 0.2))
-                or len(source_ids) < int(cluster_cfg.get("weak_signal_min_source_count", 1))
+            and below_weak_gate
+        )
+        if stage == "weak" and weak_snapshots_out is not None:
+            # RSI Фаза 0: снимок weak-кандидата (в т.ч. подавленного) для ретро-петли.
+            weak_snapshots_out.append(
+                {
+                    "signal_key": signal_key,
+                    "workspace_id": rep.workspace_id,
+                    "title": rep.title,
+                    "stage": stage,
+                    "suppressed": suppressed,
+                    "suppression_reason": (
+                        _weak_gate_reason(
+                            signal_score, confidence, source_diversity, len(source_ids), cluster_cfg
+                        )
+                        if below_weak_gate
+                        else None
+                    ),
+                    "signal_score": signal_score,
+                    "confidence": confidence,
+                    "burst_score": burst_score,
+                    "source_diversity": source_diversity,
+                    "source_count": len(source_ids),
+                    "doc_count": len(doc_ids),
+                    "velocity_score": temporal["velocity_score"],
+                    "acceleration_score": temporal["acceleration_score"],
+                    "keywords": keywords[:12],
+                }
             )
-        ):
+        if suppressed:
             continue
         merged_top_terms = [
             name
@@ -1839,6 +1868,90 @@ def _thresholds_from_cfg(cluster_cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _weak_gate_reason(
+    signal_score: float,
+    confidence: float,
+    source_diversity: float,
+    source_count: int,
+    cluster_cfg: dict[str, Any],
+) -> str:
+    reasons: list[str] = []
+    if signal_score < float(cluster_cfg.get("weak_signal_min_score", 0.42)):
+        reasons.append("score")
+    if confidence < float(cluster_cfg.get("weak_signal_min_confidence", 0.52)):
+        reasons.append("confidence")
+    if source_diversity < float(cluster_cfg.get("weak_signal_min_source_diversity", 0.2)):
+        reasons.append("source_diversity")
+    if source_count < int(cluster_cfg.get("weak_signal_min_source_count", 1)):
+        reasons.append("source_count")
+    return ",".join(reasons)
+
+
+async def _persist_weak_snapshots(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    snapshots: list[dict[str, Any]],
+    cluster_cfg: dict[str, Any],
+) -> int:
+    """RSI Фаза 0: bulk-insert снимков weak-кандидатов. Idempotent по (run_id, signal_key)."""
+    if not snapshots:
+        return 0
+    weak_thresholds = {
+        "weak_signal_min_score": cluster_cfg.get("weak_signal_min_score"),
+        "weak_signal_min_confidence": cluster_cfg.get("weak_signal_min_confidence"),
+        "weak_signal_min_source_diversity": cluster_cfg.get("weak_signal_min_source_diversity"),
+        "weak_signal_min_source_count": cluster_cfg.get("weak_signal_min_source_count"),
+        "persist_weak_signals": cluster_cfg.get("persist_weak_signals"),
+    }
+    thresholds_json = json.dumps(weak_thresholds, sort_keys=True, default=str)
+    threshold_version = _digest(thresholds_json, "thr")
+    detected_at = datetime.now(UTC)
+    written = 0
+    for snap in snapshots:
+        await session.execute(
+            text(
+                """
+                INSERT INTO weak_signal_snapshots (
+                    id, run_id, workspace_id, signal_key, title, stage, suppressed, suppression_reason,
+                    signal_score, confidence, burst_score, source_diversity, source_count, doc_count,
+                    velocity_score, acceleration_score, keywords, thresholds, threshold_version,
+                    judge_verdict, detected_at, created_at, updated_at
+                ) VALUES (
+                    :id, :run_id, :workspace_id, :signal_key, :title, :stage, :suppressed, :suppression_reason,
+                    :signal_score, :confidence, :burst_score, :source_diversity, :source_count, :doc_count,
+                    :velocity_score, :acceleration_score, CAST(:keywords AS jsonb), CAST(:thresholds AS jsonb),
+                    :threshold_version, NULL, :detected_at, NOW(), NOW()
+                ) ON CONFLICT (id) DO NOTHING
+                """
+            ),
+            {
+                "id": _digest(f"{run_id}|{snap['signal_key']}", "weaksnap"),
+                "run_id": run_id,
+                "workspace_id": snap["workspace_id"],
+                "signal_key": snap["signal_key"],
+                "title": snap.get("title"),
+                "stage": snap["stage"],
+                "suppressed": bool(snap["suppressed"]),
+                "suppression_reason": snap.get("suppression_reason"),
+                "signal_score": float(snap.get("signal_score", 0.0)),
+                "confidence": float(snap.get("confidence", 0.0)),
+                "burst_score": float(snap.get("burst_score", 0.0)),
+                "source_diversity": float(snap.get("source_diversity", 0.0)),
+                "source_count": int(snap.get("source_count", 0)),
+                "doc_count": int(snap.get("doc_count", 0)),
+                "velocity_score": float(snap.get("velocity_score", 0.0)),
+                "acceleration_score": float(snap.get("acceleration_score", 0.0)),
+                "keywords": json.dumps(snap.get("keywords", [])),
+                "thresholds": thresholds_json,
+                "threshold_version": threshold_version,
+                "detected_at": detected_at,
+            },
+        )
+        written += 1
+    return written
+
+
 async def _persist_signal_outputs(
     session: AsyncSession,
     *,
@@ -1913,12 +2026,14 @@ async def _run_signal_analysis_core(
     existing_emerging = await _existing(
         session, "emerging_signals", workspace_id, int(cluster_cfg["trend_cluster_max_gap_hours"])
     )
+    weak_snapshots: list[dict[str, Any]] = []
     stable, emerging = _signal_results(
         semantic,
         existing_trends,
         existing_emerging,
         cluster_cfg,
         signal_series_by_id=series_by_semantic,
+        weak_snapshots_out=weak_snapshots,
     )
     touched_trends, touched_emerging = await _persist_signal_outputs(
         session,
@@ -1926,6 +2041,12 @@ async def _run_signal_analysis_core(
         workspace_id=workspace_id,
         stable=stable,
         emerging=emerging,
+        cluster_cfg=cluster_cfg,
+    )
+    weak_snapshots_captured = await _persist_weak_snapshots(
+        session,
+        run_id=run_id,
+        snapshots=weak_snapshots,
         cluster_cfg=cluster_cfg,
     )
     quality = _metrics(semantic, stable, emerging, cluster_cfg)
@@ -1944,6 +2065,7 @@ async def _run_signal_analysis_core(
         "signals_merged": sum(
             int(item.get("merged_signal_count") or 0) for item in [*stable, *emerging]
         ),
+        "weak_snapshots_captured": weak_snapshots_captured,
     }
     quality["change_points_detected"] = summary["change_points_detected"]
     quality["signals_merged"] = summary["signals_merged"]

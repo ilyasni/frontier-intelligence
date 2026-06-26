@@ -34,6 +34,8 @@ from mcp.tools.graph import router as graph_router
 from mcp.tools.frontier_brief import router as brief_router
 from mcp.tools.ingest_url import router as ingest_router
 from mcp.tools.observability import router as observability_router
+from mcp.tools.threshold_proposals import router as threshold_proposals_router
+from mcp.tools.graph_health import router as graph_health_router
 from shared.qdrant_sparse import HAS_SPARSE
 
 
@@ -57,6 +59,8 @@ app.include_router(graph_router, prefix="/tools/get_concept_graph", tags=["graph
 app.include_router(brief_router, prefix="/tools/get_frontier_brief", tags=["brief"])
 app.include_router(ingest_router, prefix="/tools/ingest_url", tags=["ingest"])
 app.include_router(observability_router, prefix="/tools", tags=["observability"])
+app.include_router(threshold_proposals_router, prefix="/tools", tags=["rsi"])
+app.include_router(graph_health_router, prefix="/tools", tags=["rsi"])
 
 
 @app.get("/healthz")
@@ -325,6 +329,130 @@ async def list_tools():
                         "workspace": {"type": "string", "description": "Optional workspace ID filter"},
                     },
                     "required": ["entity_kind", "entity_id"],
+                },
+            },
+            {
+                "name": "list_threshold_proposals",
+                "description": "RSI retrospective loop: list weak-signal threshold-change proposals (default status=pending) with rationale and evidence for human review.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Optional workspace ID filter"},
+                        "status": {"type": "string", "description": "pending | approved | rejected | superseded (default: pending)"},
+                        "limit": {"type": "integer", "description": "Max proposals to return (default: 50)"},
+                    },
+                },
+            },
+            {
+                "name": "approve_threshold_change",
+                "description": "RSI gate: approve a weak-signal threshold proposal. Applies the new value to the workspace cluster_analysis override (effective next clustering run). This is the human gate that closes the retrospective loop.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "proposal_id": {"type": "string", "description": "Threshold proposal ID from list_threshold_proposals"},
+                        "reviewed_by": {"type": "string", "description": "Who approved (default: operator)"},
+                    },
+                    "required": ["proposal_id"],
+                },
+            },
+            {
+                "name": "reject_threshold_change",
+                "description": "RSI gate: reject a weak-signal threshold proposal (threshold unchanged).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "proposal_id": {"type": "string", "description": "Threshold proposal ID"},
+                        "reviewed_by": {"type": "string", "description": "Who rejected (default: operator)"},
+                        "note": {"type": "string", "description": "Optional reason for rejection"},
+                    },
+                    "required": ["proposal_id"],
+                },
+            },
+            {
+                "name": "list_underrated_signals",
+                "description": "RSI contour B: weak candidates that a different-family novelty judge (DeepSeek) rated as genuinely novel — blind spots the primary Gemma/GigaChat stack under-rated. Ranked by judge novelty_score.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Optional workspace ID filter"},
+                        "days_back": {"type": "integer", "description": "Lookback window in days (default: 30)"},
+                        "limit": {"type": "integer", "description": "Max signals to return (default: 30)"},
+                    },
+                },
+            },
+            {
+                "name": "list_relevance_audit_sample",
+                "description": "RSI contour C: sample of posts the Relevance Filter REJECTED (silent false-negative audit), ranked by score (closest to threshold first = most likely wrongly rejected). Review each and mark with mark_relevance_audit.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Optional workspace ID filter"},
+                        "days_back": {"type": "integer", "description": "Lookback window in days (default: 30)"},
+                        "limit": {"type": "integer", "description": "Max rejected posts to sample (default: 20)"},
+                    },
+                },
+            },
+            {
+                "name": "mark_relevance_audit",
+                "description": "RSI contour C: record a human verdict on a rejected post. verdict=false_negative means it was wrongly rejected. Enough false_negatives auto-propose lowering the relevance threshold (review via list_threshold_proposals).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "post_id": {"type": "string", "description": "Post ID from list_relevance_audit_sample"},
+                        "verdict": {"type": "string", "description": "false_negative | correct_reject"},
+                        "reviewed_by": {"type": "string", "description": "Who reviewed (default: operator)"},
+                        "note": {"type": "string", "description": "Optional note"},
+                    },
+                    "required": ["post_id", "verdict"],
+                },
+            },
+            {
+                "name": "get_graph_health",
+                "description": "RSI contour D: Neo4j concept-graph health (concept count, orphan nodes, duplicate clusters, edge density) plus normalized duplicate-entity groups. Inspect before applying entity-resolution merges.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Workspace ID"},
+                        "duplicates_limit": {"type": "integer", "description": "Max duplicate groups to return (default: 25)"},
+                    },
+                    "required": ["workspace"],
+                },
+            },
+            {
+                "name": "list_entity_merge_proposals",
+                "description": "RSI contour D+: semantic concept-merge proposals (acronym↔expansion, e.g. LLM↔Large Language Model), confirmed by a different-family LLM judge. Review before approving the graph merge.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Optional workspace ID filter"},
+                        "status": {"type": "string", "description": "pending | approved | rejected (default: pending)"},
+                        "limit": {"type": "integer", "description": "Max proposals to return (default: 50)"},
+                    },
+                },
+            },
+            {
+                "name": "approve_entity_merge",
+                "description": "RSI contour D+ gate: approve a semantic merge — merges the two concept nodes in Neo4j (canonical kept, the other becomes an alias). Irreversible graph mutation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "proposal_id": {"type": "string", "description": "Proposal ID from list_entity_merge_proposals"},
+                        "reviewed_by": {"type": "string", "description": "Who approved (default: operator)"},
+                    },
+                    "required": ["proposal_id"],
+                },
+            },
+            {
+                "name": "reject_entity_merge",
+                "description": "RSI contour D+ gate: reject a semantic merge proposal (graph unchanged).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "proposal_id": {"type": "string", "description": "Proposal ID"},
+                        "reviewed_by": {"type": "string", "description": "Who rejected (default: operator)"},
+                        "note": {"type": "string", "description": "Optional reason"},
+                    },
+                    "required": ["proposal_id"],
                 },
             },
         ]
