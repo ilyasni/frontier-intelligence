@@ -325,12 +325,21 @@ class Neo4jFrontierClient:
                 # (`[*1..$depth]` → Cypher error / 500). Подставляем валидированный
                 # int в текст запроса, ограничив диапазон, чтобы не было инъекции/взрыва.
                 safe_depth = max(1, min(int(depth), 5))
+                # Матч по НОРМАЛИЗОВАННОМУ имени (регистр/пробелы/пунктуация не важны),
+                # затем по cleaned-aliases (так «ИИ» найдёт канонический «искусственный
+                # интеллект»), затем точное имя. norm индексирован — поиск быстрый.
                 result = await session.run(
                     f"""
-                    MATCH path = (c:Concept {{workspace_id: $ws, name: $name}})-[*1..{safe_depth}]-(neighbor:Concept)
-                    WITH c, neighbor, relationships(path)[0] as rel
-                    RETURN c.name as source, neighbor.name as target,
-                           type(rel) as rel_type, rel.count as weight
+                    WITH apoc.text.clean($name) AS nrm
+                    MATCH (c:Concept {{workspace_id: $ws}})
+                    WHERE c.norm = nrm
+                       OR c.name = $name
+                       OR any(a IN coalesce(c.aliases, []) WHERE apoc.text.clean(a) = nrm)
+                    WITH c LIMIT 1
+                    MATCH path = (c)-[*1..{safe_depth}]-(neighbor:Concept)
+                    WITH c, neighbor, relationships(path)[0] AS rel
+                    RETURN c.name AS source, neighbor.name AS target,
+                           type(rel) AS rel_type, rel.count AS weight
                     LIMIT $limit
                     """,
                     ws=workspace_id, name=concept, limit=limit,

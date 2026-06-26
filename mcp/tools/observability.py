@@ -368,6 +368,18 @@ async def get_workspace_overview(req: WorkspaceOverviewRequest) -> dict:
         {"workspace": req.workspace},
     ) or {}
 
+    # Истинные счётчики кластеров — отдельным COUNT, а не len() урезанного списком фетча
+    # (иначе summary занижен до clusters_limit). Фильтры зеркалят list_clusters.
+    cluster_counts = await _fetch_one(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM semantic_clusters WHERE workspace_id = :workspace) AS semantic_cluster_count,
+            (SELECT COUNT(*) FROM trend_clusters WHERE workspace_id = :workspace AND pipeline = 'stable') AS trend_cluster_count,
+            (SELECT COUNT(*) FROM emerging_signals WHERE workspace_id = :workspace AND signal_stage = 'emerging') AS emerging_signal_count
+        """,
+        {"workspace": req.workspace},
+    ) or {}
+
     return {
         "workspace": workspace,
         "summary": {
@@ -377,9 +389,9 @@ async def get_workspace_overview(req: WorkspaceOverviewRequest) -> dict:
             "active_source_count": counts.get("active_source_count", 0),
             "latest_published_at": counts.get("latest_published_at"),
             "embedding_status": stats,
-            "semantic_cluster_count": len(clusters.get("semantic", [])),
-            "trend_cluster_count": len(clusters.get("trends", [])),
-            "emerging_signal_count": len(clusters.get("emerging", [])),
+            "semantic_cluster_count": cluster_counts.get("semantic_cluster_count", 0),
+            "trend_cluster_count": cluster_counts.get("trend_cluster_count", 0),
+            "emerging_signal_count": cluster_counts.get("emerging_signal_count", 0),
         },
         "top_sources": top_sources,
         "clusters": clusters,
