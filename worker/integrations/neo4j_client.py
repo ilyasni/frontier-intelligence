@@ -321,15 +321,19 @@ class Neo4jFrontierClient:
         """Return subgraph as nodes + edges dict."""
         async with self.driver.session() as session:
             if concept:
+                # Neo4j не принимает параметр в верхней границе var-length пути
+                # (`[*1..$depth]` → Cypher error / 500). Подставляем валидированный
+                # int в текст запроса, ограничив диапазон, чтобы не было инъекции/взрыва.
+                safe_depth = max(1, min(int(depth), 5))
                 result = await session.run(
-                    """
-                    MATCH path = (c:Concept {workspace_id: $ws, name: $name})-[*1..$depth]-(neighbor:Concept)
+                    f"""
+                    MATCH path = (c:Concept {{workspace_id: $ws, name: $name}})-[*1..{safe_depth}]-(neighbor:Concept)
                     WITH c, neighbor, relationships(path)[0] as rel
                     RETURN c.name as source, neighbor.name as target,
                            type(rel) as rel_type, rel.count as weight
                     LIMIT $limit
                     """,
-                    ws=workspace_id, name=concept, depth=depth, limit=limit,
+                    ws=workspace_id, name=concept, limit=limit,
                 )
             else:
                 result = await session.run(
