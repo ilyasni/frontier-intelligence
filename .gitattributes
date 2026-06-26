@@ -1,4 +1,21 @@
-# Скрипты для Linux-сервера — только LF (иначе bash: pipefail\r invalid)
+# Нормализация переводов строк: все текстовые файлы — LF в репозитории и рабочем дереве.
+# Закрывает CRLF-грабли Windows-локали, ломавшие build-скрипты и блокировавшие merge.
+* text=auto eol=lf
+
+# Критично для Linux-сервера — только LF (иначе bash: pipefail\r invalid, сломанная сборка).
 *.sh text eol=lf
 *.md text eol=lf
 Dockerfile text eol=lf
+
+# Бинарники — никогда не нормализовать.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.gz binary
+*.zip binary
+*.pyc binary
+*.whl binary
+*.onnx binary
