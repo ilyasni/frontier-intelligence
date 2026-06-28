@@ -1713,3 +1713,399 @@ sources:
       source_authority: 0.68
       fetch:
         lookback_hours: 240
+
+  # ── Discovery 2026-06-28 (форграунд-агенты, проверены курлом с сервера): длинный хвост + RU + CX/UX ──
+  # ai_research (rss)
+  - id: ai_research_rss_mistral
+    workspace_id: ai_research
+    source_type: rss
+    name: Mistral AI News
+    url: https://mistral.ai/rss.xml
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, llm]
+      source_authority: 0.88
+  - id: ai_research_rss_interconnects
+    workspace_id: ai_research
+    source_type: rss
+    name: Interconnects (Nathan Lambert)
+    url: https://www.interconnects.ai/feed
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, llm, rlhf]
+      source_authority: 0.86
+  - id: ai_research_rss_eugene_yan
+    workspace_id: ai_research
+    source_type: rss
+    name: Eugene Yan
+    url: https://eugeneyan.com/rss/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ml, applied]
+      source_authority: 0.82
+  - id: ai_research_rss_hamel
+    workspace_id: ai_research
+    source_type: rss
+    name: Hamel Husain
+    url: https://hamel.dev/index.xml
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ml, evals]
+      source_authority: 0.8
+  # ai_products_media (rss)
+  - id: ai_products_rss_latent_space
+    workspace_id: ai_products_media
+    source_type: rss
+    name: Latent Space
+    url: https://www.latent.space/feed
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, product, dev]
+      source_authority: 0.84
+  - id: ai_products_rss_algo_bridge
+    workspace_id: ai_products_media
+    source_type: rss
+    name: The Algorithmic Bridge
+    url: https://www.thealgorithmicbridge.com/feed
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, trends, media]
+      source_authority: 0.74
+  # design (rss)
+  - id: design_rss_intercom
+    workspace_id: design
+    source_type: rss
+    name: Intercom Blog
+    url: https://www.intercom.com/blog/feed/
+    schedule_cron: "*/240 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [cx, product, support]
+      source_authority: 0.78
+  - id: design_rss_jvetrau
+    workspace_id: design
+    source_type: rss
+    name: Дайджест продуктового дизайна (Ветров)
+    url: https://jvetrau.com/feed/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [design, ux, research]
+      source_authority: 0.82
+  # disruption (rss)
+  - id: rss_noema
+    workspace_id: disruption
+    source_type: rss
+    name: Noema Magazine
+    url: https://www.noemamag.com/feed/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [futures, society, science]
+      source_authority: 0.84
+  - id: rss_aeon
+    workspace_id: disruption
+    source_type: rss
+    name: Aeon
+    url: https://aeon.co/feed.rss
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [futures, society, science]
+      source_authority: 0.8
+  - id: rss_asterisk
+    workspace_id: disruption
+    source_type: rss
+    name: Asterisk Magazine
+    url: https://asteriskmag.substack.com/feed
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [futures, science, society]
+      source_authority: 0.8
+  - id: rss_robot_report
+    workspace_id: disruption
+    source_type: rss
+    name: The Robot Report
+    url: https://www.therobotreport.com/feed/
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [robotics, automation, mobility]
+      source_authority: 0.82
+  - id: rss_ieee_robotics
+    workspace_id: disruption
+    source_type: rss
+    name: IEEE Spectrum Robotics
+    url: https://spectrum.ieee.org/feeds/topic/robotics.rss
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [robotics, research, automation]
+      source_authority: 0.86
+  - id: rss_sifted
+    workspace_id: disruption
+    source_type: rss
+    name: Sifted
+    url: https://sifted.eu/feed
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [startups, business_models, fintech]
+      source_authority: 0.8
+  - id: rss_bosfera
+    workspace_id: disruption
+    source_type: rss
+    name: Банковское обозрение
+    url: https://bosfera.ru/rss.xml
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [fintech, banking, business_models]
+      source_authority: 0.76
+  - id: rss_frankmedia
+    workspace_id: disruption
+    source_type: rss
+    name: Frank Media
+    url: https://frankmedia.ru/feed
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [fintech, banking, business_models]
+      source_authority: 0.78
+  # web (frontier labs + CX, без чистого RSS — crawl4ai full_content)
+  - id: ai_research_web_anthropic_news
+    workspace_id: ai_research
+    source_type: web
+    name: Anthropic Newsroom
+    url: https://www.anthropic.com/news
+    schedule_cron: "*/240 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, frontier]
+      source_authority: 0.92
+      parse:
+        full_content: true
+  - id: ai_research_web_anthropic_research
+    workspace_id: ai_research
+    source_type: web
+    name: Anthropic Research
+    url: https://www.anthropic.com/research
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, alignment]
+      source_authority: 0.92
+      parse:
+        full_content: true
+  - id: ai_research_web_meta_ai
+    workspace_id: ai_research
+    source_type: web
+    name: Meta AI Blog
+    url: https://ai.meta.com/blog/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, ml]
+      source_authority: 0.9
+      parse:
+        full_content: true
+  - id: ai_research_web_cohere
+    workspace_id: ai_research
+    source_type: web
+    name: Cohere Blog
+    url: https://cohere.com/blog
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, llm, enterprise]
+      source_authority: 0.84
+      parse:
+        full_content: true
+  - id: ai_products_web_anthropic_eng
+    workspace_id: ai_products_media
+    source_type: web
+    name: Anthropic Engineering
+    url: https://www.anthropic.com/engineering
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, engineering, product]
+      source_authority: 0.88
+      parse:
+        full_content: true
+  - id: design_web_contentsquare
+    workspace_id: design
+    source_type: web
+    name: Contentsquare Blog
+    url: https://contentsquare.com/blog/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [cx, analytics, ux]
+      source_authority: 0.76
+      parse:
+        full_content: true
+  - id: design_web_uxfeedback
+    workspace_id: design
+    source_type: web
+    name: UX Feedback Blog (Voice of Customer)
+    url: https://blog.uxfeedback.ru/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [cx, ux, research]
+      source_authority: 0.7
+      parse:
+        full_content: true
+  - id: web_worksinprogress
+    workspace_id: disruption
+    source_type: web
+    name: Works in Progress
+    url: https://worksinprogress.co/
+    schedule_cron: "0 */6 * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [futures, science, progress]
+      source_authority: 0.82
+      parse:
+        full_content: true
+  - id: web_plusworld
+    workspace_id: disruption
+    source_type: web
+    name: PLUSworld
+    url: https://plusworld.ru/
+    schedule_cron: "*/240 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [fintech, payments, banking]
+      source_authority: 0.68
+      parse:
+        full_content: true
+  # telegram (10 сильнейших; t.me с сервера недоступен — проверены агентами)
+  - id: design_tg_uxhorn
+    workspace_id: design
+    source_type: telegram
+    name: UX Horn
+    tg_channel: "@uxhorn"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ux, design, cx]
+      source_authority: 0.78
+      fetch:
+        lookback_hours: 168
+  - id: design_tg_poyasnizaux
+    workspace_id: design
+    source_type: telegram
+    name: Поясни за UX
+    tg_channel: "@poyasnizaux"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ux, design, research]
+      source_authority: 0.72
+      fetch:
+        lookback_hours: 168
+  - id: design_tg_uxread
+    workspace_id: design
+    source_type: telegram
+    name: Королёв про UX research
+    tg_channel: "@uxread"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ux, research, cx]
+      source_authority: 0.76
+      fetch:
+        lookback_hours: 240
+  - id: design_tg_cx_lab
+    workspace_id: design
+    source_type: telegram
+    name: Клиентский опыт (CX и UX)
+    tg_channel: "@cx_lab"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [cx, ux, service]
+      source_authority: 0.72
+      fetch:
+        lookback_hours: 240
+  - id: tg_frank_media
+    workspace_id: disruption
+    source_type: telegram
+    name: Frank Media
+    tg_channel: "@frank_media"
+    schedule_cron: "*/60 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [fintech, banking, business_models]
+      source_authority: 0.8
+      fetch:
+        lookback_hours: 168
+  - id: tg_fintexno
+    workspace_id: disruption
+    source_type: telegram
+    name: Финтехно
+    tg_channel: "@fintexno"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [fintech, payments, product]
+      source_authority: 0.72
+      fetch:
+        lookback_hours: 168
+  - id: tg_zr_ru
+    workspace_id: disruption
+    source_type: telegram
+    name: За рулём
+    tg_channel: "@zr_ru"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [auto, ev, market]
+      source_authority: 0.74
+      fetch:
+        lookback_hours: 168
+  - id: tg_evforum
+    workspace_id: disruption
+    source_type: telegram
+    name: EV forum / Электромобили
+    tg_channel: "@EVforum"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ev, charging, auto]
+      source_authority: 0.7
+      fetch:
+        lookback_hours: 240
+  - id: tg_autopotoknews
+    workspace_id: disruption
+    source_type: telegram
+    name: Автопоток
+    tg_channel: "@autopotoknews"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [auto, market, regulation]
+      source_authority: 0.68
+      fetch:
+        lookback_hours: 168
+  - id: tg_dronesrussia
+    workspace_id: disruption
+    source_type: telegram
+    name: Обозреватель БПЛА
+    tg_channel: "@dronesrussia"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [drones, autonomous, robotics]
+      source_authority: 0.7
+      fetch:
+        lookback_hours: 240
