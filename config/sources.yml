@@ -1350,3 +1350,366 @@ sources:
       quality_tier: trusted
       expected_signal_types: [ai, product, llm]
       source_authority: 0.84
+
+  # ── Discovery 2026-06-28: frontier labs, trend synthesis, CX/UX research, RU (проверены курлом) ──
+  # ai_research
+  - id: ai_research_rss_deepmind
+    workspace_id: ai_research
+    source_type: rss
+    name: Google DeepMind Blog
+    url: https://deepmind.google/blog/rss.xml
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, frontier]
+      source_authority: 0.92
+
+  - id: ai_research_rss_google_research
+    workspace_id: ai_research
+    source_type: rss
+    name: Google Research Blog
+    url: https://research.google/blog/rss/
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, methods]
+      source_authority: 0.9
+
+  - id: ai_research_rss_msr
+    workspace_id: ai_research
+    source_type: rss
+    name: Microsoft Research Blog
+    url: https://www.microsoft.com/en-us/research/feed/
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, ml]
+      source_authority: 0.9
+
+  - id: ai_research_rss_ahead_of_ai
+    workspace_id: ai_research
+    source_type: rss
+    name: Ahead of AI (Raschka)
+    url: https://magazine.sebastianraschka.com/feed
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, llm, ml]
+      source_authority: 0.86
+
+  - id: ai_research_rss_the_gradient
+    workspace_id: ai_research
+    source_type: rss
+    name: The Gradient
+    url: https://thegradient.pub/rss/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ml, essays]
+      source_authority: 0.82
+
+  - id: ai_research_rss_arxiv_cs_ma
+    workspace_id: ai_research
+    source_type: rss
+    name: arXiv cs.MA Research
+    url: https://rss.arxiv.org/rss/cs.MA
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_ma
+      quality_tier: research
+      expected_signal_types: [research, agents, ai]
+      source_authority: 0.9
+
+  - id: ai_research_rss_arxiv_cs_se
+    workspace_id: ai_research
+    source_type: rss
+    name: arXiv cs.SE Research
+    url: https://rss.arxiv.org/rss/cs.SE
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_se
+      quality_tier: research
+      expected_signal_types: [research, software, ai]
+      source_authority: 0.85
+
+  - id: ai_research_tg_seeallochnaya
+    workspace_id: ai_research
+    source_type: telegram
+    name: Сиолошная
+    tg_channel: "@seeallochnaya"
+    schedule_cron: "*/60 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, research, frontier]
+      source_authority: 0.8
+      fetch:
+        lookback_hours: 168
+
+  - id: ai_research_tg_gonzo_ml
+    workspace_id: ai_research
+    source_type: telegram
+    name: gonzo-обзоры ML статей
+    tg_channel: "@gonzo_ML"
+    schedule_cron: "*/60 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [research, ml, papers]
+      source_authority: 0.82
+      fetch:
+        lookback_hours: 168
+
+  # ai_trends
+  - id: ai_rss_import_ai
+    workspace_id: ai_trends
+    source_type: rss
+    name: Import AI (Jack Clark)
+    url: https://importai.substack.com/feed
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, trends, policy]
+      source_authority: 0.88
+
+  - id: ai_rss_ainews_smol
+    workspace_id: ai_trends
+    source_type: rss
+    name: AINews (smol.ai)
+    url: https://buttondown.com/ainews/rss
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, trends, aggregation]
+      source_authority: 0.76
+
+  - id: ai_rss_oreilly_radar
+    workspace_id: ai_trends
+    source_type: rss
+    name: O'Reilly Radar
+    url: https://www.oreilly.com/radar/feed/index.xml
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, data, trends]
+      source_authority: 0.8
+
+  # ai_products_media
+  - id: ai_products_rss_openai
+    workspace_id: ai_products_media
+    source_type: rss
+    name: OpenAI Blog
+    url: https://openai.com/blog/rss.xml
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, product, frontier]
+      source_authority: 0.9
+
+  - id: ai_products_rss_simonwillison
+    workspace_id: ai_products_media
+    source_type: rss
+    name: Simon Willison Weblog
+    url: https://simonwillison.net/atom/everything/
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, tooling, dev]
+      source_authority: 0.84
+
+  - id: ai_products_rss_nvidia_dl
+    workspace_id: ai_products_media
+    source_type: rss
+    name: NVIDIA Deep Learning Blog
+    url: https://blogs.nvidia.com/blog/category/deep-learning/feed/
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, hardware, product]
+      source_authority: 0.8
+
+  - id: ai_products_rss_dtf
+    workspace_id: ai_products_media
+    source_type: rss
+    name: DTF
+    url: https://dtf.ru/rss/all
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [tech, media, product]
+      source_authority: 0.6
+
+  - id: ai_products_tg_denissexy
+    workspace_id: ai_products_media
+    source_type: telegram
+    name: Denis Sexy IT
+    tg_channel: "@denissexy"
+    schedule_cron: "*/60 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, product, media]
+      source_authority: 0.7
+      fetch:
+        lookback_hours: 168
+
+  # disruption
+  - id: rss_stratechery
+    workspace_id: disruption
+    source_type: rss
+    name: Stratechery (Ben Thompson)
+    url: https://stratechery.com/feed/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [business_models, strategy, tech]
+      source_authority: 0.9
+
+  - id: rss_benedict_evans
+    workspace_id: disruption
+    source_type: rss
+    name: Benedict Evans
+    url: https://www.ben-evans.com/benedictevans?format=rss
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [futures, tech, strategy]
+      source_authority: 0.88
+
+  - id: rss_lennys
+    workspace_id: disruption
+    source_type: rss
+    name: Lenny's Newsletter
+    url: https://www.lennysnewsletter.com/feed
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [product, growth, business_models]
+      source_authority: 0.78
+
+  - id: rss_rbru
+    workspace_id: disruption
+    source_type: rss
+    name: Rusbase (RB.RU)
+    url: https://rb.ru/feeds/all/
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [startups, business_models, ru]
+      source_authority: 0.64
+
+  - id: tg_disruptors_official
+    workspace_id: disruption
+    source_type: telegram
+    name: Дизраптор
+    tg_channel: "@disruptors_official"
+    schedule_cron: "*/60 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [disruption, business_models]
+      source_authority: 0.74
+      fetch:
+        lookback_hours: 168
+
+  - id: tg_epicgrowth
+    workspace_id: disruption
+    source_type: telegram
+    name: Epic Growth
+    tg_channel: "@epicgrowth"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [product, growth, business_models]
+      source_authority: 0.68
+      fetch:
+        lookback_hours: 240
+
+  # design / CX-UX research
+  - id: design_rss_uxmatters
+    workspace_id: design
+    source_type: rss
+    name: UX Matters
+    url: https://www.uxmatters.com/index.xml
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ux, research, cx]
+      source_authority: 0.84
+
+  - id: design_rss_ixdf
+    workspace_id: design
+    source_type: rss
+    name: Interaction Design Foundation
+    url: https://www.interaction-design.org/rss/site_news.xml
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ux, research, design]
+      source_authority: 0.84
+
+  - id: design_rss_uxmovement
+    workspace_id: design
+    source_type: rss
+    name: UX Movement
+    url: https://uxmovement.com/feed/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ux, usability, design]
+      source_authority: 0.74
+
+  - id: design_rss_uxweekly
+    workspace_id: design
+    source_type: rss
+    name: UX Design Weekly
+    url: https://uxdesignweekly.com/feed/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ux, design, roundup]
+      source_authority: 0.74
+
+  - id: design_rss_prototypr
+    workspace_id: design
+    source_type: rss
+    name: Prototypr
+    url: https://blog.prototypr.io/feed
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [design, product, tooling]
+      source_authority: 0.7
+
+  - id: design_rss_csstricks
+    workspace_id: design
+    source_type: rss
+    name: CSS-Tricks
+    url: https://css-tricks.com/feed/
+    schedule_cron: "*/240 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [frontend, ux, web]
+      source_authority: 0.74
+
+  - id: design_tg_uxnotes
+    workspace_id: design
+    source_type: telegram
+    name: UX Notes
+    tg_channel: "@uxnotes"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ux, research, cx]
+      source_authority: 0.74
+      fetch:
+        lookback_hours: 240
+
+  - id: design_tg_designprosmotr
+    workspace_id: design
+    source_type: telegram
+    name: Design Prosmotr
+    tg_channel: "@designprosmotr"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [design, ux, visual_culture]
+      source_authority: 0.68
+      fetch:
+        lookback_hours: 240
