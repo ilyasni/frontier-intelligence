@@ -1212,3 +1212,141 @@ sources:
       quality_tier: research
       expected_signal_types: [research, vision, ai]
       source_authority: 0.9
+
+  # ── Усиление тонких workspace (добавлено 2026-06-28) ──
+  # ai_research
+  - id: ai_research_rss_hf_blog
+    workspace_id: ai_research
+    source_type: rss
+    name: Hugging Face Blog (Research)
+    url: https://huggingface.co/blog/feed.xml
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, llm]
+      source_authority: 0.86
+
+  - id: ai_research_rss_bair
+    workspace_id: ai_research
+    source_type: rss
+    name: BAIR Blog
+    url: https://bair.berkeley.edu/blog/feed.xml
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: research
+      expected_signal_types: [research, ai, ml]
+      source_authority: 0.88
+
+  - id: ai_research_rss_arxiv_stat_ml
+    workspace_id: ai_research
+    source_type: rss
+    name: arXiv stat.ML Research
+    url: https://rss.arxiv.org/rss/stat.ML
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_stat_ml
+      quality_tier: research
+      expected_signal_types: [research, ml, stats]
+      source_authority: 0.9
+
+  # ai_trends
+  - id: ai_rss_mit_tr_ai
+    workspace_id: ai_trends
+    source_type: rss
+    name: MIT Tech Review AI
+    url: https://www.technologyreview.com/topic/artificial-intelligence/feed/
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, industry, trends]
+      source_authority: 0.82
+
+  - id: ai_rss_venturebeat_ai
+    workspace_id: ai_trends
+    source_type: rss
+    name: VentureBeat AI
+    url: https://venturebeat.com/category/ai/feed/
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, industry, product]
+      source_authority: 0.7
+
+  - id: ai_rss_hf_blog
+    workspace_id: ai_trends
+    source_type: rss
+    name: Hugging Face Blog (Trends)
+    url: https://huggingface.co/blog/feed.xml
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, llm, industry]
+      source_authority: 0.84
+
+  # design
+  - id: design_rss_nng
+    workspace_id: design
+    source_type: rss
+    name: Nielsen Norman Group
+    url: https://www.nngroup.com/feed/rss/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [design, ux, research]
+      source_authority: 0.86
+
+  - id: design_rss_smashing
+    workspace_id: design
+    source_type: rss
+    name: Smashing Magazine
+    url: https://www.smashingmagazine.com/feed/
+    schedule_cron: "*/240 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [design, frontend, ux]
+      source_authority: 0.78
+
+  - id: design_rss_alistapart
+    workspace_id: design
+    source_type: rss
+    name: A List Apart
+    url: https://alistapart.com/main/feed/
+    schedule_cron: "*/360 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [design, web, ux]
+      source_authority: 0.78
+
+  - id: design_rss_uxcollective
+    workspace_id: design
+    source_type: rss
+    name: UX Collective
+    url: https://uxdesign.cc/feed
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [design, ux]
+      source_authority: 0.7
+
+  # ai_products_media
+  - id: ai_products_rss_verge_ai
+    workspace_id: ai_products_media
+    source_type: rss
+    name: The Verge AI
+    url: https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, product, media]
+      source_authority: 0.72
+
+  - id: ai_products_rss_hf_blog
+    workspace_id: ai_products_media
+    source_type: rss
+    name: Hugging Face Blog (Products)
+    url: https://huggingface.co/blog/feed.xml
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, product, llm]
+      source_authority: 0.84
