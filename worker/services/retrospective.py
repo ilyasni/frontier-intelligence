@@ -176,6 +176,11 @@ def propose_threshold(
     faded_cut_proposed = sum(1 for v in faded if v < candidate)
     vindicated_recovered = vindicated_cut_current - vindicated_cut_proposed
     faded_cut_delta = faded_cut_proposed - faded_cut_current
+    # Recall-first: НИКОГДА не жертвуем подтверждённым сигналом ради вырезания угасших.
+    # Пропущенный frontier-сигнал дороже одного дожившего шумового (см. дизайн Контура B);
+    # поэтому отрицательный возврат vindicated сразу дисквалифицирует предложение.
+    if vindicated_recovered < 0:
+        return None
     # Чистая польза = (удержали больше оправдавшихся) + (отсекли больше угасших). Если ≤0 —
     # сдвиг порога не улучшает разделение (или ухудшает) → не предлагаем (без шумовых no-op).
     if (vindicated_recovered + faded_cut_delta) <= 0:

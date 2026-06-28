@@ -100,6 +100,11 @@ async def approve_entity_merge(req: ApproveEntityMergeRequest) -> dict:
             raise HTTPException(status_code=409, detail=f"proposal is {row['status']}, not pending")
 
         keep = row["canonical_norm"]
+        if keep not in (row["norm_a"], row["norm_b"]):
+            raise HTTPException(
+                status_code=409,
+                detail="canonical_norm is neither norm_a nor norm_b; refusing ambiguous merge",
+            )
         drop = row["norm_a"] if keep == row["norm_b"] else row["norm_b"]
         neo = Neo4jFrontierClient()
         try:

@@ -76,7 +76,81 @@ def test_alert_message_is_urgent_not_digest() -> None:
         "high_score",
     )
 
-    assert message.startswith("Frontier urgent trend alert")
+    # Headline (the actual news) leads; technical jargon labels are gone.
+    assert message.startswith("Срочный тренд · disruption")
+    assert "AI browser agents are moving into production design workflows" in message
     assert "daily digest" not in message.lower()
-    assert "score: 0.821 | docs: 7 | sources: 5" in message
-    assert "agents, browser, design" in message
+    # Evidence weight is shown in plain Russian, not as a raw score line.
+    assert "Объём: 7 материалов · 5 источников" in message
+    assert "Теги: agents · browser · design" in message
+    # Detected timestamp is rendered as readable Moscow time, not ISO/UTC.
+    assert "Время: 18.04.2026 15:00 МСК" in message
+    assert "2026-04-18T12:00:00Z" not in message
+    # No emoji in the rendered message.
+    assert all(ord(ch) < 0x2190 for ch in message)
+
+
+def test_alert_prefers_russian_title() -> None:
+    message = trend_alerts._build_alert_message(
+        {
+            "workspace_id": "disruption",
+            "title": "Apple raises Mac and iPad prices, spares iPhone for now",
+            "title_ru": "Apple поднимает цены на Mac и iPad, не трогая iPhone",
+            "signal_score": 0.816,
+            "doc_count": 7,
+            "source_count": 5,
+            "change_point_strength": 0.0,
+            "detected_at": "2026-06-26T08:20:00.156104+00:00",
+            "insight": "Подорожание затрагивает железо, но не флагманский телефон.",
+            "opportunity": "",
+            "keywords": ["Apple", "MacBook", "iPad"],
+        },
+        "high_score",
+    )
+
+    assert "Apple поднимает цены на Mac и iPad, не трогая iPhone" in message
+    # The English headline is replaced, not appended.
+    assert "Apple raises Mac and iPad prices" not in message
+    assert "Суть: Подорожание затрагивает железо" in message
+
+
+def test_alert_falls_back_to_english_title_when_no_ru() -> None:
+    message = trend_alerts._build_alert_message(
+        {
+            "workspace_id": "disruption",
+            "title": "Anthropic Moves Toward Deal with US",
+            "title_ru": None,
+            "signal_score": 0.802,
+            "doc_count": 5,
+            "source_count": 4,
+            "change_point_strength": 0.0,
+            "detected_at": "2026-06-27T03:35:53.485044+00:00",
+            "keywords": ["Anthropic"],
+        },
+        "high_score",
+    )
+
+    assert "Anthropic Moves Toward Deal with US" in message
+
+
+def test_alert_message_drops_boilerplate_insight() -> None:
+    message = trend_alerts._build_alert_message(
+        {
+            "workspace_id": "disruption",
+            "title": "Apple raises Mac and iPad prices, spares iPhone for now",
+            "signal_score": 0.816,
+            "doc_count": 7,
+            "source_count": 5,
+            "change_point_strength": 0.0,
+            "detected_at": "2026-06-26T08:20:00.156104+00:00",
+            "insight": "7 related posts across 5 sources.",
+            "opportunity": "",
+            "keywords": ["Apple", "App Store", "MacBook", "iPad"],
+        },
+        "high_score",
+    )
+
+    # Count-restating boilerplate must not appear as a "Суть" line.
+    assert "Суть" not in message
+    assert "7 related posts across 5 sources" not in message
+    assert "Время: 26.06.2026 11:20 МСК" in message

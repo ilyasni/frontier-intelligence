@@ -25,6 +25,24 @@ _ACRONYM_STOPWORDS = {
     "и", "в", "на", "по", "для", "с", "к", "из",
 }
 
+# Кросс-алфавитное сворачивание: кириллический акроним-узел («ЛЛМ») и его латинский
+# двойник («LLM») должны сматчиться. Сворачиваем обе стороны в общий латинский вид
+# и используем как fallback к точному совпадению нормы.
+_CYR_TO_LAT = str.maketrans(
+    {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+        "ж": "zh", "з": "z", "и": "i", "й": "i", "к": "k", "л": "l", "м": "m",
+        "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+        "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    }
+)
+
+
+def _fold(value: str) -> str:
+    """Свернуть строку в латиницу (кириллица транслитерируется, прочее проходит как есть)."""
+    return (value or "").lower().translate(_CYR_TO_LAT)
+
 
 def acronym_of(name: str) -> str | None:
     """Акроним из многословного имени: первые буквы значимых слов, lower. Иначе None.
@@ -52,10 +70,12 @@ def find_acronym_candidates(concepts: list[dict[str, Any]]) -> list[dict[str, An
     отсортированных по сумме упоминаний (сначала самые «весомые» — их слияние ценнее).
     """
     norm_index: dict[str, dict[str, Any]] = {}
+    folded_index: dict[str, dict[str, Any]] = {}
     for c in concepts:
         norm = str(c.get("norm") or "")
         if norm and norm not in norm_index:
             norm_index[norm] = c
+            folded_index.setdefault(_fold(norm), c)
 
     seen: set[tuple[str, str]] = set()
     candidates: list[dict[str, Any]] = []
@@ -63,7 +83,8 @@ def find_acronym_candidates(concepts: list[dict[str, Any]]) -> list[dict[str, An
         acro = acronym_of(str(c.get("name") or ""))
         if not acro:
             continue
-        short = norm_index.get(acro)
+        # Точное совпадение нормы, затем кросс-алфавитный fallback (кириллица↔латиница).
+        short = norm_index.get(acro) or folded_index.get(_fold(acro))
         if not short:
             continue
         expansion_norm = str(c.get("norm") or "")

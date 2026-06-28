@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import math
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -26,6 +28,34 @@ WEAK_GATE_KEYS = {
     "weak_signal_min_source_count",
 }
 APPROVABLE_KEYS = WEAK_GATE_KEYS | {"relevance_threshold"}
+
+# Допустимый диапазон значения по каждому ключу. Человек-гейт обязан остановить runaway-
+# предложение (напр. relevance_threshold=-5 или weak_signal_min_score=999), даже если оно
+# попало в БД из-за бага петли или ручной правки строки.
+KEY_BOUNDS: dict[str, tuple[float, float]] = {
+    "weak_signal_min_score": (0.0, 1.0),
+    "weak_signal_min_confidence": (0.0, 1.0),
+    "weak_signal_min_source_diversity": (0.0, 1.0),
+    "weak_signal_min_source_count": (1.0, 100.0),
+    "relevance_threshold": (0.0, 1.0),
+}
+
+
+def _validate_proposed_value(threshold_key: str, raw_value: object) -> float:
+    """Проверить значение предложения перед записью в конфиг (защита человек-гейта)."""
+    try:
+        value = float(raw_value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="proposed_value is not numeric")
+    if not math.isfinite(value):
+        raise HTTPException(status_code=400, detail="proposed_value is not finite")
+    lo, hi = KEY_BOUNDS[threshold_key]
+    if not (lo <= value <= hi):
+        raise HTTPException(
+            status_code=400,
+            detail=f"proposed_value {value} out of range [{lo}, {hi}] for {threshold_key}",
+        )
+    return value
 
 
 class RelevanceAuditSampleRequest(BaseModel):
@@ -196,6 +226,7 @@ async def approve_threshold_change(req: ApproveThresholdChangeRequest) -> dict:
             raise HTTPException(status_code=409, detail=f"proposal is {row['status']}, not pending")
         if row["threshold_key"] not in APPROVABLE_KEYS:
             raise HTTPException(status_code=400, detail=f"threshold_key {row['threshold_key']} not approvable")
+        value = _validate_proposed_value(row["threshold_key"], row["proposed_value"])
 
         if row["threshold_key"] == "relevance_threshold":
             # Порог релевантности живёт в relevance_weights->threshold (читается enrichment'ом).
@@ -213,7 +244,7 @@ async def approve_threshold_change(req: ApproveThresholdChangeRequest) -> dict:
                     WHERE id = :ws
                     """
                 ),
-                {"ws": row["workspace_id"], "value": row["proposed_value"]},
+                {"ws": row["workspace_id"], "value": value},
             )
         else:
             # weak-гейты — в per-workspace override (читается _cluster_settings на следующем прогоне).
@@ -236,7 +267,7 @@ async def approve_threshold_change(req: ApproveThresholdChangeRequest) -> dict:
                     WHERE id = :ws
                     """
                 ),
-                {"ws": row["workspace_id"], "key": row["threshold_key"], "value": row["proposed_value"]},
+                {"ws": row["workspace_id"], "key": row["threshold_key"], "value": value},
             )
         await session.execute(
             text(
@@ -247,7 +278,7 @@ async def approve_threshold_change(req: ApproveThresholdChangeRequest) -> dict:
                 WHERE id = :id
                 """
             ),
-            {"id": req.proposal_id, "by": req.reviewed_by, "value": row["proposed_value"]},
+            {"id": req.proposal_id, "by": req.reviewed_by, "value": value},
         )
         await session.commit()
     return {
@@ -255,7 +286,7 @@ async def approve_threshold_change(req: ApproveThresholdChangeRequest) -> dict:
         "proposal_id": req.proposal_id,
         "workspace_id": row["workspace_id"],
         "threshold_key": row["threshold_key"],
-        "applied_value": row["proposed_value"],
+        "applied_value": value,
         "note": "Применится на следующем прогоне кластеризации; новые снимки получат новый threshold_version.",
     }
 
