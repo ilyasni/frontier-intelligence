@@ -1015,6 +1015,7 @@ sources:
 
   - id: tg_ru_russianev
     workspace_id: disruption
+    is_enabled: false  # 2026-06-28: 0 постов за всё время (битый/закрытый хэндл)
     source_type: telegram
     name: Russian EV
     tg_channel: "@russianev"
@@ -1034,6 +1035,7 @@ sources:
 
   - id: tg_ru_avtovaz_official
     workspace_id: disruption
+    is_enabled: false  # 2026-06-28: 0 постов за всё время (битый/закрытый хэндл)
     source_type: telegram
     name: АвтоВАЗ Official
     tg_channel: "@avtovaz_official"
@@ -1113,6 +1115,7 @@ sources:
 
   - id: tg_ru_izvestia_auto
     workspace_id: disruption
+    is_enabled: false  # 2026-06-28: 0 постов за всё время (битый/закрытый хэндл)
     source_type: telegram
     name: Izvestia Auto
     tg_channel: "@izvestia_auto"
@@ -1148,3 +1151,64 @@ sources:
         exclude_keywords: [пробки, путешествие, lifestyle]
       fetch:
         lookback_hours: 168
+
+  # ── Пробел NLP/LLM + Vision (добавлено 2026-06-28): cs.CL отсутствовал ──
+  - id: rss_arxiv_cs_cl
+    workspace_id: disruption
+    source_type: rss
+    name: arXiv cs.CL
+    url: https://rss.arxiv.org/rss/cs.CL
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: arxiv_cs_cl
+      quality_tier: research
+      expected_signal_types: [research, nlp, llm]
+      source_authority: 0.92
+
+  - id: ai_rss_arxiv_cs_cl
+    workspace_id: ai_trends
+    source_type: rss
+    name: arXiv cs.CL Trends
+    url: https://rss.arxiv.org/rss/cs.CL
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_cl
+      quality_tier: research
+      expected_signal_types: [research, nlp, llm]
+      source_authority: 0.92
+
+  - id: ai_research_rss_arxiv_cs_cl
+    workspace_id: ai_research
+    source_type: rss
+    name: arXiv cs.CL Research
+    url: https://rss.arxiv.org/rss/cs.CL
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_cl
+      quality_tier: research
+      expected_signal_types: [research, nlp, llm]
+      source_authority: 0.94
+
+  - id: rss_arxiv_cs_cv
+    workspace_id: disruption
+    source_type: rss
+    name: arXiv cs.CV
+    url: https://rss.arxiv.org/rss/cs.CV
+    schedule_cron: "*/120 * * * *"
+    extra:
+      preset: arxiv_cs_cv
+      quality_tier: research
+      expected_signal_types: [research, vision, ai]
+      source_authority: 0.9
+
+  - id: ai_rss_arxiv_cs_cv
+    workspace_id: ai_trends
+    source_type: rss
+    name: arXiv cs.CV Trends
+    url: https://rss.arxiv.org/rss/cs.CV
+    schedule_cron: "*/180 * * * *"
+    extra:
+      preset: arxiv_cs_cv
+      quality_tier: research
+      expected_signal_types: [research, vision, ai]
+      source_authority: 0.9
