@@ -2109,3 +2109,135 @@ sources:
       source_authority: 0.7
       fetch:
         lookback_hours: 240
+
+  # ── RU AI/science long-tail (форграунд-агент, 2026-06-28): авторские каналы + Системный Блокъ ──
+  - id: rss_sysblok
+    workspace_id: disruption
+    source_type: rss
+    name: Системный Блокъ
+    url: https://sysblok.ru/feed/
+    schedule_cron: "*/240 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [science, digital_humanities, ai]
+      source_authority: 0.78
+  - id: ai_research_tg_ai_newz
+    workspace_id: ai_research
+    source_type: telegram
+    name: эйай ньюз (Санакоев)
+    tg_channel: "@ai_newz"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [research, ai, llm]
+      source_authority: 0.82
+      fetch:
+        lookback_hours: 168
+  - id: ai_research_tg_abstractdl
+    workspace_id: ai_research
+    source_type: telegram
+    name: AbstractDL (Разжигаев)
+    tg_channel: "@abstractDL"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [research, ml, nlp]
+      source_authority: 0.8
+      fetch:
+        lookback_hours: 240
+  - id: ai_research_tg_boris_again
+    workspace_id: ai_research
+    source_type: telegram
+    name: Борис опять (Цейтлин)
+    tg_channel: "@boris_again"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [research, ml, ds]
+      source_authority: 0.78
+      fetch:
+        lookback_hours: 240
+  - id: ai_research_tg_cryptovalerii
+    workspace_id: ai_research
+    source_type: telegram
+    name: Время Валеры (Бабушкин)
+    tg_channel: "@cryptovalerii"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [research, ml, ds]
+      source_authority: 0.8
+      fetch:
+        lookback_hours: 240
+  - id: ai_products_tg_techsparks
+    workspace_id: ai_products_media
+    source_type: telegram
+    name: TechSparks (Себрант)
+    tg_channel: "@techsparks"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [ai, futures, tech]
+      source_authority: 0.8
+      fetch:
+        lookback_hours: 168
+  - id: ai_products_tg_llm_under_hood
+    workspace_id: ai_products_media
+    source_type: telegram
+    name: LLM под капотом (Абдуллин)
+    tg_channel: "@llm_under_hood"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: trusted
+      expected_signal_types: [llm, applied, dev]
+      source_authority: 0.78
+      fetch:
+        lookback_hours: 240
+  - id: ai_products_tg_cgevent
+    workspace_id: ai_products_media
+    source_type: telegram
+    name: Метаверсище и ИИще (Цыпцын)
+    tg_channel: "@cgevent"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, generative, media]
+      source_authority: 0.74
+      fetch:
+        lookback_hours: 168
+  - id: ai_products_tg_addmeto
+    workspace_id: ai_products_media
+    source_type: telegram
+    name: addmeto (Бакунов)
+    tg_channel: "@addmeto"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [tech, ai, product]
+      source_authority: 0.72
+      fetch:
+        lookback_hours: 336
+  - id: ai_products_tg_hiaimedia
+    workspace_id: ai_products_media
+    source_type: telegram
+    name: Hi, AI — Новости технологий
+    tg_channel: "@hiaimedia"
+    schedule_cron: "*/120 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, product, media]
+      source_authority: 0.7
+      fetch:
+        lookback_hours: 168
+  - id: ai_products_tg_aihappens
+    workspace_id: ai_products_media
+    source_type: telegram
+    name: AI Happens (Хахунов)
+    tg_channel: "@aihappens"
+    schedule_cron: "*/180 * * * *"
+    extra:
+      quality_tier: standard
+      expected_signal_types: [ai, product, startup]
+      source_authority: 0.72
+      fetch:
+        lookback_hours: 240
