@@ -156,6 +156,16 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .tbl th.sortable:hover { color: var(--text); }
 .tbl td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .tbl tbody tr:hover { background: var(--surface-2); }
+/* Широкие таблицы: фиксированная раскладка (ширины задаёт colgroup) + обрезка контента
+   многоточием. Так колонки не разъезжаются и не переполняют экран. Узкий экран — горизонтальный
+   скролл контейнера (.table-wrap), а первая колонка-идентификатор залипает слева. */
+.tbl--fixed { table-layout: fixed; min-width: 820px; }
+.tbl--fixed th:first-child, .tbl--fixed td:first-child {
+  position: sticky; left: 0; z-index: 2; background: var(--surface);
+}
+.tbl--fixed th:first-child { z-index: 3; }
+.tbl--fixed tbody tr:hover td:first-child { background: var(--surface-2); }
+.ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .tbl tbody tr:last-child td { border-bottom: none; }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl .muted { color: var(--text-muted); }

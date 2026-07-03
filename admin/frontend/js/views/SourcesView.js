@@ -225,30 +225,38 @@ export default {
       <StateBlock :loading="loading" :error="error" :empty="!filtered.length"
         :empty-text="sources.length ? 'Нет источников по фильтрам' : 'Источников пока нет'" @retry="load">
         <div class="table-wrap">
-          <table class="tbl">
+          <table class="tbl tbl--fixed">
+            <colgroup>
+              <col style="width:24%"><col style="width:26%"><col style="width:16%">
+              <col style="width:9%"><col style="width:12%"><col style="width:13%">
+            </colgroup>
             <thead><tr>
-              <th>Источник</th><th>Тип</th><th>Цель</th><th>Статус</th>
-              <th class="num">Успех/Ошибки</th><th>Последний сбор</th><th></th>
+              <th>Источник</th><th>Цель</th><th>Статус</th>
+              <th class="num">Успех / Ошибки</th><th>Последний сбор</th><th></th>
             </tr></thead>
             <tbody>
               <tr v-for="s in filtered" :key="s.id">
                 <td>
-                  <div style="font-weight:600;cursor:pointer" @click="detail = s">{{ s.name || s.id }}</div>
-                  <div class="text-xs faint mono">{{ s.id }}</div>
+                  <div class="ellip" style="font-weight:600;cursor:pointer" @click="detail = s" :title="s.name || s.id">{{ s.name || s.id }}</div>
+                  <div class="row" style="gap:6px;margin-top:4px">
+                    <UiBadge variant="accent" :text="typeLabel(s.source_type)" :dot="false"/>
+                    <span class="text-xs faint mono ellip">{{ s.id }}</span>
+                  </div>
                 </td>
-                <td><UiBadge variant="accent" :text="typeLabel(s.source_type)" :dot="false"/></td>
-                <td class="muted"><span class="truncate" :title="s.url || s.tg_channel">{{ truncate(s.url || s.tg_channel || '—', 42) }}</span></td>
+                <td class="muted"><span class="ellip" style="display:block" :title="s.url || s.tg_channel">{{ s.url || s.tg_channel || '—' }}</span></td>
                 <td>
-                  <UiBadge :variant="s.is_enabled ? 'success' : 'neutral'" :text="s.is_enabled ? 'активен' : 'выключен'"/>
-                  <UiBadge v-if="s.last_run_status" class="mt-2" :variant="statusVariant(s.last_run_status)" :text="s.last_run_status" :dot="false"/>
-                  <div v-if="s.last_error" class="text-xs" style="color:#fca5a5;margin-top:4px" :title="s.last_error">{{ truncate(s.last_error, 40) }}</div>
+                  <div class="row" style="gap:6px;flex-wrap:wrap">
+                    <UiBadge :variant="s.is_enabled ? 'success' : 'neutral'" :text="s.is_enabled ? 'активен' : 'выкл'"/>
+                    <UiBadge v-if="s.last_run_status" :variant="statusVariant(s.last_run_status)" :text="s.last_run_status" :dot="false"/>
+                  </div>
+                  <div v-if="s.last_error" class="ellip text-xs" style="color:#fca5a5;margin-top:4px" :title="s.last_error">{{ s.last_error }}</div>
                 </td>
                 <td class="num mono">{{ fmtNum(s.recent_success_count) }} / <span :class="s.recent_error_count ? '' : 'faint'">{{ fmtNum(s.recent_error_count) }}</span></td>
                 <td class="muted text-sm">{{ s.last_success_at ? fmtAgo(s.last_success_at) : '—' }}</td>
                 <td class="actions">
                   <button class="btn btn--sm btn--outline" @click="toggle(s)">{{ s.is_enabled ? 'Выкл' : 'Вкл' }}</button>
                   <button class="btn btn--sm btn--ghost" @click="openVision(s)" title="Vision-политика">👁</button>
-                  <button v-if="s.source_type==='telegram'" class="btn btn--sm btn--ghost" @click="openTg(s)" title="Смен   канал">🔗</button>
+                  <button v-if="s.source_type==='telegram'" class="btn btn--sm btn--ghost" @click="openTg(s)" title="Сменить канал">🔗</button>
                   <button class="btn btn--sm btn--danger" @click="del(s)" title="Удалить">✕</button>
                 </td>
               </tr>
