@@ -301,9 +301,15 @@ async def list_sources(workspace_id: str | None = None):
             item["telegram_diagnostics"] = _build_telegram_diagnostics(item)
             item.update(source_quality_payload(item))
             _redact_source_secrets(item)
-            # cursor_json тяжёлый (seen_external_ids до 500 записей на источник — основная масса
-            # payload'а): нужное для UI уже извлечено в telegram_diagnostics. В списке не отдаём.
+            # Слим ответа списка: фронту в таблице/деталях не нужны тяжёлые блобы
+            # (cursor_json уже отсечён в SQL; proxy_config и вложенные quality-дикты не рендерятся;
+            # из extra оставляем только vision-политику — она нужна для префилла модалки).
             item.pop("cursor_json", None)
+            item.pop("proxy_config", None)
+            item.pop("score_breakdown", None)
+            item.pop("operational_status", None)
+            _extra = item.get("extra")
+            item["extra"] = {"vision": _extra.get("vision")} if isinstance(_extra, dict) else {}
             rows.append(item)
         return rows
 
