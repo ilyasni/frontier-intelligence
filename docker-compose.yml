@@ -605,6 +605,9 @@ services:
       - "8101:8101"
     volumes:
       - ${FRONTIER_RUNTIME_DIR:-/opt/frontier-intelligence/runtime}:/runtime
+      # Статика админки монтируется с хоста — правки фронта применяются мгновенно
+      # (FastAPI StaticFiles/FileResponse читают с диска), без пересборки образа.
+      - ./admin/frontend:/app/admin/frontend:ro
     # admin шеллит тяжёлые pipeline-джобы (clustering/signal-analysis/...) в субпроцессы
     # через `python -m admin.backend.manual_jobs`. Два CPU-heavy clustering-джоба делят
     # _cluster_lock и не пересекаются, остальное I/O-bound (LLM/Neo4j) — но без cgroup-лимита

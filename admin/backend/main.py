@@ -1,14 +1,17 @@
 """Admin UI backend — FastAPI serving API + static frontend."""
 import base64
+import hashlib
+import hmac
 import logging
 import os
 import secrets
 import sys
+import time
 from contextlib import asynccontextmanager
 
 sys.path.insert(0, "/app")
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -50,47 +53,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- HTTP Basic auth на весь admin (API + SPA). Браузер сам подставит креды
-#     к fetch-запросам SPA после нативного диалога. Исключения: health, /metrics
-#     (скрейпит Prometheus) и alertmanager-webhook (свой токен). ---
-_AUTH_EXEMPT_PREFIXES = (
-    "/api/health",
-    "/metrics",
-    "/api/monitoring/alertmanager/webhook",
-)
+# --- Auth: cookie-сессия (SPA-friendly) ИЛИ HTTP Basic (curl/интеграции). ---
+# Статика фронта (/, /static, catch-all) публична — SPA грузится и показывает форму входа.
+# Данные /api/* требуют авторизации. 401 отдаётся JSON'ом БЕЗ WWW-Authenticate,
+# чтобы браузер не всплывал native-диалогом на XHR (иначе fetch подвисает).
+_COOKIE_NAME = "fadmin_session"
+_SESSION_TTL = 7 * 24 * 3600
+
+
+def _admin_user() -> str:
+    return os.environ.get("ADMIN_USER", "admin")
+
+
+def _sign(payload: str) -> str:
+    key = os.environ.get("ADMIN_PASSWORD", "").encode()
+    return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
+
+
+def _make_session_token(user: str) -> str:
+    exp = int(time.time()) + _SESSION_TTL
+    payload = f"{user}:{exp}"
+    raw = f"{payload}:{_sign(payload)}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _verify_session_token(token: str) -> str | None:
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+        user, exp, sig = raw.rsplit(":", 2)
+        if not hmac.compare_digest(sig, _sign(f"{user}:{exp}")):
+            return None
+        if int(exp) < time.time():
+            return None
+        return user
+    except Exception:
+        return None
+
+
+def _check_basic(request: Request, expected_pw: str) -> bool:
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Basic "):
+        return False
+    try:
+        user, _, pw = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+        return secrets.compare_digest(user, _admin_user()) and secrets.compare_digest(pw, expected_pw)
+    except Exception:
+        return False
+
+
+def _path_needs_auth(path: str) -> bool:
+    if path == "/metrics":
+        return False
+    if not path.startswith("/api/"):
+        return False  # статика/SPA — публичны
+    if path == "/api/health" or path == "/api/auth/login":
+        return False
+    if path == "/api/monitoring/alertmanager/webhook":
+        return False
+    return True
 
 
 @app.middleware("http")
-async def _basic_auth(request: Request, call_next):
-    path = request.url.path
-    if request.method == "OPTIONS" or any(
-        path == p or path.startswith(p + "/") for p in _AUTH_EXEMPT_PREFIXES
-    ):
+async def _auth(request: Request, call_next):
+    if request.method == "OPTIONS" or not _path_needs_auth(request.url.path):
         return await call_next(request)
 
     expected_pw = os.environ.get("ADMIN_PASSWORD", "")
-    expected_user = os.environ.get("ADMIN_USER", "admin")
     if not expected_pw:
         logging.getLogger(__name__).error("ADMIN_PASSWORD не задан — admin API заблокирован")
         return Response("admin auth not configured", status_code=503)
 
-    header = request.headers.get("authorization", "")
-    authorized = False
-    if header.startswith("Basic "):
-        try:
-            user, _, pw = base64.b64decode(header[6:]).decode("utf-8").partition(":")
-            authorized = secrets.compare_digest(user, expected_user) and secrets.compare_digest(
-                pw, expected_pw
-            )
-        except Exception:
-            authorized = False
-    if not authorized:
-        return Response(
-            "authentication required",
-            status_code=401,
-            headers={"WWW-Authenticate": 'Basic realm="Frontier Admin"'},
-        )
-    return await call_next(request)
+    token = request.cookies.get(_COOKIE_NAME)
+    if (token and _verify_session_token(token)) or _check_basic(request, expected_pw):
+        return await call_next(request)
+
+    return Response('{"detail":"unauthorized"}', status_code=401, media_type="application/json")
 
 
 # API routers
@@ -122,6 +159,36 @@ app.include_router(monitoring_router, prefix="/api/monitoring", tags=["monitorin
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: dict, response: Response):
+    username = str(payload.get("username", ""))
+    password = str(payload.get("password", ""))
+    expected_pw = os.environ.get("ADMIN_PASSWORD", "")
+    if not expected_pw:
+        raise HTTPException(status_code=503, detail="admin auth not configured")
+    if secrets.compare_digest(username, _admin_user()) and secrets.compare_digest(password, expected_pw):
+        response.set_cookie(
+            _COOKIE_NAME, _make_session_token(username),
+            httponly=True, samesite="lax", max_age=_SESSION_TTL, path="/",
+        )
+        return {"ok": True, "user": username}
+    raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    # Middleware уже пропустил → авторизован. Отдаём текущего пользователя.
+    token = request.cookies.get(_COOKIE_NAME)
+    user = _verify_session_token(token) if token else None
+    return {"authenticated": True, "user": user or _admin_user()}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response):
+    response.delete_cookie(_COOKIE_NAME, path="/")
+    return {"ok": True}
 
 
 async def _refresh_last_post_age_metric() -> None:

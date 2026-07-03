@@ -296,6 +296,9 @@ async def list_sources(workspace_id: str | None = None):
             item["telegram_diagnostics"] = _build_telegram_diagnostics(item)
             item.update(source_quality_payload(item))
             _redact_source_secrets(item)
+            # cursor_json тяжёлый (seen_external_ids до 500 записей на источник — основная масса
+            # payload'а): нужное для UI уже извлечено в telegram_diagnostics. В списке не отдаём.
+            item.pop("cursor_json", None)
             rows.append(item)
         return rows
 

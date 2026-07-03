@@ -1,0 +1,62 @@
+/* Дизайн-токены админки Frontier Intelligence. Единый источник цветов/типографики/отступов.
+   Смена темы = правка переменных здесь, а не поиск-замена hex по всему коду. */
+:root {
+  color-scheme: dark;
+
+  /* Нейтральные (тёмная тема) */
+  --bg: #0b0d13;
+  --bg-elevated: #101320;
+  --surface: #161a27;
+  --surface-2: #1d2233;
+  --surface-3: #252b40;
+  --border: #2a3042;
+  --border-strong: #3a4258;
+
+  /* Текст */
+  --text: #e7eaf3;
+  --text-muted: #9aa3b8;
+  --text-faint: #69728a;
+  --text-on-accent: #ffffff;
+
+  /* Акцент */
+  --accent: #6366f1;
+  --accent-hover: #7d80f4;
+  --accent-press: #5457d8;
+  --accent-soft: rgba(99, 102, 241, 0.15);
+  --accent-border: rgba(99, 102, 241, 0.45);
+
+  /* Семантические */
+  --success: #22c55e; --success-soft: rgba(34, 197, 94, 0.15);
+  --warn:    #f59e0b; --warn-soft:    rgba(245, 158, 11, 0.15);
+  --danger:  #ef4444; --danger-soft:  rgba(239, 68, 68, 0.15);
+  --info:    #38bdf8; --info-soft:    rgba(56, 189, 248, 0.15);
+  --neutral-soft: rgba(154, 163, 184, 0.14);
+
+  /* Отступы (шкала 4px) */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
+
+  /* Скругления */
+  --r-sm: 6px; --r-md: 9px; --r-lg: 14px; --r-full: 999px;
+
+  /* Типографика */
+  --fs-xs: 12px; --fs-sm: 13px; --fs-base: 14px;
+  --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 28px;
+  --lh: 1.5;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  /* Тени */
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.55);
+
+  /* Слои */
+  --z-header: 30;
+  --z-modal: 100;
+  --z-toast: 200;
+
+  /* Раскладка */
+  --sidebar-w: 236px;
+  --header-h: 58px;
+  --content-max: 1360px;
+}
