@@ -9,21 +9,30 @@ import UiModal from './components/UiModal.js';
 import JsonView from './components/JsonView.js';
 import WorkspaceSelect from './components/WorkspaceSelect.js';
 
-import Placeholder from './views/Placeholder.js';
+import DashboardView from './views/DashboardView.js';
+import PipelineView from './views/PipelineView.js';
 import SourcesView from './views/SourcesView.js';
+import PostsView from './views/PostsView.js';
+import AlbumsView from './views/AlbumsView.js';
+import MediaView from './views/MediaView.js';
+import ClustersView from './views/ClustersView.js';
+import GraphView from './views/GraphView.js';
+import SearchView from './views/SearchView.js';
+import WorkspacesView from './views/WorkspacesView.js';
+import SettingsView from './views/SettingsView.js';
 
 const routes = [
-  { path: '/', component: Placeholder, meta: { title: 'Dashboard' } },
-  { path: '/pipeline', component: Placeholder, meta: { title: 'Pipeline' } },
+  { path: '/', component: DashboardView, meta: { title: 'Dashboard' } },
+  { path: '/pipeline', component: PipelineView, meta: { title: 'Pipeline' } },
   { path: '/sources', component: SourcesView, meta: { title: 'Источники' } },
-  { path: '/posts', component: Placeholder, meta: { title: 'Посты' } },
-  { path: '/albums', component: Placeholder, meta: { title: 'Альбомы' } },
-  { path: '/media', component: Placeholder, meta: { title: 'Медиа' } },
-  { path: '/clusters', component: Placeholder, meta: { title: 'Кластеры' } },
-  { path: '/graph', component: Placeholder, meta: { title: 'Граф' } },
-  { path: '/search', component: Placeholder, meta: { title: 'Поиск' } },
-  { path: '/workspaces', component: Placeholder, meta: { title: 'Workspaces' } },
-  { path: '/settings', component: Placeholder, meta: { title: 'Настройки' } },
+  { path: '/posts', component: PostsView, meta: { title: 'Посты' } },
+  { path: '/albums', component: AlbumsView, meta: { title: 'Альбомы' } },
+  { path: '/media', component: MediaView, meta: { title: 'Медиа' } },
+  { path: '/clusters', component: ClustersView, meta: { title: 'Кластеры' } },
+  { path: '/graph', component: GraphView, meta: { title: 'Граф' } },
+  { path: '/search', component: SearchView, meta: { title: 'Поиск' } },
+  { path: '/workspaces', component: WorkspacesView, meta: { title: 'Workspaces' } },
+  { path: '/settings', component: SettingsView, meta: { title: 'Настройки' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 
