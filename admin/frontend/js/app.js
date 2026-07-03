@@ -9,30 +9,20 @@ import UiModal from './components/UiModal.js';
 import JsonView from './components/JsonView.js';
 import WorkspaceSelect from './components/WorkspaceSelect.js';
 
-import DashboardView from './views/DashboardView.js';
-import PipelineView from './views/PipelineView.js';
-import SourcesView from './views/SourcesView.js';
-import PostsView from './views/PostsView.js';
-import AlbumsView from './views/AlbumsView.js';
-import MediaView from './views/MediaView.js';
-import ClustersView from './views/ClustersView.js';
-import GraphView from './views/GraphView.js';
-import SearchView from './views/SearchView.js';
-import WorkspacesView from './views/WorkspacesView.js';
-import SettingsView from './views/SettingsView.js';
-
+// Ленивая загрузка экранов: каждый грузится при переходе. Ошибка в одном экране
+// изолируется этим маршрутом и не роняет всё приложение.
 const routes = [
-  { path: '/', component: DashboardView, meta: { title: 'Dashboard' } },
-  { path: '/pipeline', component: PipelineView, meta: { title: 'Pipeline' } },
-  { path: '/sources', component: SourcesView, meta: { title: 'Источники' } },
-  { path: '/posts', component: PostsView, meta: { title: 'Посты' } },
-  { path: '/albums', component: AlbumsView, meta: { title: 'Альбомы' } },
-  { path: '/media', component: MediaView, meta: { title: 'Медиа' } },
-  { path: '/clusters', component: ClustersView, meta: { title: 'Кластеры' } },
-  { path: '/graph', component: GraphView, meta: { title: 'Граф' } },
-  { path: '/search', component: SearchView, meta: { title: 'Поиск' } },
-  { path: '/workspaces', component: WorkspacesView, meta: { title: 'Workspaces' } },
-  { path: '/settings', component: SettingsView, meta: { title: 'Настройки' } },
+  { path: '/', component: () => import('./views/DashboardView.js'), meta: { title: 'Dashboard' } },
+  { path: '/pipeline', component: () => import('./views/PipelineView.js'), meta: { title: 'Pipeline' } },
+  { path: '/sources', component: () => import('./views/SourcesView.js'), meta: { title: 'Источники' } },
+  { path: '/posts', component: () => import('./views/PostsView.js'), meta: { title: 'Посты' } },
+  { path: '/albums', component: () => import('./views/AlbumsView.js'), meta: { title: 'Альбомы' } },
+  { path: '/media', component: () => import('./views/MediaView.js'), meta: { title: 'Медиа' } },
+  { path: '/clusters', component: () => import('./views/ClustersView.js'), meta: { title: 'Кластеры' } },
+  { path: '/graph', component: () => import('./views/GraphView.js'), meta: { title: 'Граф' } },
+  { path: '/search', component: () => import('./views/SearchView.js'), meta: { title: 'Поиск' } },
+  { path: '/workspaces', component: () => import('./views/WorkspacesView.js'), meta: { title: 'Workspaces' } },
+  { path: '/settings', component: () => import('./views/SettingsView.js'), meta: { title: 'Настройки' } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 
