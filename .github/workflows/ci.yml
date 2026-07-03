@@ -1,0 +1,42 @@
+# CI: линт реальных ошибок + unit-тесты. Раньше CI-гейта не было (тесты гонялись только вручную в образах).
+# Тесты сетенезависимы (моки в tests/conftest.py); зависимости — из requirements-dev.txt (объединение образов).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.6.9
+      # Только реальные баги: синтаксис (E9/F7xx) и неопределённые/переопределённые имена (F8xx).
+      # Стилевые правила намеренно не включаем — код исторически не линтился, это отдельная задача.
+      - name: Ruff (bug subset)
+        run: ruff check --select E9,F63,F701,F702,F703,F704,F706,F707,F811,F821,F822,F823 .
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Unit tests (без integration/e2e)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: pytest -m "not integration and not e2e" -q

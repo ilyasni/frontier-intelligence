@@ -11,7 +11,9 @@ class Post(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     workspace_id: Mapped[str] = mapped_column(Text, ForeignKey("workspaces.id"), nullable=False)
-    source_id: Mapped[str] = mapped_column(Text, ForeignKey("sources.id"), nullable=False)
+    source_id: Mapped[Optional[str]] = mapped_column(
+        Text, ForeignKey("sources.id", ondelete="SET NULL"), nullable=True
+    )
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
     grouped_id: Mapped[Optional[str]] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text, nullable=False)

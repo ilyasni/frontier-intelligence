@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -27,6 +28,39 @@ from admin.backend.services.xray_health import run_xray_health_check
 from shared.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Hard wall-clock cap for a single job child process. A hung child would otherwise
+# hold the per-family asyncio.Lock forever (via ``async with lock``) and permanently
+# block that family of scheduled/manual jobs. Default is generously above the observed
+# ~8 min signal_analysis runtime; override with ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC.
+_DEFAULT_JOB_SUBPROCESS_TIMEOUT_SEC = 900.0
+# Grace period between SIGTERM (terminate) and SIGKILL (kill) when a child overruns.
+_JOB_SUBPROCESS_TERM_GRACE_SEC = 5.0
+
+
+def _job_subprocess_timeout_sec() -> float:
+    """Resolve the child-process timeout from the environment (default 900s)."""
+    raw = os.environ.get("ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC")
+    if raw is None:
+        return _DEFAULT_JOB_SUBPROCESS_TIMEOUT_SEC
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC=%r; using default %.0fs",
+            raw,
+            _DEFAULT_JOB_SUBPROCESS_TIMEOUT_SEC,
+        )
+        return _DEFAULT_JOB_SUBPROCESS_TIMEOUT_SEC
+    if value <= 0:
+        logger.warning(
+            "Non-positive ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC=%r; using default %.0fs",
+            raw,
+            _DEFAULT_JOB_SUBPROCESS_TIMEOUT_SEC,
+        )
+        return _DEFAULT_JOB_SUBPROCESS_TIMEOUT_SEC
+    return value
+
 
 _scheduler: AsyncIOScheduler | None = None
 _source_score_lock = asyncio.Lock()
@@ -114,6 +148,7 @@ async def _run_job_subprocess(job_name: str, workspace_id: str | None) -> dict[s
     DB/Redis connections from the admin process. Raises ``RuntimeError`` on non-zero
     exit, with the child's stderr/stdout as the message.
     """
+    timeout = _job_subprocess_timeout_sec()
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -123,13 +158,74 @@ async def _run_job_subprocess(job_name: str, workspace_id: str | None) -> dict[s
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        # A hung (or cancelled) child must never outlive this coroutine, otherwise it
+        # keeps the family lock held forever and leaks a zombie. Escalate
+        # terminate -> kill, then reap with process.wait() before re-raising so the
+        # caller's ``async with lock`` unwinds and frees the lock for the next run.
+        await _terminate_job_subprocess(process, job_name, workspace_id)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise RuntimeError(
+            f"job_subprocess_timeout after {timeout:.0f}s: {job_name} "
+            f"workspace_id={workspace_id or '__all__'}"
+        ) from exc
     if process.returncode != 0:
         err_text = (
             stderr or stdout or b"job_subprocess_failed"
         ).decode("utf-8", errors="replace").strip()
         raise RuntimeError(err_text)
     return json.loads((stdout or b"{}").decode("utf-8", errors="replace"))
+
+
+async def _terminate_job_subprocess(
+    process: asyncio.subprocess.Process,
+    job_name: str,
+    workspace_id: str | None,
+) -> None:
+    """Best-effort teardown of an overrunning child: terminate, then kill, then reap.
+
+    Always reaps the child (``process.wait()``) so no zombie survives — even if the
+    process already exited between the timeout firing and this call.
+    """
+    if process.returncode is not None:
+        return
+    logger.error(
+        "job_subprocess timed out; terminating child job_name=%s workspace_id=%s pid=%s",
+        job_name,
+        workspace_id,
+        getattr(process, "pid", None),
+    )
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=_JOB_SUBPROCESS_TERM_GRACE_SEC)
+        return
+    except TimeoutError:
+        logger.error(
+            "job_subprocess did not exit after terminate; killing job_name=%s workspace_id=%s",
+            job_name,
+            workspace_id,
+        )
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return
+    # Final reap. This should return promptly once the child is killed; guard it so a
+    # wedged reap cannot hang the caller (and thus the lock) indefinitely.
+    try:
+        await asyncio.wait_for(process.wait(), timeout=_JOB_SUBPROCESS_TERM_GRACE_SEC)
+    except TimeoutError:
+        logger.error(
+            "job_subprocess reap after kill timed out job_name=%s workspace_id=%s pid=%s",
+            job_name,
+            workspace_id,
+            getattr(process, "pid", None),
+        )
 
 
 async def ensure_manual_jobs_table() -> None:

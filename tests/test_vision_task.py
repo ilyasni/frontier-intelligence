@@ -1,5 +1,7 @@
+import gzip
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from worker.tasks.vision_task import VisionTask, _classify_vision_error
 
@@ -64,6 +66,46 @@ def test_classify_vision_error_marks_422_nonfatal() -> None:
     kind, status_code = _classify_vision_error(_Vision422Error())
     assert kind == "nonfatal_upstream"
     assert status_code == 422
+
+
+async def test_download_from_s3_offloads_blocking_boto3_call() -> None:
+    task = VisionTask.__new__(VisionTask)
+    task._s3_bucket = "frontier"
+    body = MagicMock()
+    body.read.return_value = b"image-bytes"
+    task._s3 = MagicMock()
+    task._s3.get_object.return_value = {"Body": body}
+
+    result = await task._download_from_s3("media/1.jpg")
+
+    assert result == b"image-bytes"
+    task._s3.get_object.assert_called_once_with(Bucket="frontier", Key="media/1.jpg")
+    body.read.assert_called_once()
+
+
+async def test_download_from_s3_returns_none_on_error() -> None:
+    task = VisionTask.__new__(VisionTask)
+    task._s3_bucket = "frontier"
+    task._s3 = MagicMock()
+    task._s3.get_object.side_effect = RuntimeError("boom")
+
+    assert await task._download_from_s3("media/1.jpg") is None
+
+
+async def test_upload_album_summary_offloads_put_object() -> None:
+    task = VisionTask.__new__(VisionTask)
+    task._s3_bucket = "frontier"
+    task._s3 = MagicMock()
+    summary = {"grouped_id": "album-1", "workspace_id": "disruption", "items": []}
+
+    key = await task._upload_album_summary(summary)
+
+    assert key == "vision/disruption/albums/album-1/summary.json.gz"
+    task._s3.put_object.assert_called_once()
+    _, kwargs = task._s3.put_object.call_args
+    assert kwargs["Key"] == key
+    assert kwargs["ContentEncoding"] == "gzip"
+    assert json.loads(gzip.decompress(kwargs["Body"]).decode("utf-8")) == summary
 
 
 async def test_vision_task_uploads_album_summary_and_marks_group(monkeypatch) -> None:

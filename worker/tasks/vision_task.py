@@ -173,12 +173,18 @@ class VisionTask:
             exc,
         )
 
+    def _s3_get_object_bytes(self, s3_key: str) -> bytes:
+        """Blocking boto3 get_object + body read; call via asyncio.to_thread."""
+        resp = self._s3.get_object(Bucket=self._s3_bucket, Key=s3_key)
+        return resp["Body"].read()
+
     async def _download_from_s3(self, s3_key: str) -> Optional[bytes]:
         if not self._s3:
             return None
         try:
-            resp = self._s3.get_object(Bucket=self._s3_bucket, Key=s3_key)
-            return resp["Body"].read()
+            # boto3 is synchronous; offload to a thread so the shared event loop
+            # (relevance/concepts/vision consumers) is not blocked during S3 I/O.
+            return await asyncio.to_thread(self._s3_get_object_bytes, s3_key)
         except Exception as exc:
             logger.warning("S3 download failed for %s: %s", s3_key, exc)
             return None
@@ -277,11 +283,15 @@ class VisionTask:
         if not grouped_id or not workspace_id:
             return None
         summary_key = f"vision/{workspace_id}/albums/{grouped_id}/summary.json.gz"
+        body = gzip.compress(json.dumps(summary).encode("utf-8"))
         try:
-            self._s3.put_object(
+            # boto3 put_object is a blocking network call; offload to a thread so
+            # the shared event loop is not stalled while the album summary uploads.
+            await asyncio.to_thread(
+                self._s3.put_object,
                 Bucket=self._s3_bucket,
                 Key=summary_key,
-                Body=gzip.compress(json.dumps(summary).encode("utf-8")),
+                Body=body,
                 ContentType="application/json",
                 ContentEncoding="gzip",
             )

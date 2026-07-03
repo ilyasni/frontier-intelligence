@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_source_runs_source_started ON source_runs(source_
 CREATE TABLE IF NOT EXISTS posts (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-    source_id TEXT NOT NULL REFERENCES sources(id),
+    source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
     external_id TEXT NOT NULL,
     grouped_id TEXT,
     content TEXT NOT NULL,
