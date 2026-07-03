@@ -31,7 +31,19 @@ try:
 except Exception:  # pragma: no cover - optional local dependency, enabled in worker image
     rpt = None
 
+try:
+    import numpy as np
+except Exception:  # pragma: no cover - provided transitively (fastembed/onnxruntime) in worker/admin images
+    np = None
+
 logger = logging.getLogger(__name__)
+
+# Width of the band around the similarity threshold within which the vectorized
+# (matmul) cosine is re-decided with the exact pure-Python cosine. matmul uses a
+# different float summation order than the sequential pure-Python sum, so values can
+# differ by ~1e-13; this band (≫ that error) guarantees the vectorized edge set is
+# identical to the pure-Python path. See _components_np / _components_py.
+_COMPONENT_COSINE_EPS = 1e-9
 
 
 @dataclass
@@ -123,17 +135,10 @@ def _top_terms(posts: list[ClusterPost], limit: int = 8) -> list[str]:
     return [name for name, _ in counter.most_common(limit)]
 
 
-def _components(
-    posts: list[ClusterPost], threshold: float, max_gap_h: int
+def _connected_components(
+    posts: list[ClusterPost], graph: dict[str, set[str]]
 ) -> list[list[ClusterPost]]:
-    graph: dict[str, set[str]] = defaultdict(set)
-    for idx, a in enumerate(posts):
-        for b in posts[idx + 1 :]:
-            if abs((a.published_at - b.published_at).total_seconds()) / 3600.0 > max_gap_h:
-                continue
-            if _cos(a.vector, b.vector) >= threshold:
-                graph[a.post_id].add(b.post_id)
-                graph[b.post_id].add(a.post_id)
+    """Group posts into connected components of the similarity graph (DFS)."""
     by_id = {p.post_id: p for p in posts}
     seen: set[str] = set()
     groups: list[list[ClusterPost]] = []
@@ -152,6 +157,77 @@ def _components(
                     stack.append(nxt)
         groups.append([by_id[i] for i in ids])
     return groups
+
+
+def _components_py(
+    posts: list[ClusterPost], threshold: float, max_gap_h: int
+) -> list[list[ClusterPost]]:
+    """Pure-Python O(n²) similarity-graph builder. Reference implementation."""
+    graph: dict[str, set[str]] = defaultdict(set)
+    for idx, a in enumerate(posts):
+        for b in posts[idx + 1 :]:
+            if abs((a.published_at - b.published_at).total_seconds()) / 3600.0 > max_gap_h:
+                continue
+            if _cos(a.vector, b.vector) >= threshold:
+                graph[a.post_id].add(b.post_id)
+                graph[b.post_id].add(a.post_id)
+    return _connected_components(posts, graph)
+
+
+def _components_np(
+    posts: list[ClusterPost], threshold: float, max_gap_h: int
+) -> list[list[ClusterPost]]:
+    """Vectorized equivalent of _components_py.
+
+    Builds the full pairwise cosine matrix via a single matmul instead of the O(n²)
+    pure-Python double loop. Produces a byte-identical edge set: pairs whose vectorized
+    cosine lands within _COMPONENT_COSINE_EPS of the threshold are re-decided with the
+    exact pure-Python cosine, so matmul's differing summation order can never flip an
+    edge relative to _components_py.
+    """
+    matrix = np.asarray([p.vector for p in posts], dtype=np.float64)
+    norms = np.sqrt((matrix * matrix).sum(axis=1))
+    dot = matrix @ matrix.T
+    denom = np.outer(norms, norms)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos = np.where(denom > 0.0, dot / denom, 0.0)
+
+    times = np.array([p.published_at.timestamp() for p in posts], dtype=np.float64)
+    gap_h = np.abs(times[:, None] - times[None, :]) / 3600.0
+
+    iu, ju = np.triu_indices(len(posts), k=1)
+    cos_pairs = cos[iu, ju]
+    gap_ok = gap_h[iu, ju] <= max_gap_h
+    edge = (cos_pairs >= threshold) & gap_ok
+    boundary = gap_ok & (np.abs(cos_pairs - threshold) <= _COMPONENT_COSINE_EPS)
+
+    graph: dict[str, set[str]] = defaultdict(set)
+    for k in np.nonzero(edge | boundary)[0]:
+        i = int(iu[k])
+        j = int(ju[k])
+        # Near-threshold pairs: defer to the exact cosine for a decision identical to
+        # _components_py. (gap_ok already holds for every boundary pair.)
+        connected = (
+            _cos(posts[i].vector, posts[j].vector) >= threshold
+            if bool(boundary[k])
+            else True
+        )
+        if connected:
+            graph[posts[i].post_id].add(posts[j].post_id)
+            graph[posts[j].post_id].add(posts[i].post_id)
+    return _connected_components(posts, graph)
+
+
+def _components(
+    posts: list[ClusterPost], threshold: float, max_gap_h: int
+) -> list[list[ClusterPost]]:
+    if np is None or len(posts) < 2:
+        return _components_py(posts, threshold, max_gap_h)
+    try:
+        return _components_np(posts, threshold, max_gap_h)
+    except Exception:
+        logger.exception("vectorized _components failed; falling back to pure-Python path")
+        return _components_py(posts, threshold, max_gap_h)
 
 
 def _representative(posts: list[ClusterPost], centroid: list[float]) -> ClusterPost:
@@ -188,10 +264,14 @@ def _trend_cluster_index_text(item: dict[str, Any]) -> str:
         for evidence in (item.get("evidence") or [])
         if str(evidence.get("title") or "").strip()
     ]
+    insight = str(item.get("insight") or "").strip() or (
+        f"{len(doc_ids)} материалов из {source_count} источников."
+    )
     parts = [
         str(item.get("title") or "").strip(),
-        f"{len(doc_ids)} related posts across {source_count} sources.",
-        "Use as cluster-aware evidence in synthesis.",
+        str(item.get("title_ru") or "").strip(),
+        insight,
+        str(item.get("opportunity") or "").strip(),
         f"Signal stage: {item.get('signal_stage') or 'stable'}",
         f"Keywords: {', '.join(keywords)}" if keywords else "",
         f"Evidence: {' | '.join(evidence_titles[:5])}" if evidence_titles else "",
@@ -210,8 +290,10 @@ def _trend_cluster_index_payload(
             "cluster_key": item.get("signal_key"),
             "pipeline": "stable",
             "title": item.get("title"),
-            "insight": f"{len(doc_ids)} related posts across {source_count} sources.",
-            "opportunity": "Use as cluster-aware evidence in synthesis.",
+            "title_ru": item.get("title_ru"),
+            "insight": item.get("insight")
+            or f"{len(doc_ids)} материалов из {source_count} источников.",
+            "opportunity": item.get("opportunity") or "",
             "time_horizon": "near-term",
             "signal_stage": item.get("signal_stage"),
             "signal_score": float(item.get("signal_score") or 0.0),
@@ -624,21 +706,22 @@ async def _upsert_signal(
             text(
                 """
                 INSERT INTO trend_clusters (
-                    id, workspace_id, cluster_key, pipeline, title, insight, opportunity, time_horizon,
+                    id, workspace_id, cluster_key, pipeline, title, title_ru, insight, opportunity, time_horizon,
                     burst_score, coherence, novelty, source_diversity_score, freshness_score, evidence_strength_score,
                     velocity_score, acceleration_score, baseline_rate, current_rate, change_point_count,
                     change_point_strength, has_recent_change_point, signal_score, signal_stage, doc_count,
                     source_count, doc_ids, semantic_cluster_ids, keywords, explainability, category,
                     detected_at, created_at, updated_at
                 ) VALUES (
-                    :id, :workspace_id, :cluster_key, 'stable', :title, :insight, :opportunity, :time_horizon,
+                    :id, :workspace_id, :cluster_key, 'stable', :title, :title_ru, :insight, :opportunity, :time_horizon,
                     :burst_score, :coherence, :novelty, :source_diversity_score, :freshness_score, :evidence_strength_score,
                     :velocity_score, :acceleration_score, :baseline_rate, :current_rate, :change_point_count,
                     :change_point_strength, :has_recent_change_point, :signal_score, :signal_stage, :doc_count, :source_count, CAST(:doc_ids AS jsonb),
                     CAST(:semantic_cluster_ids AS jsonb), CAST(:keywords AS jsonb), CAST(:explainability AS jsonb),
                     NULL, NOW(), NOW(), NOW()
                 ) ON CONFLICT (id) DO UPDATE SET
-                    cluster_key = EXCLUDED.cluster_key, title = EXCLUDED.title, insight = EXCLUDED.insight,
+                    cluster_key = EXCLUDED.cluster_key, title = EXCLUDED.title, title_ru = EXCLUDED.title_ru,
+                    insight = EXCLUDED.insight,
                     opportunity = EXCLUDED.opportunity, time_horizon = EXCLUDED.time_horizon, burst_score = EXCLUDED.burst_score,
                     coherence = EXCLUDED.coherence, novelty = EXCLUDED.novelty, source_diversity_score = EXCLUDED.source_diversity_score,
                     freshness_score = EXCLUDED.freshness_score, evidence_strength_score = EXCLUDED.evidence_strength_score,
@@ -656,8 +739,10 @@ async def _upsert_signal(
                 "workspace_id": item["workspace_id"],
                 "cluster_key": item["signal_key"],
                 "title": item["title"],
-                "insight": f"{len(item['doc_ids'])} related posts across {item['source_count']} sources.",
-                "opportunity": "Use as cluster-aware evidence in synthesis.",
+                "title_ru": item.get("title_ru"),
+                "insight": item.get("insight")
+                or f"{len(item['doc_ids'])} материалов из {item['source_count']} источников.",
+                "opportunity": item.get("opportunity") or "",
                 "time_horizon": "near-term",
                 "burst_score": item["burst_score"],
                 "coherence": item["coherence_score"],
@@ -1952,6 +2037,99 @@ async def _persist_weak_snapshots(
     return written
 
 
+def _stable_signal_id(item: dict[str, Any]) -> str:
+    return item.get("existing_id") or _digest(item["signal_key"], "trend")
+
+
+async def _load_existing_briefs(
+    session: AsyncSession, ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    if not ids:
+        return {}
+    result = await session.execute(
+        text(
+            "SELECT id, title, title_ru, insight, opportunity "
+            "FROM trend_clusters WHERE id = ANY(:ids)"
+        ),
+        {"ids": ids},
+    )
+    return {row["id"]: dict(row) for row in result.mappings().all()}
+
+
+async def _enrich_stable_briefs(
+    session: AsyncSession, stable: list[dict[str, Any]]
+) -> None:
+    """Attach Russian ``title_ru``/``insight``/``opportunity`` to stable clusters.
+
+    Falls back to plain Russian defaults so persistence never depends on the LLM,
+    reuses stored briefs when the English title is unchanged, and caps how many
+    fresh wormsoft calls run per pass.
+    """
+    # Defaults first: persistence stays correct even if generation is off or fails.
+    for item in stable:
+        item.setdefault("title_ru", None)
+        item.setdefault(
+            "insight",
+            f"{len(item.get('doc_ids') or [])} материалов из "
+            f"{int(item.get('source_count') or 0)} источников.",
+        )
+        item.setdefault("opportunity", "")
+
+    settings = get_settings()
+    if not stable or not bool(getattr(settings, "trend_brief_enabled", True)):
+        return
+
+    by_id = {_stable_signal_id(item): item for item in stable}
+    existing = await _load_existing_briefs(session, list(by_id))
+
+    pending: list[dict[str, Any]] = []
+    for signal_id, item in by_id.items():
+        cur = existing.get(signal_id)
+        en_title = str(item.get("title") or "").strip()
+        if cur and cur.get("title_ru") and str(cur.get("title") or "").strip() == en_title:
+            item["title_ru"] = cur["title_ru"]
+            if cur.get("insight"):
+                item["insight"] = cur["insight"]
+            item["opportunity"] = cur.get("opportunity") or ""
+        else:
+            pending.append(item)
+
+    cap = max(0, int(getattr(settings, "trend_brief_max_per_run", 20)))
+    to_generate = pending[:cap]
+    if len(pending) > len(to_generate):
+        logger.info(
+            "Trend brief generation capped at %s of %s pending clusters this run",
+            len(to_generate),
+            len(pending),
+        )
+    if not to_generate:
+        return
+
+    from worker.chains.cluster_brief_chain import ClusterBriefChain
+    from worker.llm_router_client import LLMRouterClient
+
+    client = LLMRouterClient(redis=None, service_name="worker")
+    chain = ClusterBriefChain(client)
+    try:
+        for item in to_generate:
+            evidence_titles = [
+                str(ev.get("title") or "").strip()
+                for ev in (item.get("evidence") or [])
+                if isinstance(ev, dict) and str(ev.get("title") or "").strip()
+            ]
+            brief = await chain.run(
+                title=str(item.get("title") or ""),
+                keywords=item.get("keywords") or [],
+                evidence_titles=evidence_titles,
+            )
+            if brief:
+                item["title_ru"] = brief["title_ru"]
+                item["insight"] = brief["insight"] or item["insight"]
+                item["opportunity"] = brief["opportunity"]
+    finally:
+        await client.close()
+
+
 async def _persist_signal_outputs(
     session: AsyncSession,
     *,
@@ -1963,6 +2141,11 @@ async def _persist_signal_outputs(
 ) -> tuple[set[str], set[str]]:
     touched_trends: set[str] = set()
     touched_emerging: set[str] = set()
+
+    try:
+        await _enrich_stable_briefs(session, stable)
+    except Exception:
+        logger.exception("Trend brief enrichment failed; falling back to plain titles")
 
     trend_series_rows: list[dict[str, Any]] = []
     emerging_series_rows: list[dict[str, Any]] = []

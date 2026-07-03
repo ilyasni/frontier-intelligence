@@ -83,6 +83,12 @@ desktop.ini
 *.swo
 *~
 
+# Local backups (in-repo, генерируются scripts/backup-stack.sh; часть файлов root-owned)
+backups/
+
+# Runtime state, писанное контейнерами (xray-профиль и пр.; часть root-owned)
+runtime/
+
 # Temporary files
 test_write.txt
 *.tmp
@@ -91,5 +97,3 @@ tmp/*
 tmp_*
 wormsoft_*.js
 wormsoft_*.html
-runtime/
-docker-compose.yml.bak.*

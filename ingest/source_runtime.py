@@ -15,20 +15,31 @@ logger = logging.getLogger(__name__)
 class SourceRuntimeStore:
     def __init__(self, database_url: str):
         self._database_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+        self._pool: asyncpg.Pool | None = None
 
-    async def _connect(self):
-        return await asyncpg.connect(self._database_url)
+    async def _get_pool(self) -> asyncpg.Pool:
+        # Один пул на процесс: connect-на-каждый-вызов исчерпывал max_connections.
+        if self._pool is None:
+            self._pool = await asyncpg.create_pool(
+                self._database_url,
+                min_size=1,
+                max_size=5,
+            )
+        return self._pool
+
+    async def close(self) -> None:
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
 
     async def load_checkpoint(self, source_id: str) -> dict[str, Any]:
-        conn = await self._connect()
-        try:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM source_checkpoints WHERE source_id = $1",
                 source_id,
             )
             return dict(row) if row else {}
-        finally:
-            await conn.close()
 
     async def upsert_checkpoint(
         self,
@@ -41,8 +52,8 @@ class SourceRuntimeStore:
         last_success_at: dt.datetime | None = None,
         last_error: str | None = None,
     ) -> None:
-        conn = await self._connect()
-        try:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO source_checkpoints (
@@ -76,13 +87,11 @@ class SourceRuntimeStore:
                 last_success_at,
                 last_error,
             )
-        finally:
-            await conn.close()
 
     async def start_run(self, source_id: str) -> str:
         run_id = str(uuid.uuid4())
-        conn = await self._connect()
-        try:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE source_runs
@@ -107,13 +116,11 @@ class SourceRuntimeStore:
                 run_id,
                 source_id,
             )
-        finally:
-            await conn.close()
         return run_id
 
     async def cleanup_stale_runs(self, *, max_age_minutes: int = 180) -> str:
-        conn = await self._connect()
-        try:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
             return await conn.execute(
                 """
                 UPDATE source_runs
@@ -128,8 +135,6 @@ class SourceRuntimeStore:
                 """,
                 max_age_minutes,
             )
-        finally:
-            await conn.close()
 
     async def finish_run(
         self,
@@ -140,8 +145,8 @@ class SourceRuntimeStore:
         emitted_count: int,
         error_text: str = "",
     ) -> None:
-        conn = await self._connect()
-        try:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE source_runs
@@ -158,5 +163,3 @@ class SourceRuntimeStore:
                 emitted_count,
                 error_text[:4000],
             )
-        finally:
-            await conn.close()

@@ -401,8 +401,12 @@ class GigaChatClient:
             self.setting_int("gigachat_token_budget_embed", 1200),
         )
         embed_text = budgeted.text
+        # Include the embeddings model in the cache key so switching
+        # GIGACHAT_EMBEDDINGS_MODEL never serves vectors produced by a different
+        # model (cache TTL is up to 7d).
+        embed_model = self._settings.gigachat_embeddings_model
         key = EMBED_CACHE_PREFIX + hashlib.sha256(
-            f"{purpose}:{embed_text}".encode("utf-8")
+            f"{embed_model}:{purpose}:{embed_text}".encode("utf-8")
         ).hexdigest()
 
         if self._redis:

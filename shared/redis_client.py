@@ -10,9 +10,18 @@ def get_pool() -> aioredis.ConnectionPool:
     global _pool
     if _pool is None:
         settings = get_settings()
-        _pool = aioredis.ConnectionPool.from_url(
+        # BlockingConnectionPool: when all connections are checked out, callers wait
+        # up to `timeout` seconds for one to free instead of immediately raising
+        # `ConnectionError: Too many connections`. This pool is shared by /metrics
+        # scrapes, scheduler jobs and request handlers, so a transient burst should
+        # queue, not error out.
+        # timeout=5: a caller waits at most 5s for a free connection before raising.
+        # Kept below Prometheus' default 10s scrape_timeout so a saturated pool on the
+        # /metrics path fails fast and visibly rather than stalling near the timeout edge.
+        _pool = aioredis.BlockingConnectionPool.from_url(
             settings.redis_url,
-            max_connections=20,
+            max_connections=50,
+            timeout=5,
             decode_responses=True,
         )
     return _pool
@@ -75,6 +84,10 @@ class RedisClient:
 
     async def connect(self):
         import redis.asyncio as aioredis
+        # Intentionally a non-blocking pool (unlike the shared get_pool()): this client
+        # backs the long blocking stream reads (xreadgroup block=2000ms) of the worker /
+        # ingest consumers, where queuing behind a full pool would stack waits on top of
+        # already-blocking reads. Fast-fail is preferable here.
         pool = aioredis.ConnectionPool.from_url(
             self.url, max_connections=20, decode_responses=True
         )

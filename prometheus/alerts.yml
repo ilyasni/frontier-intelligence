@@ -521,7 +521,7 @@ groups:
           notify: telegram
         annotations:
           summary: "Admin is down — весь ночной планировщик RSI стоит"
-          description: "admin недоступен для Prometheus >5м. Все ночные джобы (clustering, retro-review, novelty-judge, relevance-audit, graph-maintenance, entity-resolution) НЕ выполняются. Частая причина — крэш-луп из-за нехватки worker-зависимости в admin-образе; проверь docker inspect admin (RestartCount) и логи."
+          description: "admin недоступен для Prometheus >5м. Все ночные джобы (clustering, retro-review, novelty-judge, relevance-audit, graph-maintenance, entity-resolution) могут НЕ выполняться. Две основные причины: (1) крэш-луп из-за нехватки worker-зависимости в admin-образе — проверь docker inspect admin (RestartCount>0) и логи; (2) блокировка event-loop тяжёлой CPU-джобой (signal_analysis/semantic_clustering) — RestartCount=0, ищи пробел в логах вокруг окна. Тяжёлые джобы вынесены в субпроцессы (scheduler._run_job_subprocess), поэтому (2) не должно повторяться."
 
       - alert: FrontierGraphDuplicateClustersRising
         expr: max by (workspace) (frontier_graph_health{metric="duplicate_clusters"}) > 100

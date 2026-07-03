@@ -19,6 +19,9 @@ class TrendCluster(Base, TimestampMixin):
     cluster_key: Mapped[str] = mapped_column(Text, nullable=False)
     pipeline: Mapped[str] = mapped_column(Text, nullable=False)  # reactive | stable
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    # Russian presentation rephrase of `title` (alerts/MCP); `title` stays the
+    # authoritative English form used for cluster term-overlap merging.
+    title_ru: Mapped[Optional[str]] = mapped_column(Text)
     insight: Mapped[Optional[str]] = mapped_column(Text)
     opportunity: Mapped[Optional[str]] = mapped_column(Text)
     time_horizon: Mapped[Optional[str]] = mapped_column(Text)

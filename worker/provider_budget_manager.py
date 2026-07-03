@@ -49,15 +49,27 @@ class ProviderBudgetManager:
         return self._managed_redis
 
     @staticmethod
+    def _credit_window_size(window_seconds: int) -> int:
+        return max(60, int(window_seconds or 3600))
+
+    @staticmethod
     def _credit_window_label(window_seconds: int) -> str:
         now = int(time.time())
-        size = max(60, int(window_seconds or 3600))
+        size = ProviderBudgetManager._credit_window_size(window_seconds)
         return str(now // size)
 
     @staticmethod
-    def _credit_window_key(provider: str, *, window_seconds: int) -> str:
+    def _credit_window_key_for_label(provider: str, *, window_seconds: int, label: str) -> str:
         normalized_provider = normalize_provider(provider)
-        return f"llm:budget:credit_window:{normalized_provider}:{window_seconds}:{ProviderBudgetManager._credit_window_label(window_seconds)}"
+        return f"llm:budget:credit_window:{normalized_provider}:{window_seconds}:{label}"
+
+    @staticmethod
+    def _credit_window_key(provider: str, *, window_seconds: int) -> str:
+        return ProviderBudgetManager._credit_window_key_for_label(
+            provider,
+            window_seconds=window_seconds,
+            label=ProviderBudgetManager._credit_window_label(window_seconds),
+        )
 
     @staticmethod
     def _runtime_budget_key(
@@ -300,19 +312,44 @@ class ProviderBudgetManager:
             return 0.0
 
     async def credit_window_usage(self, *, provider: str, window_seconds: int) -> float:
+        """Sliding-window estimate of credit usage over the trailing ``window_seconds``.
+
+        Storage stays tumbling (one hash per ``now // size`` bucket), but the read
+        approximates a rolling window: it sums the current bucket in full plus the
+        previous bucket weighted by how much of it still falls inside the trailing
+        window. With ``elapsed = now % size``, a trailing window of ``size`` seconds
+        covers ``elapsed`` of the current bucket and ``size - elapsed`` of the previous
+        one, so ``used ≈ cur + prev * (1 - elapsed/size)``. Right after a boundary the
+        weight is ~1 (previous window still fully counted), preventing the ~2x breach a
+        pure tumbling counter allowed; the weight decays to 0 as the bucket fills. This
+        can only over-estimate vs. a true rolling counter, so it never under-throttles.
+        """
         redis = await self._client()
         if redis is None:
             return 0.0
-        key = self._credit_window_key(provider, window_seconds=window_seconds)
-        try:
-            raw = await redis.hgetall(key)
-        except Exception:
-            logger.warning("budget_credit_window_read_failed", exc_info=True)
-            return 0.0
-        try:
-            return float((raw or {}).get("used_credits") or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
+        size = self._credit_window_size(window_seconds)
+        now = int(time.time())
+        cur_label = now // size
+        elapsed_ratio = (now % size) / size  # 0.0 at boundary → 1.0 at bucket end
+        prev_weight = max(0.0, 1.0 - elapsed_ratio)
+
+        async def _bucket_used(label: int) -> float:
+            key = self._credit_window_key_for_label(
+                provider, window_seconds=window_seconds, label=str(label)
+            )
+            try:
+                raw = await redis.hgetall(key)
+            except Exception:
+                logger.warning("budget_credit_window_read_failed", exc_info=True)
+                return 0.0
+            try:
+                return float((raw or {}).get("used_credits") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        cur_used = await _bucket_used(cur_label)
+        prev_used = await _bucket_used(cur_label - 1) if prev_weight > 0.0 else 0.0
+        return cur_used + prev_used * prev_weight
 
     async def _scope_snapshot(
         self,

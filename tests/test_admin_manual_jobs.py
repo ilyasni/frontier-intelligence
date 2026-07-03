@@ -62,7 +62,6 @@ def test_launch_manual_job_persists_queued_row(monkeypatch) -> None:
         scheduler_module.launch_manual_job(
             job_name="run_signal_analysis",
             workspace_id="disruption",
-            runner=None,
         )
     )
 

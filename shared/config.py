@@ -482,6 +482,9 @@ class Settings(BaseSettings):
     trend_alert_min_source_count: int = Field(3, alias="TREND_ALERT_MIN_SOURCE_COUNT")
     trend_alert_max_per_run: int = Field(2, alias="TREND_ALERT_MAX_PER_RUN")
     trend_alert_max_per_7d: int = Field(2, alias="TREND_ALERT_MAX_PER_7D")
+    # Russian LLM briefs (title_ru/insight/opportunity) for stable trend clusters.
+    trend_brief_enabled: bool = Field(True, alias="TREND_BRIEF_ENABLED")
+    trend_brief_max_per_run: int = Field(20, alias="TREND_BRIEF_MAX_PER_RUN")
     cluster_min_evidence_count: int = Field(2, alias="CLUSTER_MIN_EVIDENCE_COUNT")
     signal_short_window_hours: int = Field(24, alias="SIGNAL_SHORT_WINDOW_HOURS")
     signal_analysis_window_days: int = Field(3, alias="SIGNAL_ANALYSIS_WINDOW_DAYS")

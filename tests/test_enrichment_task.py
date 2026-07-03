@@ -170,6 +170,150 @@ async def test_relevant_post_writes_lang_valence_and_region_to_qdrant() -> None:
     )
 
 
+async def test_llm_failed_relevance_retries_instead_of_dropping() -> None:
+    """status=='failed' (LLM недоступен) → re-XADD с retry_count, а не drop+ACK навсегда."""
+    task = EnrichmentTask.__new__(EnrichmentTask)
+    task.settings = SimpleNamespace(
+        default_relevance_threshold=0.6,
+        indexing_max_retries=5,
+        vision_enabled=False,
+    )
+    task.redis = SimpleNamespace(xack=AsyncMock(), xadd=AsyncMock())
+    task.relevance = SimpleNamespace(
+        run=AsyncMock(
+            return_value={
+                "relevant": False,
+                "score": 0.0,
+                "category": "other",
+                "reasoning": "boom",
+                "_provider": "wormsoft",
+                "_requested_model": "wormsoft/agent/medium",
+                "_actual_model": "",
+                "_usage": None,
+                "_llm_status": "failed",
+                "_llm_skip_reason": "",
+                "_llm_error": "boom",
+            }
+        )
+    )
+    task.concept = SimpleNamespace(run=AsyncMock(), last_meta={})
+    task.valence = SimpleNamespace(run=AsyncMock(), last_meta={})
+    task.gigachat = SimpleNamespace(embed=AsyncMock())
+    task.qdrant = SimpleNamespace(delete_document=AsyncMock())
+    task.neo4j = SimpleNamespace(upsert_concepts=AsyncMock())
+    task._get_workspace = AsyncMock(
+        return_value={
+            "id": "disruption",
+            "name": "Disruption",
+            "categories": ["technology"],
+            "relevance_weights": {"threshold": 0.6},
+        }
+    )
+    task._get_source = AsyncMock(
+        return_value={"id": "rss-source", "is_enabled": True, "source_type": "rss"}
+    )
+    task._validate_source_event = lambda event, source: None
+    task._save_post = AsyncMock(return_value="post-fail")
+    task._update_indexing_status = AsyncMock()
+    task._upsert_media_group = AsyncMock()
+    task._update_post_enrichment = AsyncMock()
+    task._get_existing_qdrant_id = AsyncMock(return_value="")
+    task._use_joint_relevance_concepts = lambda event: False
+
+    data = {
+        "workspace_id": "disruption",
+        "source_id": "rss-source",
+        "external_id": "46",
+        "content": "some post that failed to be judged",
+        "has_media": False,
+        "media_urls": [],
+        "linked_urls": [],
+    }
+    await task.process_event("6-0", data)
+
+    # Пост НЕ помечен dropped; вместо этого — re-XADD с retry_count=1
+    dropped_calls = [
+        c for c in task._update_indexing_status.await_args_list if c.args[1:2] == ("dropped",)
+    ]
+    assert dropped_calls == []
+    task.qdrant.delete_document.assert_not_awaited()
+    assert any(
+        len(c.args) > 1 and isinstance(c.args[1], dict) and c.args[1].get("retry_count") == "1"
+        for c in task.redis.xadd.await_args_list
+    ), task.redis.xadd.await_args_list
+
+
+async def test_not_called_relevance_still_drops() -> None:
+    """status=='not_called' (пустой контент) — честный дроп, НЕ ретрай."""
+    task = EnrichmentTask.__new__(EnrichmentTask)
+    task.settings = SimpleNamespace(
+        default_relevance_threshold=0.6,
+        indexing_max_retries=5,
+        vision_enabled=False,
+    )
+    task.redis = SimpleNamespace(xack=AsyncMock(), xadd=AsyncMock())
+    task.relevance = SimpleNamespace(
+        run=AsyncMock(
+            return_value={
+                "relevant": False,
+                "score": 0.0,
+                "category": "other",
+                "reasoning": "empty content",
+                "_provider": "wormsoft",
+                "_requested_model": "wormsoft/agent/medium",
+                "_actual_model": "",
+                "_usage": None,
+                "_llm_status": "not_called",
+                "_llm_skip_reason": "empty_content",
+                "_llm_error": "",
+            }
+        )
+    )
+    task.concept = SimpleNamespace(run=AsyncMock(), last_meta={})
+    task.valence = SimpleNamespace(run=AsyncMock(), last_meta={})
+    task.gigachat = SimpleNamespace(embed=AsyncMock())
+    task.qdrant = SimpleNamespace(delete_document=AsyncMock())
+    task.neo4j = SimpleNamespace(upsert_concepts=AsyncMock())
+    task._get_workspace = AsyncMock(
+        return_value={
+            "id": "disruption",
+            "name": "Disruption",
+            "categories": ["technology"],
+            "relevance_weights": {"threshold": 0.6},
+        }
+    )
+    task._get_source = AsyncMock(
+        return_value={"id": "rss-source", "is_enabled": True, "source_type": "rss"}
+    )
+    task._validate_source_event = lambda event, source: None
+    task._save_post = AsyncMock(return_value="post-empty2")
+    task._update_indexing_status = AsyncMock()
+    task._upsert_media_group = AsyncMock()
+    task._update_post_enrichment = AsyncMock()
+    task._get_existing_qdrant_id = AsyncMock(return_value="")
+    task._use_joint_relevance_concepts = lambda event: False
+
+    await task.process_event(
+        "7-0",
+        {
+            "workspace_id": "disruption",
+            "source_id": "rss-source",
+            "external_id": "47",
+            "content": "",
+            "has_media": False,
+            "media_urls": [],
+            "linked_urls": [],
+        },
+    )
+
+    assert task._update_indexing_status.await_args_list[-1].args == ("post-empty2", "dropped")
+    # Никаких re-XADD (ретраев) для честного дропа
+    assert not any(
+        (len(c.args) > 1 and isinstance(c.args[1], dict) and "retry_count" in c.args[1])
+        for c in task.redis.xadd.await_args_list
+    )
+
+
 async def test_startup_reclaim_continues_after_deleted_pel_hole() -> None:
     task = EnrichmentTask.__new__(EnrichmentTask)
     task.settings = SimpleNamespace(indexing_claim_idle_ms=600_000)

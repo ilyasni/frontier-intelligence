@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp.guards import assert_known_workspace
 from shared.db import get_engine
 
 router = APIRouter()
@@ -97,6 +98,7 @@ class RejectThresholdChangeRequest(BaseModel):
 @router.post("/list_threshold_proposals")
 async def list_threshold_proposals(req: ListThresholdProposalsRequest) -> dict:
     """Список предложений по порогам weak-signal детектора (по умолчанию pending)."""
+    assert_known_workspace(req.workspace)
     clauses = ["status = :status"]
     params: dict = {"status": req.status, "limit": req.limit}
     if req.workspace:
@@ -123,6 +125,7 @@ async def list_threshold_proposals(req: ListThresholdProposalsRequest) -> dict:
 @router.post("/list_underrated_signals")
 async def list_underrated_signals(req: ListUnderratedSignalsRequest) -> dict:
     """Контур B: weak-кандидаты, которых судья другой семьи счёл новыми (пойманная слепота primary)."""
+    assert_known_workspace(req.workspace)
     clauses = [
         "judge_verdict IS NOT NULL",
         "(judge_verdict->>'underrated')::boolean = true",
@@ -155,6 +158,7 @@ async def list_underrated_signals(req: ListUnderratedSignalsRequest) -> dict:
 @router.post("/list_relevance_audit_sample")
 async def list_relevance_audit_sample(req: RelevanceAuditSampleRequest) -> dict:
     """Контур C: выборка отклонённых постов на ручной аудит (топ по score — ближе к порогу = вероятнее ошибка)."""
+    assert_known_workspace(req.workspace)
     clauses = [
         "relevant = false",
         "audit_status IS NULL",

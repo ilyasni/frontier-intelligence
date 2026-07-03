@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp.guards import assert_known_workspace
 from shared.db import get_engine
 from worker.integrations.neo4j_client import Neo4jFrontierClient
 
@@ -41,6 +42,7 @@ async def get_graph_health(req: GraphHealthRequest) -> dict:
 
     Слияние дублей запускается отдельно операторским job run_graph_resolution (мутация графа).
     """
+    assert_known_workspace(req.workspace)
     client = Neo4jFrontierClient()
     try:
         health = await client.graph_health(req.workspace)
@@ -58,6 +60,7 @@ async def get_graph_health(req: GraphHealthRequest) -> dict:
 @router.post("/list_entity_merge_proposals")
 async def list_entity_merge_proposals(req: ListEntityMergeProposalsRequest) -> dict:
     """Контур D+: семантические предложения слияния концептов (акроним↔расшифровка, по умолчанию pending)."""
+    assert_known_workspace(req.workspace)
     clauses = ["status = :status"]
     params: dict = {"status": req.status, "limit": req.limit}
     if req.workspace:

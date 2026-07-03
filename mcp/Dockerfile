@@ -23,8 +23,8 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then \
         openai==1.54.4 \
         qdrant-client==1.12.0 \
         neo4j==5.23.1 \
-        fastembed>=0.3.6 \
-        onnxruntime>=1.17.0; \
+        "fastembed==0.8.0" \
+        "onnxruntime==1.24.4"; \
     else \
       pip install --no-cache-dir --timeout=7200 --retries=40 \
         fastapi==0.115.6 \
@@ -39,14 +39,15 @@ RUN if [ -n "$PIP_INDEX_URL" ]; then \
         openai==1.54.4 \
         qdrant-client==1.12.0 \
         neo4j==5.23.1 \
-        fastembed>=0.3.6 \
-        onnxruntime>=1.17.0; \
+        "fastembed==0.8.0" \
+        "onnxruntime==1.24.4"; \
     fi
 
 COPY shared/ /app/shared/
 COPY worker/ /app/worker/
 COPY admin/ /app/admin/
 COPY mcp/ /app/mcp/
+COPY config/ /app/config/
 
 ENV PYTHONPATH=/app
 

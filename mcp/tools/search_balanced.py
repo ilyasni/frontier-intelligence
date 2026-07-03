@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from mcp.guards import assert_known_workspace
 from shared.config import get_settings
 from shared.search_contracts import COUNTER_SIGNAL_TYPES, BalancedSearchRequest, SearchRequest
 from worker.llm_router_client import LLMRouterClient
@@ -250,6 +251,7 @@ async def _synthesize_balanced(
 
 @router.post("")
 async def search_balanced(req: BalancedSearchRequest) -> dict[str, Any]:
+    assert_known_workspace(req.workspace)
     intent = _parse_intent(req)
     effective_days_back = int(intent.get("days_back") or req.days_back or 7)
     effective_source_region = req.source_region or intent.get("source_region")

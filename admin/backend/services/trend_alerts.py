@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +22,20 @@ logger = logging.getLogger(__name__)
 
 ALERT_KIND_URGENT_STABLE = "urgent_stable_trend"
 _TELEGRAM_MESSAGE_LIMIT = 3900
+# Moscow has no DST; a fixed +3 offset avoids a tzdata dependency in the container.
+_MSK_TZ = timezone(timedelta(hours=3))
+# Boilerplate "insight" that merely restates the doc/source counts shown in the footer.
+_INSIGHT_RESTATES_COUNTS = re.compile(
+    r"^\s*\d+\s+related posts across\s+\d+\s+sources\.?\s*$",
+    re.IGNORECASE,
+)
+# Generic fallback "opportunity" text that carries no signal — same string on every alert.
+_OPPORTUNITY_FALLBACKS = frozenset(
+    {
+        "use as cluster-aware evidence in synthesis.",
+        "use as cluster-aware evidence in synthesis",
+    }
+)
 _ALERT_SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS trend_alerts (
@@ -104,10 +119,35 @@ def _truncate(value: Any, limit: int) -> str:
     return f"{text_value[: max(0, limit - 3)].rstrip()}..."
 
 
-def _format_datetime(value: Any) -> str:
+def _format_detected_at_msk(value: Any) -> str:
+    """Render ``detected_at`` as human-readable Moscow time, e.g. ``26.06.2026 11:20 МСК``."""
+    parsed: datetime | None = None
     if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value or "").strip()
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return value.strip()
+    if parsed is None:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return f"{parsed.astimezone(_MSK_TZ).strftime('%d.%m.%Y %H:%M')} МСК"
+
+
+def _reason_phrase_ru(reason: str) -> str:
+    if reason == "change_point":
+        return "резкий слом тренда, подтверждён несколькими источниками"
+    return "уверенный устойчивый рост"
+
+
+def _strength_band_ru(signal_score: float) -> str:
+    if signal_score >= 0.85:
+        return "очень сильный сигнал"
+    if signal_score >= 0.80:
+        return "сильный сигнал"
+    return "уверенный сигнал"
 
 
 def _candidate_reason(row: dict[str, Any], settings: Settings) -> str | None:
@@ -133,12 +173,6 @@ def _candidate_reason(row: dict[str, Any], settings: Settings) -> str | None:
     return None
 
 
-def _reason_label(reason: str) -> str:
-    if reason == "change_point":
-        return "recent change point with strong confirmation"
-    return "high stable trend score"
-
-
 def _build_alert_message(row: dict[str, Any], reason: str) -> str:
     keywords = [
         str(item).strip()
@@ -146,33 +180,39 @@ def _build_alert_message(row: dict[str, Any], reason: str) -> str:
         if str(item).strip()
     ][:8]
 
+    signal_score = _float_value(row.get("signal_score"))
+    doc_count = _int_value(row.get("doc_count"))
+    source_count = _int_value(row.get("source_count"))
+
+    # Header + the actual headline first — this is what the reader scans for.
+    # Prefer the Russian rephrase (title_ru); fall back to the English title.
+    headline = str(row.get("title_ru") or "").strip() or row.get("title")
     lines = [
-        "Frontier urgent trend alert",
-        f"workspace: {row.get('workspace_id')}",
-        f"title: {_truncate(row.get('title'), 220)}",
-        (
-            f"score: {_float_value(row.get('signal_score')):.3f}"
-            f" | docs: {_int_value(row.get('doc_count'))}"
-            f" | sources: {_int_value(row.get('source_count'))}"
-        ),
-        (
-            f"reason: {_reason_label(reason)}"
-            f" | change_point: {_float_value(row.get('change_point_strength')):.3f}"
-        ),
+        f"Срочный тренд · {row.get('workspace_id')}",
+        "",
+        _truncate(headline, 220),
     ]
 
-    detected_at = _format_datetime(row.get("detected_at"))
-    if detected_at:
-        lines.append(f"detected_at: {detected_at}")
+    # Plain-language "what / why" block. Drop boilerplate that just restates the counts.
+    insight = _truncate(row.get("insight"), 600)
+    if insight and not _INSIGHT_RESTATES_COUNTS.match(insight):
+        lines += ["", f"Суть: {insight}"]
+    opportunity = _truncate(row.get("opportunity"), 600)
+    if opportunity and opportunity.strip().lower() not in _OPPORTUNITY_FALLBACKS:
+        lines.append(f"Применение: {opportunity}")
 
-    insight = _truncate(row.get("insight"), 700)
-    opportunity = _truncate(row.get("opportunity"), 700)
-    if insight:
-        lines.append(f"insight: {insight}")
-    if opportunity:
-        lines.append(f"opportunity: {opportunity}")
     if keywords:
-        lines.append(f"keywords: {', '.join(keywords)}")
+        lines += ["", f"Теги: {' · '.join(keywords)}"]
+
+    # Footer: why it was flagged, evidence weight, and when — all in plain Russian.
+    lines += [
+        "",
+        f"Почему: {_reason_phrase_ru(reason)} ({_strength_band_ru(signal_score)})",
+        f"Объём: {doc_count} материалов · {source_count} источников",
+    ]
+    detected_at = _format_detected_at_msk(row.get("detected_at"))
+    if detected_at:
+        lines.append(f"Время: {detected_at}")
 
     message = "\n".join(lines)
     return _truncate(message, _TELEGRAM_MESSAGE_LIMIT)
@@ -212,6 +252,7 @@ async def _fetch_candidates(
                 tc.workspace_id,
                 tc.cluster_key,
                 tc.title,
+                tc.title_ru,
                 tc.insight,
                 tc.opportunity,
                 tc.signal_score,

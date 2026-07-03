@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
+from mcp.guards import assert_known_workspace
 from shared.config import get_settings
 from worker.llm_router_client import LLMRouterClient
 from worker.llm_json import parse_llm_json_object
@@ -84,7 +85,7 @@ def _compact_workspace(payload: dict[str, Any]) -> dict[str, Any]:
         "trends": [
             {
                 "id": item.get("id"),
-                "title": item.get("title"),
+                "title": item.get("title_ru") or item.get("title"),
                 "signal_stage": item.get("signal_stage"),
                 "signal_score": item.get("signal_score"),
                 "burst_score": item.get("burst_score"),
@@ -154,9 +155,12 @@ async def _synthesize_brief(
 
 @router.post("")
 async def get_frontier_brief(req: FrontierBriefRequest) -> dict:
+    workspace_ids = req.workspace_ids()
+    for workspace in workspace_ids:
+        assert_known_workspace(workspace)
     compact = []
     missing_by_workspace: dict[str, Any] = {}
-    for workspace in req.workspace_ids():
+    for workspace in workspace_ids:
         overview = await get_workspace_overview(
             WorkspaceOverviewRequest(
                 workspace=workspace,

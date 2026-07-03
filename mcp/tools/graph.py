@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
+from mcp.guards import assert_known_workspace
 from worker.integrations.neo4j_client import Neo4jFrontierClient
 
 router = APIRouter()
@@ -28,6 +29,7 @@ class ConceptGraphRequest(BaseModel):
 
 @router.post("")
 async def get_concept_graph(req: ConceptGraphRequest) -> dict:
+    assert_known_workspace(req.workspace)
     neo4j = Neo4jFrontierClient()
     try:
         graph = await neo4j.get_concept_graph(

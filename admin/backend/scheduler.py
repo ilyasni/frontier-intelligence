@@ -20,17 +20,7 @@ from admin.backend.services.openrouter_catalog import fetch_openrouter_catalog
 from admin.backend.services.openrouter_health import probe_openrouter_health
 from admin.backend.services.openrouter_key import fetch_openrouter_key
 from admin.backend.services.openrouter_picker import reconcile_openrouter_state
-from admin.backend.services.pipeline_jobs import (
-    list_active_workspace_ids,
-    refresh_source_scores,
-    run_entity_resolution_job,
-    run_graph_maintenance_job,
-    run_novelty_judge_job,
-    run_relevance_audit_job,
-    run_retrospective_review_job,
-    run_semantic_cluster_job,
-    run_signal_analysis_job,
-)
+from admin.backend.services.pipeline_jobs import list_active_workspace_ids
 from admin.backend.services.trend_alerts import run_urgent_trend_alerts
 from admin.backend.services.wormsoft_limits import fetch_wormsoft_limits
 from admin.backend.services.xray_health import run_xray_health_check
@@ -111,6 +101,35 @@ def _manual_job_lock(job_name: str) -> asyncio.Lock | None:
     if job_name == "reconcile_openrouter_state":
         return _openrouter_reconcile_lock
     return None
+
+
+async def _run_job_subprocess(job_name: str, workspace_id: str | None) -> dict[str, Any]:
+    """Execute a pipeline job in a separate OS process and return its JSON result.
+
+    Heavy jobs (semantic clustering, signal analysis, …) do CPU-bound, pure-Python
+    work that would otherwise block the admin asyncio event loop — freezing
+    ``/api/health`` and ``/metrics`` and starving every other scheduled job. Running
+    them in a child process (via the existing ``admin.backend.manual_jobs``
+    stdout-protocol entrypoint) keeps the loop responsive and isolates the job's own
+    DB/Redis connections from the admin process. Raises ``RuntimeError`` on non-zero
+    exit, with the child's stderr/stdout as the message.
+    """
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "admin.backend.manual_jobs",
+        job_name,
+        workspace_id or "__all__",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        err_text = (
+            stderr or stdout or b"job_subprocess_failed"
+        ).decode("utf-8", errors="replace").strip()
+        raise RuntimeError(err_text)
+    return json.loads((stdout or b"{}").decode("utf-8", errors="replace"))
 
 
 async def ensure_manual_jobs_table() -> None:
@@ -287,7 +306,6 @@ async def launch_manual_job(
     *,
     job_name: str,
     workspace_id: str | None,
-    runner,
 ) -> dict[str, Any]:
     await ensure_manual_jobs_table()
     lock = _manual_job_lock(job_name)
@@ -387,37 +405,9 @@ async def launch_manual_job(
         try:
             if lock is not None:
                 async with lock:
-                    process = await asyncio.create_subprocess_exec(
-                        sys.executable,
-                        "-m",
-                        "admin.backend.manual_jobs",
-                        job_name,
-                        workspace_id or "__all__",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    stdout, stderr = await process.communicate()
+                    result = await _run_job_subprocess(job_name, workspace_id)
             else:
-                process = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    "admin.backend.manual_jobs",
-                    job_name,
-                    workspace_id or "__all__",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await process.communicate()
-            if process.returncode != 0:
-                err_text = (
-                    stderr
-                    or stdout
-                    or b"manual_job_subprocess_failed"
-                ).decode("utf-8", errors="replace").strip()
-                raise RuntimeError(
-                    err_text
-                )
-            result = json.loads((stdout or b"{}").decode("utf-8", errors="replace"))
+                result = await _run_job_subprocess(job_name, workspace_id)
             status = str(result.get("status") or "ok")
             summary = {
                 key: result.get(key)
@@ -491,7 +481,6 @@ async def _run_for_active_workspaces(
     *,
     job_name: str,
     lock: asyncio.Lock,
-    runner,
 ) -> dict[str, Any]:
     if lock.locked():
         logger.warning("Skipping %s: previous run is still in progress", job_name)
@@ -508,10 +497,13 @@ async def _run_for_active_workspaces(
                 "results": [],
             }
 
+        # Each workspace runs in its own child process so the CPU-bound work never
+        # blocks the admin event loop; per-workspace try/except keeps a single
+        # workspace failure from aborting the rest of the run.
         results = []
         for workspace_id in workspace_ids:
             try:
-                results.append(await runner(workspace_id))
+                results.append(await _run_job_subprocess(job_name, workspace_id))
             except Exception:
                 logger.exception("%s failed for workspace=%s", job_name, workspace_id)
                 results.append(
@@ -538,7 +530,6 @@ async def scheduled_refresh_source_scores() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="refresh_source_scores",
         lock=_source_score_lock,
-        runner=refresh_source_scores,
     )
 
 
@@ -546,7 +537,6 @@ async def scheduled_semantic_clustering() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="run_semantic_clusters",
         lock=_cluster_lock,
-        runner=run_semantic_cluster_job,
     )
 
 
@@ -554,7 +544,6 @@ async def scheduled_signal_analysis() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="run_signal_analysis",
         lock=_cluster_lock,
-        runner=run_signal_analysis_job,
     )
 
 
@@ -562,7 +551,6 @@ async def scheduled_retrospective_review() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="run_retrospective_review",
         lock=_retrospective_lock,
-        runner=run_retrospective_review_job,
     )
 
 
@@ -570,7 +558,6 @@ async def scheduled_novelty_judge() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="run_novelty_judge",
         lock=_novelty_judge_lock,
-        runner=run_novelty_judge_job,
     )
 
 
@@ -578,7 +565,6 @@ async def scheduled_relevance_audit() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="run_relevance_audit",
         lock=_relevance_audit_lock,
-        runner=run_relevance_audit_job,
     )
 
 
@@ -586,7 +572,6 @@ async def scheduled_graph_maintenance() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="run_graph_maintenance",
         lock=_graph_maintenance_lock,
-        runner=run_graph_maintenance_job,
     )
 
 
@@ -594,7 +579,6 @@ async def scheduled_entity_resolution() -> dict[str, Any]:
     return await _run_for_active_workspaces(
         job_name="run_entity_resolution",
         lock=_entity_resolution_lock,
-        runner=run_entity_resolution_job,
     )
 
 

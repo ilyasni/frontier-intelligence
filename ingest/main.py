@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import sys
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -27,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 # Tracks config hash per job_id to detect source config changes between reloads
 _source_config_hashes: dict[str, str] = {}
+
+# Per-fire jitter (seconds) applied to every interval job so same-interval sources
+# do not stay phase-locked. Passed to the APScheduler IntervalTrigger via add_job.
+_JOB_JITTER_SEC = 180
 
 # Telethon: один клиент на аккаунт — параллельные fetch по каналам рвут соединение (RST / timeouts).
 _telegram_run_lock = asyncio.Lock()
@@ -103,12 +108,9 @@ def build_source_config(row: dict) -> dict:
     return config
 
 
-async def run_source(source_row: dict, redis: RedisClient, rotator):
+async def run_source(source_row: dict, redis: RedisClient, rotator, runtime_store: SourceRuntimeStore):
     source_type = canonical_source_type(source_row["source_type"])
     config = build_source_config(source_row)
-    runtime_store = None
-    settings = get_settings()
-    runtime_store = SourceRuntimeStore(settings.database_url)
 
     cls = None
     if source_type == "telegram" and HAS_TELETHON:
@@ -148,7 +150,13 @@ async def run_source(source_row: dict, redis: RedisClient, rotator):
         await source.run()
 
 
-async def schedule_all(scheduler: AsyncIOScheduler, redis: RedisClient, rotator, settings):
+async def schedule_all(
+    scheduler: AsyncIOScheduler,
+    redis: RedisClient,
+    rotator,
+    settings,
+    runtime_store: SourceRuntimeStore,
+):
     sources = await load_sources(settings.database_url)
     logger.info("Loaded %d enabled sources", len(sources))
 
@@ -169,16 +177,22 @@ async def schedule_all(scheduler: AsyncIOScheduler, redis: RedisClient, rotator,
             next_run = datetime.datetime.now() if config_changed else existing.next_run_time
             scheduler.remove_job(job_id)
         else:
-            next_run = datetime.datetime.now()  # new source — run immediately
+            # New source: spread the first run over a random fraction of the interval
+            # so that a container restart does not fire all ~200 jobs simultaneously.
+            spread_sec = random.uniform(0, min(interval, 30) * 60)
+            next_run = datetime.datetime.now() + datetime.timedelta(seconds=spread_sec)
 
         scheduler.add_job(
             run_source,
             "interval",
             minutes=interval,
             id=job_id,
-            args=[row, redis, rotator],
+            args=[row, redis, rotator, runtime_store],
             max_instances=1,
             coalesce=True,
+            # Desynchronize hourly sources permanently: without jitter the phases of
+            # all same-interval jobs stay locked together for the process lifetime.
+            jitter=_JOB_JITTER_SEC,
             next_run_time=next_run,
         )
         _source_config_hashes[job_id] = config_hash
@@ -229,6 +243,7 @@ async def main():
             "— set env or unset TG_REQUIRE_PROXY."
         )
         await redis.disconnect()
+        await runtime_store.close()
         sys.exit(1)
 
     scheduler = AsyncIOScheduler()
@@ -237,7 +252,7 @@ async def main():
         schedule_all,
         "interval",
         minutes=5,
-        args=[scheduler, redis, rotator, settings],
+        args=[scheduler, redis, rotator, settings, runtime_store],
         id="reload_sources",
         next_run_time=datetime.datetime.now(),
     )
@@ -255,6 +270,7 @@ async def main():
         if rotator:
             await rotator.close_all()
         await redis.disconnect()
+        await runtime_store.close()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp.guards import assert_known_workspace
 from shared.db import get_engine
 
 router = APIRouter()
@@ -61,6 +62,7 @@ def _vision_summary(data: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("")
 async def search_by_vision(req: VisionSearchRequest) -> dict:
+    assert_known_workspace(req.workspace)
     pattern = f"%{req.query}%"
     clauses = ["pe.kind = 'vision'"]
     params: dict[str, Any] = {"limit": req.limit, "workspace": req.workspace, "pattern": pattern}

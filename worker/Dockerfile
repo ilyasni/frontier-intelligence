@@ -22,8 +22,8 @@ RUN pip install --no-cache-dir --timeout 300 \
     qdrant-client==1.12.0 \
     neo4j==5.23.1 \
     ruptures==1.1.9 \
-    "fastembed>=0.3.6" \
-    "onnxruntime>=1.17.0"
+    "fastembed==0.8.0" \
+    "onnxruntime==1.24.4"
 
 COPY shared/ /app/shared/
 COPY worker/ /app/worker/

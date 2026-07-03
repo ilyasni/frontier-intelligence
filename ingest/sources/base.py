@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import hashlib
 import json
 import logging
+import random
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -27,6 +29,35 @@ logger = logging.getLogger(__name__)
 _TRACKED_QUERY_PREFIXES = ("utm_", "rss", "ref", "source", "fbclid", "gclid")
 _DEFAULT_USER_AGENT = "frontier-intelligence-ingest/1.0 (+https://frontier-intelligence.local)"
 _RETRIABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+_RETRY_BASE_DELAY_SEC = 1.0
+_RETRY_MAX_DELAY_SEC = 30.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if retry_at is None:
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+
+
+def _retry_backoff_delay(attempt: int, retry_after: float | None = None) -> float:
+    """Exponential backoff with full jitter, capped, honoring Retry-After when larger."""
+    capped = min(_RETRY_MAX_DELAY_SEC, _RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1)))
+    delay = random.uniform(0, capped)
+    if retry_after is not None:
+        delay = max(delay, min(retry_after, _RETRY_MAX_DELAY_SEC))
+    return delay
 
 
 @dataclass
@@ -69,6 +100,10 @@ class AbstractSource(abc.ABC):
         self._emitted_count = 0
         self._checkpoint: dict[str, Any] = {}
         self._checkpoint_updates: dict[str, Any] = {}
+        # Set by fetch() when collection was interrupted (e.g. a mid-iteration
+        # transport error) and only part of the available items was returned. A
+        # fully-published-but-incomplete fetch must not advance the cursor to the end.
+        self._partial_fetch: bool = False
 
     @abc.abstractmethod
     async def fetch(self) -> list[PostParsedEvent]:
@@ -92,15 +127,21 @@ class AbstractSource(abc.ABC):
     async def update_runtime_state(self, *, error: str = "", success: bool = False) -> None:
         if not self.runtime_store:
             return
-        kwargs = {
+        # At-least-once: the advanced cursor (prepared in fetch()) is persisted ONLY on
+        # success. On failure/partial-publish we keep the prior checkpoint so the next
+        # run re-reads and re-publishes anything that did not make it to the stream.
+        kwargs: dict[str, Any] = {
             "source_id": self.source_id,
-            "cursor_json": self._checkpoint_updates.get("cursor_json"),
-            "etag": self._checkpoint_updates.get("etag"),
-            "last_modified": self._checkpoint_updates.get("last_modified"),
-            "last_seen_published_at": self._checkpoint_updates.get("last_seen_published_at"),
             "last_error": error[:4000] if error else None,
             "last_success_at": datetime.now(UTC) if success else None,
         }
+        if success:
+            kwargs.update(
+                cursor_json=self._checkpoint_updates.get("cursor_json"),
+                etag=self._checkpoint_updates.get("etag"),
+                last_modified=self._checkpoint_updates.get("last_modified"),
+                last_seen_published_at=self._checkpoint_updates.get("last_seen_published_at"),
+            )
         await self.runtime_store.upsert_checkpoint(**kwargs)
 
     async def emit_to_stream(self, events: list[PostParsedEvent]) -> int:
@@ -127,6 +168,29 @@ class AbstractSource(abc.ABC):
             if events:
                 pushed = await self.emit_to_stream(events)
                 logger.info("[%s] pushed %d/%d events", self.source_id, pushed, len(events))
+                # At-least-once: advance the cursor only if every collected event was
+                # published AND collection was complete. A partial push, or a fetch that
+                # was cut short mid-iteration, means the checkpoint (prepared in fetch())
+                # must NOT be persisted — the next run re-reads and re-publishes the gap;
+                # downstream dedup drops the repeats.
+                if pushed < len(events) or self._partial_fetch:
+                    if pushed < len(events):
+                        error_text = (
+                            f"partial_publish: {pushed}/{len(events)} events pushed to stream"
+                        )
+                    else:
+                        error_text = "partial_fetch: collection interrupted, cursor held back"
+                    logger.warning("[%s] %s — checkpoint not advanced", self.source_id, error_text)
+                    await self.update_runtime_state(error=error_text, success=False)
+                    if run_id:
+                        await self.runtime_store.finish_run(
+                            run_id,
+                            status="error",
+                            fetched_count=self._fetched_count,
+                            emitted_count=pushed,
+                            error_text=error_text,
+                        )
+                    return pushed
                 await self.update_runtime_state(success=True)
                 if run_id:
                     await self.runtime_store.finish_run(
@@ -147,15 +211,16 @@ class AbstractSource(abc.ABC):
                 )
             return 0
         except Exception as exc:
-            logger.exception("[%s] run failed: %s", self.source_id, exc)
-            await self.update_runtime_state(error=str(exc), success=False)
+            error_text = f"{type(exc).__name__}: {exc}".strip()
+            logger.exception("[%s] run failed: %s", self.source_id, error_text)
+            await self.update_runtime_state(error=error_text, success=False)
             if run_id:
                 await self.runtime_store.finish_run(
                     run_id,
                     status="error",
                     fetched_count=self._fetched_count,
                     emitted_count=self._emitted_count,
-                    error_text=str(exc),
+                    error_text=error_text,
                 )
             return 0
 
@@ -484,6 +549,8 @@ async def http_get_with_retries(
             if status_code in allowed:
                 return response
             if status_code in _RETRIABLE_STATUS_CODES and attempt < attempts:
+                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                await asyncio.sleep(_retry_backoff_delay(attempt, retry_after))
                 continue
             response.raise_for_status()
             return response
@@ -491,10 +558,13 @@ async def http_get_with_retries(
             last_error = exc
             if attempt >= attempts:
                 raise
+            await asyncio.sleep(_retry_backoff_delay(attempt))
         except httpx.HTTPStatusError as exc:
             last_error = exc
             if exc.response.status_code not in _RETRIABLE_STATUS_CODES or attempt >= attempts:
                 raise
+            retry_after = _parse_retry_after(exc.response.headers.get("Retry-After"))
+            await asyncio.sleep(_retry_backoff_delay(attempt, retry_after))
     if last_error:
         raise last_error
     raise RuntimeError(f"GET {url} failed without response")

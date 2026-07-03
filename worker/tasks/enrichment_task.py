@@ -91,6 +91,19 @@ class EnrichmentTask:
         }
 
     @staticmethod
+    def _relevance_llm_failed(rel: dict, meta: dict | None) -> bool:
+        """True when relevant=False came from an LLM failure, not a real verdict.
+
+        Single-relevance chain stores the status in rel["_llm_status"]; the joint
+        relevance+concepts chain stores it in last_meta["status"] (passed as meta).
+        Only status=="failed" means "no model verdict" — "not_called"/"empty"/"ok"
+        are legitimate drops and must NOT trigger a retry.
+        """
+        rel_status = str((rel or {}).get("_llm_status") or "").strip().lower()
+        meta_status = str((meta or {}).get("status") or "").strip().lower()
+        return rel_status == "failed" or meta_status == "failed"
+
+    @staticmethod
     def _log_llm_task(task: str, post_id: str, meta: dict) -> None:
         usage = meta.get("usage")
         status = meta.get("status", "unknown")
@@ -672,6 +685,15 @@ class EnrichmentTask:
                 self._log_llm_task("relevance", post_id, self._relevance_log_meta(rel))
 
             if not rel["relevant"]:
+                # Полный сбой LLM не должен маскироваться под честный вердикт «нерелевантно»:
+                # relevant=False из-за недоступности модели/провала эскалации → не дропаем,
+                # а поднимаем исключение, чтобы сработал общий путь retry/re-XADD (до
+                # indexing_max_retries). status=="failed" ставят обе цепочки при провале.
+                if self._relevance_llm_failed(rel, concept_meta):
+                    raise RuntimeError(
+                        "relevance_llm_failed:"
+                        f"{(concept_meta.get('status') or rel.get('_llm_status') or 'failed')}"
+                    )
                 # Не даём исключению из вспомогательных шагов оставить embedding_status=pending без ACK
                 try:
                     await self._update_post_enrichment(post_id, rel["score"], rel["category"])

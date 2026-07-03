@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
+from mcp.guards import assert_known_workspace
 from shared.config import get_settings
 from worker.integrations.qdrant_client import QdrantFrontierClient
 
@@ -36,6 +37,7 @@ class TrendClusterSearchRequest(BaseModel):
 
 @router.post("")
 async def search_trend_clusters(req: TrendClusterSearchRequest) -> dict:
+    assert_known_workspace(req.workspace)
     settings = get_settings()
     vector = await _get_embedding(req.query, settings)
     qdrant = QdrantFrontierClient()

@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS trend_clusters (
     cluster_key TEXT NOT NULL,
     pipeline TEXT NOT NULL CHECK (pipeline IN ('reactive', 'stable')),
     title TEXT NOT NULL,
+    title_ru TEXT,
     insight TEXT,
     opportunity TEXT,
     time_horizon TEXT,

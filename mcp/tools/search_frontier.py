@@ -13,6 +13,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp.guards import assert_known_workspace
 from shared.config import get_settings
 from shared.db import get_engine
 from shared.qdrant_sparse import HAS_SPARSE
@@ -309,4 +310,5 @@ async def run_search_request(
 
 @router.post("")
 async def search_frontier(req: SearchRequest) -> dict[str, Any]:
+    assert_known_workspace(req.workspace)
     return await run_search_request(req)

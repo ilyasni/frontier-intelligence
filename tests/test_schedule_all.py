@@ -38,16 +38,21 @@ async def test_new_source_runs_immediately():
 
     settings = MagicMock()
     redis = MagicMock()
+    runtime_store = MagicMock()
 
     with patch("ingest.main.load_sources", new=AsyncMock(return_value=[source_row])):
-        await schedule_all(scheduler, redis, None, settings)
+        await schedule_all(scheduler, redis, None, settings, runtime_store)
 
     assert scheduler.add_job.called
     kwargs = scheduler.add_job.call_args.kwargs
     assert kwargs["next_run_time"] is not None
-    # Should be very close to now
-    delta = datetime.datetime.now() - kwargs["next_run_time"]
-    assert abs(delta.total_seconds()) < 5
+    # New sources are spread over a random fraction of the interval (never earlier than
+    # now, never later than min(interval, 30) minutes out) so a restart does not fire
+    # every job at once.
+    delta = kwargs["next_run_time"] - datetime.datetime.now()
+    assert -5 <= delta.total_seconds() <= 30 * 60 + 5
+    # Interval jobs must carry per-fire jitter to keep same-interval sources desynced.
+    assert kwargs["jitter"] > 0
 
 
 @pytest.mark.unit
@@ -82,9 +87,10 @@ async def test_unchanged_source_not_rescheduled():
 
     settings = MagicMock()
     redis = MagicMock()
+    runtime_store = MagicMock()
 
     with patch("ingest.main.load_sources", new=AsyncMock(return_value=[source_row])):
-        await schedule_all(scheduler, redis, None, settings)
+        await schedule_all(scheduler, redis, None, settings, runtime_store)
 
     scheduler.add_job.assert_not_called()
     scheduler.remove_job.assert_not_called()
@@ -122,13 +128,14 @@ async def test_config_change_triggers_immediate_run():
 
     settings = MagicMock()
     redis = MagicMock()
+    runtime_store = MagicMock()
 
     with patch("ingest.main.load_sources", new=AsyncMock(return_value=[source_row])):
-        await schedule_all(scheduler, redis, None, settings)
+        await schedule_all(scheduler, redis, None, settings, runtime_store)
 
     assert scheduler.add_job.called
     kwargs = scheduler.add_job.call_args.kwargs
-    # Should run now, not 45 min from now
+    # Config change → run now, not 45 min from now (spread applies only to brand-new sources)
     delta = datetime.datetime.now() - kwargs["next_run_time"]
     assert abs(delta.total_seconds()) < 5
 
@@ -165,10 +172,11 @@ async def test_interval_only_change_preserves_schedule():
 
     settings = MagicMock()
     redis = MagicMock()
+    runtime_store = MagicMock()
 
     with patch("ingest.main.load_sources", new=AsyncMock(return_value=[source_row])), \
          patch("ingest.main.cron_to_minutes", return_value=30):  # stub: new schedule = 30min
-        await schedule_all(scheduler, redis, None, settings)
+        await schedule_all(scheduler, redis, None, settings, runtime_store)
 
     assert scheduler.add_job.called
     kwargs = scheduler.add_job.call_args.kwargs

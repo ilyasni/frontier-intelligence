@@ -8,6 +8,7 @@ crosses the soft cap (and hard cap), diverting load to fallback providers.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from shared.llm_control_plane import EXECUTION_ROLE_SHADOW, ExecutionReceipt
@@ -23,6 +24,13 @@ WORMSOFT_CREDIT_WINDOW_SECONDS_DEFAULT = 18000
 REASON_OK = "ok"
 REASON_SOFT_CAP = "wormsoft_credit_soft_cap"
 REASON_HARD_CAP = "wormsoft_credit_hard_cap"
+REASON_READ_FAILED = "wormsoft_credit_read_failed"
+
+# Env flag to fail *closed* (shed Wormsoft) when the rolling-window read errors,
+# instead of the default fail-open. Read via getattr on settings first (so a future
+# shared.config field wins), then WORMSOFT_CREDIT_FAIL_CLOSED env, default False =
+# current fail-open behaviour. Applied to the primary role only.
+_ENV_FAIL_CLOSED = "WORMSOFT_CREDIT_FAIL_CLOSED"
 
 
 class WormsoftCreditGuard:
@@ -43,6 +51,19 @@ class WormsoftCreditGuard:
 
     def _enabled(self) -> bool:
         return bool(getattr(self._settings, "wormsoft_credit_throttle_enabled", False))
+
+    def _fail_closed(self) -> bool:
+        """Whether a rolling-window read error should shed Wormsoft (fail-closed).
+
+        Prefers a settings attribute if present (e.g. a future shared.config field),
+        then the WORMSOFT_CREDIT_FAIL_CLOSED env var. Defaults to False so the current
+        fail-open behaviour is preserved unless explicitly hardened.
+        """
+        setting = getattr(self._settings, "wormsoft_credit_fail_closed", None)
+        if setting is not None:
+            return bool(setting)
+        raw = str(os.environ.get(_ENV_FAIL_CLOSED, "") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
 
     async def allow(self, *, provider: str, execution_role: str) -> tuple[bool, str]:
         """Return whether Wormsoft may be used given current rolling credit usage."""
@@ -67,6 +88,12 @@ class WormsoftCreditGuard:
                 window_seconds=self._window_seconds(),
             )
         except Exception:
+            # Fail-open by default; fail-closed (shed Wormsoft) only for the primary
+            # role when explicitly hardened, so we never over-spend blind on the paid
+            # provider. Shadow stays fail-open — it is non-critical and cheap to skip.
+            if execution_role != EXECUTION_ROLE_SHADOW and self._fail_closed():
+                logger.warning("wormsoft_credit_window_read_failed_fail_closed", exc_info=True)
+                return False, REASON_READ_FAILED
             logger.debug("wormsoft_credit_window_read_failed", exc_info=True)
             return True, REASON_OK
         if hard_cap > 0 and used >= hard_cap:

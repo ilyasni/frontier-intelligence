@@ -108,9 +108,53 @@ async def test_fetch_uses_latest_message_id_checkpoint_for_incremental_sync(sour
 
     assert len(events) == 2
     client_mock.iter_messages.assert_called_once_with("cached-peer", limit=50, min_id=150)
+    # latest_message_id must advance only across messages actually published to the
+    # stream, so fetch() must NOT push it past the prior checkpoint (150). Advancement
+    # happens in emit_to_stream once messages are confirmed on the stream.
+    assert (source._checkpoint_updates.get("cursor_json") or {}).get("latest_message_id") == 150
+    assert source._checkpoint_updates["last_seen_published_at"] == max(msg_a.date, msg_b.date)
+
+    pushed = await source.emit_to_stream(events)
+    assert pushed == 2
     cursor_json = source._checkpoint_updates["cursor_json"]
     assert cursor_json["latest_message_id"] == 152
-    assert source._checkpoint_updates["last_seen_published_at"] == max(msg_a.date, msg_b.date)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_latest_message_id_only_advances_across_published_messages(source):
+    """If the newest message fails to publish, the cursor must not jump past it."""
+    source._checkpoint = {
+        "cursor_json": {
+            "latest_message_id": 150,
+            "telegram_peer": {"entity_id": 777001, "username": "newhandle"},
+        }
+    }
+    source.redis.redis.exists = AsyncMock(return_value=0)
+    msg_a = _make_msg(151, text="publishes fine")
+    msg_b = _make_msg(152, text="fails to publish")
+
+    async def _xadd(stream, payload):
+        if payload["external_id"] == "152":
+            raise RuntimeError("stream unavailable")
+        return "1-0"
+
+    source.redis.xadd = AsyncMock(side_effect=_xadd)
+    client_mock = MagicMock()
+    client_mock.get_input_entity = AsyncMock(return_value="cached-peer")
+    client_mock.get_entity = AsyncMock(
+        return_value=SimpleNamespace(username="newhandle", id=777001, title="New Handle")
+    )
+    client_mock.iter_messages.return_value = _async_iter([msg_b, msg_a])
+    source.rotator.get_client = AsyncMock(return_value=client_mock)
+
+    events = await source.fetch()
+    pushed = await source.emit_to_stream(events)
+
+    # Only 151 published; cursor advances to 151, not 152.
+    assert pushed == 1
+    cursor_json = source._checkpoint_updates["cursor_json"]
+    assert cursor_json["latest_message_id"] == 151
 
 
 @pytest.mark.unit

@@ -32,7 +32,7 @@ services:
   redis:
     image: redis:7-alpine
     profiles: [core]
-    command: redis-server --save 60 1 --loglevel warning --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 512mb --maxmemory-policy volatile-ttl
     volumes:
       - redis_data:/data
     healthcheck:
@@ -46,12 +46,12 @@ services:
     networks: [frontier-net]
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.17.0
     profiles: [core]
     volumes:
       - qdrant_data:/qdrant/storage
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     # Образ qdrant без curl/wget; entrypoint на bash — проверка TCP :6333 (см. docs/ops-server-troubleshooting.md)
     healthcheck:
       test:
@@ -81,8 +81,8 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
     healthcheck:
       test:
         [
@@ -126,7 +126,7 @@ services:
       GPT2GIGA_ENABLE_IMAGES: ${GPT2GIGA_ENABLE_IMAGES:-True}
       GPT2GIGA_VERBOSE: "False"
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     # Liveness: порт слушает (не зависит от ответа GigaChat на /v1/models)
     healthcheck:
       test:
@@ -366,7 +366,7 @@ services:
       # Кэш весов PP-OCR (как устойчивость к пересозданию; в telegram-assistant в dev — mount всего репо)
       - paddleocr_models:/root/.paddleocr
     ports:
-      - "${PADDLEOCR_PORT:-8008}:8008"
+      - "127.0.0.1:${PADDLEOCR_PORT:-8008}:8008"
     deploy:
       resources:
         limits:
@@ -598,11 +598,25 @@ services:
       TREND_ALERT_MAX_PER_RUN: ${TREND_ALERT_MAX_PER_RUN:-2}
       TREND_ALERT_MAX_PER_7D: ${TREND_ALERT_MAX_PER_7D:-2}
       ADMIN_PORT: 8101
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set a strong ADMIN_PASSWORD in .env}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
       - "8101:8101"
     volumes:
       - ${FRONTIER_RUNTIME_DIR:-/opt/frontier-intelligence/runtime}:/runtime
+    # admin шеллит тяжёлые pipeline-джобы (clustering/signal-analysis/...) в субпроцессы
+    # через `python -m admin.backend.manual_jobs`. Два CPU-heavy clustering-джоба делят
+    # _cluster_lock и не пересекаются, остальное I/O-bound (LLM/Neo4j) — но без cgroup-лимита
+    # неожиданный оверлап мог бы задушить co-located mcp/postgres/neo4j на том же хосте.
+    # Лимиты консервативные, в одном стиле с worker (memory: 2g). Хост — 3 ядра / 22Gi,
+    # поэтому cpus=1.5 (половина хоста): квота ограничивает суммарное потребление вне
+    # зависимости от числа BLAS/numpy-потоков в субпроцессе и оставляет ≥1.5 ядра стеку.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.5"
     depends_on:
       postgres:
         condition: service_started
@@ -684,7 +698,7 @@ services:
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     logging: *docker-json-logging
     restart: unless-stopped
     networks: [frontier-net]
@@ -708,7 +722,7 @@ services:
       - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     depends_on:
       - admin
     logging: *docker-json-logging
@@ -735,7 +749,7 @@ services:
     image: grafana/grafana:latest
     profiles: [monitor]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?set a strong GRAFANA_PASSWORD in .env}
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
     volumes:
       - grafana_data:/var/lib/grafana

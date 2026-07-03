@@ -83,6 +83,9 @@ desktop.ini
 *.swo
 *~
 
+# Local backups (in-repo, генерируются scripts/backup-stack.sh; не синхронизировать)
+backups/
+
 # Temporary files
 test_write.txt
 *.tmp

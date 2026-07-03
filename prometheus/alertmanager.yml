@@ -2,15 +2,17 @@ global:
   resolve_timeout: 5m
 
 route:
-  receiver: blackhole
+  # По умолчанию все алерты уходят в Telegram (раньше был blackhole → MCP-down и др. молчали).
+  receiver: telegram-admin
   group_by: ['alertname', 'severity', 'service']
   group_wait: 30s
   group_interval: 10m
   repeat_interval: 6h
   routes:
-    - receiver: telegram-admin
+    # Явный opt-out для заведомо шумных правил: пометь их label notify="never".
+    - receiver: blackhole
       matchers:
-        - notify="telegram"
+        - notify="never"
 
 receivers:
   - name: blackhole

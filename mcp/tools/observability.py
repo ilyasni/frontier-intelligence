@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp.guards import assert_known_workspace
 from shared.db import get_engine
 from shared.config import get_settings
 from shared.redis_streams import collect_redis_stream_snapshot
@@ -157,6 +158,7 @@ async def list_workspaces(req: WorkspaceListRequest) -> dict:
 
 @router.post("/list_sources_health")
 async def list_sources_health(req: SourcesHealthRequest) -> dict:
+    assert_known_workspace(req.workspace)
     rows = await _fetch_rows(
         """
         SELECT
@@ -260,6 +262,7 @@ async def list_sources_health(req: SourcesHealthRequest) -> dict:
 
 @router.post("/get_pipeline_stats")
 async def get_pipeline_stats(req: PipelineStatsRequest) -> dict:
+    assert_known_workspace(req.workspace)
     async with AsyncSession(get_engine()) as session:
         ws_where = "WHERE p.workspace_id = :ws" if req.workspace else ""
         params = {"ws": req.workspace, "recent_limit": req.recent_limit} if req.workspace else {"recent_limit": req.recent_limit}
@@ -326,6 +329,7 @@ async def get_pipeline_stats(req: PipelineStatsRequest) -> dict:
 
 @router.post("/get_workspace_overview")
 async def get_workspace_overview(req: WorkspaceOverviewRequest) -> dict:
+    assert_known_workspace(req.workspace)
     workspace = await _fetch_one(
         """
         SELECT
@@ -405,6 +409,7 @@ async def get_workspace_overview(req: WorkspaceOverviewRequest) -> dict:
 
 @router.post("/list_clusters")
 async def list_clusters(req: ClusterListRequest) -> dict:
+    assert_known_workspace(req.workspace)
     response: dict[str, object] = {"kind": req.kind}
 
     if req.kind in {"all", "semantic"}:
@@ -427,7 +432,7 @@ async def list_clusters(req: ClusterListRequest) -> dict:
         response["trends"] = await _fetch_rows(
             """
             SELECT
-                id, workspace_id, pipeline, title, insight, opportunity, time_horizon,
+                id, workspace_id, pipeline, title, title_ru, insight, opportunity, time_horizon,
                 burst_score, coherence, novelty, source_diversity_score, freshness_score,
                 evidence_strength_score, velocity_score, acceleration_score, baseline_rate,
                 current_rate, change_point_count, change_point_strength, has_recent_change_point,
@@ -612,6 +617,7 @@ async def get_source_details(req: SourceDetailsRequest) -> dict:
 
 @router.post("/list_emerging_signals")
 async def list_emerging_signals(req: EmergingSignalListRequest) -> dict:
+    assert_known_workspace(req.workspace)
     return {
         "signals": await _fetch_rows(
             """
@@ -637,6 +643,7 @@ async def list_emerging_signals(req: EmergingSignalListRequest) -> dict:
 
 @router.post("/list_missing_signals")
 async def list_missing_signals(req: MissingSignalListRequest) -> dict:
+    assert_known_workspace(req.workspace)
     return {
         "signals": await _fetch_rows(
             """
@@ -748,6 +755,7 @@ async def get_cluster_evidence(req: ClusterEvidenceRequest) -> dict:
                 "workspace_id": trend_row["workspace_id"],
                 "pipeline": trend_row["pipeline"],
                 "title": trend_row["title"],
+                "title_ru": trend_row.get("title_ru"),
                 "insight": trend_row.get("insight"),
                 "opportunity": trend_row.get("opportunity"),
                 "time_horizon": trend_row.get("time_horizon"),
@@ -801,6 +809,7 @@ async def get_cluster_evidence(req: ClusterEvidenceRequest) -> dict:
 
 @router.post("/get_signal_timeline")
 async def get_signal_timeline(req: SignalTimelineRequest) -> dict:
+    assert_known_workspace(req.workspace)
     cluster = None
     if req.entity_kind == "semantic":
         cluster = await _fetch_one("SELECT * FROM semantic_clusters WHERE id = :id", {"id": req.entity_id})

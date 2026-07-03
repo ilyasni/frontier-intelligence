@@ -274,7 +274,6 @@ async def trigger_semantic_clusters(
     return await launch_manual_job(
         job_name="run_semantic_clusters",
         workspace_id=target_workspace,
-        runner=run_semantic_cluster_job,
     )
 
 
@@ -291,7 +290,6 @@ async def trigger_signal_analysis(
     return await launch_manual_job(
         job_name="run_signal_analysis",
         workspace_id=target_workspace,
-        runner=run_signal_analysis_job,
     )
 
 
@@ -308,7 +306,6 @@ async def trigger_missing_signals(
     return await launch_manual_job(
         job_name="run_missing_signals",
         workspace_id=target_workspace,
-        runner=run_missing_signals_job,
     )
 
 

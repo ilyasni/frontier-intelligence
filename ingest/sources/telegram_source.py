@@ -80,6 +80,9 @@ class TelegramSource(AbstractSource):
         self._s3, self._s3_bucket = _make_s3_client()
         # Maps album_cache_key → True; populated after successful stream emit
         self._album_cache_keys: dict[str, str] = {}
+        # Maps event external_id → highest Telegram message id represented by that event.
+        # Used to advance latest_message_id only across actually-published messages.
+        self._event_max_msg_id: dict[str, int] = {}
 
     def _checkpoint_peer(self) -> dict[str, Any]:
         cursor = self.checkpoint_cursor()
@@ -301,7 +304,6 @@ class TelegramSource(AbstractSource):
         target: Any = self.channel
         channel_clean = self.channel.lstrip("@")
         latest_checkpoint_id = self._checkpoint_latest_message_id()
-        latest_seen_message_id = latest_checkpoint_id
         newest_published_at: datetime | None = None
 
         try:
@@ -315,7 +317,6 @@ class TelegramSource(AbstractSource):
                 self._fetched_count += 1
                 if latest_checkpoint_id <= 0 and msg.date < since:
                     break
-                latest_seen_message_id = max(latest_seen_message_id, int(msg.id or 0))
                 if msg.date and (newest_published_at is None or msg.date > newest_published_at):
                     newest_published_at = msg.date
 
@@ -352,12 +353,12 @@ class TelegramSource(AbstractSource):
         if fetch_error and not albums and not singles:
             raise fetch_error
 
-        if latest_seen_message_id > latest_checkpoint_id:
-            self._checkpoint_updates["cursor_json"] = {
-                **self.checkpoint_cursor(),
-                **(self._checkpoint_updates.get("cursor_json") or {}),
-                "latest_message_id": latest_seen_message_id,
-            }
+        # A mid-iteration transport error means we may hold only the newest slice of
+        # messages while older ones above the checkpoint were never seen. Flag the run
+        # as incomplete so run() holds the cursor back even if every event publishes.
+        if fetch_error:
+            self._partial_fetch = True
+
         if newest_published_at:
             self._checkpoint_updates["last_seen_published_at"] = newest_published_at
 
@@ -389,6 +390,8 @@ class TelegramSource(AbstractSource):
             ext_id = str(canonical.id)
             cache_key = f"album_seen:{self.source_id}:{grouped_id}"
             self._album_cache_keys[ext_id] = cache_key
+            # Album spans a range of ids; the cursor may only advance across all of them.
+            self._event_max_msg_id[ext_id] = max(int(m.id or 0) for m in msgs_sorted)
 
             events.append(PostParsedEvent(
                 source_id=self.source_id,
@@ -425,6 +428,7 @@ class TelegramSource(AbstractSource):
                 )
 
             txt = self._text(msg)
+            self._event_max_msg_id[str(msg.id)] = int(msg.id or 0)
             events.append(PostParsedEvent(
                 source_id=self.source_id,
                 workspace_id=self.workspace_id,
@@ -444,14 +448,29 @@ class TelegramSource(AbstractSource):
     async def emit_to_stream(self, events: list[PostParsedEvent]) -> int:
         """Push events and mark album cache keys only after successful xadd."""
         pushed = 0
+        max_pushed_msg_id = 0
         for event in events:
             try:
                 await self.redis.xadd(self.stream_name, event.model_dump(mode="json"))
                 pushed += 1
+                max_pushed_msg_id = max(
+                    max_pushed_msg_id, self._event_max_msg_id.get(event.external_id, 0)
+                )
                 # Mark album as seen only after confirmed write to stream
                 if event.external_id in self._album_cache_keys:
                     cache_key = self._album_cache_keys.pop(event.external_id)
                     await self.redis.redis.setex(cache_key, ALBUM_CACHE_TTL, "1")
             except Exception as exc:
                 logger.error("Failed to push event %s: %s", event.external_id, exc)
+        self._emitted_count = pushed
+        # Advance latest_message_id only across messages actually written to the stream.
+        # run() decides whether this checkpoint is persisted (only on a complete,
+        # fully-published run); a partial push keeps the prior cursor.
+        checkpoint_id = self._checkpoint_latest_message_id()
+        if max_pushed_msg_id > checkpoint_id:
+            self._checkpoint_updates["cursor_json"] = {
+                **self.checkpoint_cursor(),
+                **(self._checkpoint_updates.get("cursor_json") or {}),
+                "latest_message_id": max_pushed_msg_id,
+            }
         return pushed

@@ -1,11 +1,14 @@
 """Admin UI backend — FastAPI serving API + static frontend."""
+import base64
 import logging
+import os
+import secrets
 import sys
 from contextlib import asynccontextmanager
 
 sys.path.insert(0, "/app")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
@@ -41,6 +44,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- HTTP Basic auth на весь admin (API + SPA). Браузер сам подставит креды
+#     к fetch-запросам SPA после нативного диалога. Исключения: health, /metrics
+#     (скрейпит Prometheus) и alertmanager-webhook (свой токен). ---
+_AUTH_EXEMPT_PREFIXES = (
+    "/api/health",
+    "/metrics",
+    "/api/monitoring/alertmanager/webhook",
+)
+
+
+@app.middleware("http")
+async def _basic_auth(request: Request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS" or any(
+        path == p or path.startswith(p + "/") for p in _AUTH_EXEMPT_PREFIXES
+    ):
+        return await call_next(request)
+
+    expected_pw = os.environ.get("ADMIN_PASSWORD", "")
+    expected_user = os.environ.get("ADMIN_USER", "admin")
+    if not expected_pw:
+        logging.getLogger(__name__).error("ADMIN_PASSWORD не задан — admin API заблокирован")
+        return Response("admin auth not configured", status_code=503)
+
+    header = request.headers.get("authorization", "")
+    authorized = False
+    if header.startswith("Basic "):
+        try:
+            user, _, pw = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+            authorized = secrets.compare_digest(user, expected_user) and secrets.compare_digest(
+                pw, expected_pw
+            )
+        except Exception:
+            authorized = False
+    if not authorized:
+        return Response(
+            "authentication required",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="Frontier Admin"'},
+        )
+    return await call_next(request)
+
 
 # API routers
 from admin.backend.routers.workspaces import router as ws_router

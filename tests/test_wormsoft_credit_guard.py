@@ -6,6 +6,7 @@ from shared.llm_control_plane import EXECUTION_ROLE_PRIMARY, EXECUTION_ROLE_SHAD
 from worker.wormsoft_credit_guard import (
     REASON_HARD_CAP,
     REASON_OK,
+    REASON_READ_FAILED,
     REASON_SOFT_CAP,
     WormsoftCreditGuard,
 )
@@ -122,6 +123,38 @@ async def test_usage_read_failure_fails_open():
     allowed, reason = await guard.allow(provider="wormsoft", execution_role=EXECUTION_ROLE_PRIMARY)
     assert allowed is True
     assert reason == REASON_OK
+
+
+@pytest.mark.asyncio
+async def test_usage_read_failure_fails_closed_for_primary_via_setting():
+    guard = _guard(
+        _FakeBudget(raise_on_usage=True),
+        _settings(wormsoft_credit_fail_closed=True),
+    )
+    allowed, reason = await guard.allow(provider="wormsoft", execution_role=EXECUTION_ROLE_PRIMARY)
+    assert allowed is False
+    assert reason == REASON_READ_FAILED
+
+
+@pytest.mark.asyncio
+async def test_usage_read_failure_fails_open_for_shadow_even_when_hardened():
+    # Shadow stays fail-open (non-critical) even with fail-closed hardening.
+    guard = _guard(
+        _FakeBudget(raise_on_usage=True),
+        _settings(wormsoft_credit_fail_closed=True),
+    )
+    allowed, reason = await guard.allow(provider="wormsoft", execution_role=EXECUTION_ROLE_SHADOW)
+    assert allowed is True
+    assert reason == REASON_OK
+
+
+@pytest.mark.asyncio
+async def test_usage_read_failure_fails_closed_via_env(monkeypatch):
+    monkeypatch.setenv("WORMSOFT_CREDIT_FAIL_CLOSED", "1")
+    guard = _guard(_FakeBudget(raise_on_usage=True), _settings())
+    allowed, reason = await guard.allow(provider="wormsoft", execution_role=EXECUTION_ROLE_PRIMARY)
+    assert allowed is False
+    assert reason == REASON_READ_FAILED
 
 
 def _receipt(*, provider="wormsoft", cost=1000.0):
