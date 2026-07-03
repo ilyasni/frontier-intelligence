@@ -546,3 +546,24 @@ groups:
         annotations:
           summary: "Кросс-семейный novelty-judge падает на всех кандидатах"
           description: "За 6ч все вердикты судьи — failed, успешных ноль. Похоже, обе семьи DeepSeek (wormsoft + polza) недоступны. Судья слепых зон и ранний сигнал B→A фактически выключены."
+
+      - alert: FrontierNoNewPosts
+        expr: max by (workspace) (frontier_last_post_age_seconds) > 21600
+        for: 15m
+        labels:
+          severity: warning
+          service: admin
+        annotations:
+          summary: "Данные перестали поступать в {{ $labels.workspace }}"
+          description: "Свежайшему посту в {{ $labels.workspace }} уже {{ $value | humanizeDuration }} (>6ч). Ingest, парсинг или запись в БД могли встать. Проверь source_runs, логи ingest/worker и Redis stream:posts:parsed."
+
+      - alert: FrontierNoNewPostsCritical
+        expr: max by (workspace) (frontier_last_post_age_seconds) > 43200
+        for: 15m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Полная тишина данных в {{ $labels.workspace }}"
+          description: "Свежайшему посту в {{ $labels.workspace }} уже {{ $value | humanizeDuration }} (>12ч). Пайплайн приёма данных, вероятно, полностью стоит. Немедленно проверь ingest, worker и запись в posts."

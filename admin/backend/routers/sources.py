@@ -31,6 +31,59 @@ def _normalize_checkpoint_cursor(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+# Substrings (case-insensitive) that mark a JSON key as sensitive. Any key whose
+# name contains one of these has its value masked before the source is returned.
+_SECRET_KEY_PATTERNS: tuple[str, ...] = (
+    "password",
+    "pass",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "credential",
+)
+_SECRET_MASK = "***"
+
+
+def _looks_secret(key: str) -> bool:
+    lowered = str(key).lower()
+    return any(pattern in lowered for pattern in _SECRET_KEY_PATTERNS)
+
+
+def _redact_secrets(value: Any) -> Any:
+    """Recursively mask secret-looking values in a proxy_config/extra blob.
+
+    Accepts a dict, a JSON string, or anything else. JSON strings are parsed so
+    nested secrets are masked too; unparseable strings are returned unchanged.
+    The input is never mutated — a redacted copy is returned.
+    """
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return value
+        return _redact_secrets(parsed)
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if _looks_secret(key):
+                redacted[key] = _SECRET_MASK
+            else:
+                redacted[key] = _redact_secrets(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
+
+
+def _redact_source_secrets(item: dict[str, Any]) -> dict[str, Any]:
+    """Mask secrets in the proxy_config/extra fields of a source response dict."""
+    for field in ("proxy_config", "extra"):
+        if field in item and item[field] is not None:
+            item[field] = _redact_secrets(item[field])
+    return item
+
+
 def _build_telegram_diagnostics(item: dict[str, Any]) -> dict[str, Any] | None:
     if canonical_source_type(item.get("source_type", "")) != "telegram":
         return None
@@ -242,6 +295,7 @@ async def list_sources(workspace_id: str | None = None):
             item["source_type"] = canonical_source_type(item.get("source_type", ""))
             item["telegram_diagnostics"] = _build_telegram_diagnostics(item)
             item.update(source_quality_payload(item))
+            _redact_source_secrets(item)
             rows.append(item)
         return rows
 

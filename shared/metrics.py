@@ -42,6 +42,11 @@ try:
         "Neo4j concept-graph health metrics (RSI contour D).",
         ["service", "workspace", "metric"],
     )
+    LAST_POST_AGE_SECONDS = Gauge(
+        "frontier_last_post_age_seconds",
+        "Age in seconds of the freshest post per workspace (data-silence detector).",
+        ["service", "workspace"],
+    )
     LLM_PROMPT_TOKENS_TOTAL = Counter(
         "frontier_llm_prompt_tokens_total",
         "Total prompt tokens reported by LLM providers.",
@@ -351,6 +356,7 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     NOVELTY_JUDGE_TOTAL = None
     RELEVANCE_AUDIT_GAUGE = None
     GRAPH_HEALTH_GAUGE = None
+    LAST_POST_AGE_SECONDS = None
     LLM_PROMPT_TOKENS_TOTAL = None
     LLM_COMPLETION_TOKENS_TOTAL = None
     LLM_BILLABLE_TOKENS_TOTAL = None
@@ -449,6 +455,17 @@ def set_relevance_audit_metric(service: str, workspace: str, metric: str, value:
 def set_graph_health_metric(service: str, workspace: str, metric: str, value: float) -> None:
     if GRAPH_HEALTH_GAUGE is not None:
         GRAPH_HEALTH_GAUGE.labels(service=service, workspace=workspace, metric=metric).set(value)
+
+
+def set_last_post_age(service: str, ages_by_workspace: dict[str, float]) -> None:
+    if LAST_POST_AGE_SECONDS is None:
+        return
+    LAST_POST_AGE_SECONDS.clear()
+    for workspace, age_seconds in (ages_by_workspace or {}).items():
+        workspace_id = str(workspace or "")
+        if not workspace_id or age_seconds is None:
+            continue
+        LAST_POST_AGE_SECONDS.labels(service=service, workspace=workspace_id).set(float(age_seconds))
 
 
 def note_searxng_request(service: str, mode: str, status: str) -> None:

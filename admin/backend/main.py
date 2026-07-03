@@ -14,6 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from admin.backend.db import get_engine
 from admin.backend.services.llm_finops import fetch_llm_finops_snapshot
 from admin.backend.scheduler import scheduler_lifespan
 from admin.backend.scheduler import manual_job_metrics_snapshot
@@ -21,6 +25,7 @@ from admin.backend.scheduler import scheduler_status
 from shared.config import get_settings
 from shared.metrics import set_admin_manual_job_metrics
 from shared.metrics import set_admin_scheduler_running
+from shared.metrics import set_last_post_age
 from shared.metrics import set_llm_finops_snapshot
 from shared.metrics import set_redis_stream_metrics
 from shared.redis_streams import collect_redis_stream_snapshot
@@ -119,6 +124,36 @@ async def health():
     return {"status": "ok"}
 
 
+async def _refresh_last_post_age_metric() -> None:
+    """Update frontier_last_post_age_seconds per workspace.
+
+    Isolated in its own try so a Postgres failure never blocks the other
+    metric refreshes in /metrics.
+    """
+    try:
+        engine = get_engine()
+        async with AsyncSession(engine) as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT
+                        workspace_id,
+                        EXTRACT(EPOCH FROM (NOW() - MAX(COALESCE(published_at, created_at)))) AS age_seconds
+                    FROM posts
+                    GROUP BY workspace_id
+                    """
+                )
+            )
+            ages = {
+                str(row.workspace_id): float(row.age_seconds)
+                for row in result.all()
+                if row.age_seconds is not None
+            }
+        set_last_post_age("admin", ages)
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to refresh last-post-age metric")
+
+
 @app.get("/metrics")
 async def metrics():
     try:
@@ -131,6 +166,7 @@ async def metrics():
         set_llm_finops_snapshot("admin", await fetch_llm_finops_snapshot())
         stream_snapshot = await collect_redis_stream_snapshot(get_settings().redis_url)
         set_redis_stream_metrics("admin", stream_snapshot)
+        await _refresh_last_post_age_metric()
     except Exception:
         logging.getLogger(__name__).exception("Failed to refresh admin metrics snapshot")
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
