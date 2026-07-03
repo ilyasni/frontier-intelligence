@@ -161,7 +161,7 @@ class ReindexTask:
             **ASYNC_ENGINE_POOL_KWARGS,
         )
         self.Session = sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
-        self.gigachat: GigaChatClient | None = None
+        self.gigachat: LLMRouterClient | None = None
         self.concept: ConceptChain | None = None
         self.qdrant: QdrantFrontierClient | None = None
         self.neo4j: Neo4jFrontierClient | None = None
