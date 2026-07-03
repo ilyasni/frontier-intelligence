@@ -130,6 +130,17 @@ async def _auth(request: Request, call_next):
     return Response('{"detail":"unauthorized"}', status_code=401, media_type="application/json")
 
 
+@app.middleware("http")
+async def _no_cache_frontend(request: Request, call_next):
+    # Статика/SPA — no-cache (браузер ревалидирует), чтобы правки фронта подхватывались
+    # сразу и не оставался «белый экран» от закэшированной старой версии.
+    resp = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/api/") and path != "/metrics":
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
 # API routers
 from admin.backend.routers.workspaces import router as ws_router
 from admin.backend.routers.sources import router as src_router

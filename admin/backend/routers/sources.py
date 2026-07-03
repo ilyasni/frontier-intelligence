@@ -235,19 +235,36 @@ async def get_source_catalog():
 @router.get("")
 async def list_sources(workspace_id: str | None = None):
     engine = get_engine()
+    # post_metrics вынесены из коррелированного LATERAL (141 пересканирование постов = ~3.6с)
+    # в один агрегат с GROUP BY (один проход по 30-дневным постам = ~1.2с). См. коммит-историю.
     sql = """
+        WITH post_metrics AS (
+            SELECT
+                p.source_id,
+                AVG(CASE WHEN COALESCE(p.relevance_score, 0) >= 0.6 THEN 1.0 ELSE 0.0 END) AS relevant_ratio,
+                AVG(jsonb_array_length(COALESCE(p.tags, '[]'::jsonb))) AS avg_tag_count,
+                AVG(CASE WHEN jsonb_array_length(COALESCE(pe.data->'items', '[]'::jsonb)) > 0 THEN 1.0 ELSE 0.0 END) AS linked_ratio,
+                EXTRACT(EPOCH FROM (NOW() - MAX(p.published_at))) / 3600.0 AS freshness_hours
+            FROM posts p
+            LEFT JOIN post_enrichments pe
+                ON pe.post_id = p.id
+               AND pe.kind = 'crawl'
+            WHERE p.created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY p.source_id
+        )
         SELECT
             s.*,
-            sc.cursor_json,
+            -- seen_external_ids (до 500 записей на источник) — тяжёлый, для UI не нужен, отсекаем в БД.
+            (sc.cursor_json - 'seen_external_ids') AS cursor_json,
             sc.last_success_at,
             sc.last_error,
             sc.last_seen_published_at,
             COALESCE(metrics.recent_success_count, 0) AS recent_success_count,
             COALESCE(metrics.recent_error_count, 0) AS recent_error_count,
-            COALESCE(post_metrics.relevant_ratio, 0) AS relevant_ratio,
-            COALESCE(post_metrics.avg_tag_count, 0) AS avg_tag_count,
-            COALESCE(post_metrics.linked_ratio, 0) AS linked_ratio,
-            post_metrics.freshness_hours AS freshness_hours,
+            COALESCE(pm.relevant_ratio, 0) AS relevant_ratio,
+            COALESCE(pm.avg_tag_count, 0) AS avg_tag_count,
+            COALESCE(pm.linked_ratio, 0) AS linked_ratio,
+            pm.freshness_hours AS freshness_hours,
             sr.status AS last_run_status,
             sr.started_at AS last_run_started_at,
             sr.finished_at AS last_run_finished_at,
@@ -264,19 +281,7 @@ async def list_sources(workspace_id: str | None = None):
             WHERE source_id = s.id
               AND started_at >= NOW() - INTERVAL '14 days'
         ) metrics ON TRUE
-        LEFT JOIN LATERAL (
-            SELECT
-                AVG(CASE WHEN COALESCE(p.relevance_score, 0) >= 0.6 THEN 1.0 ELSE 0.0 END) AS relevant_ratio,
-                AVG(jsonb_array_length(COALESCE(p.tags, '[]'::jsonb))) AS avg_tag_count,
-                AVG(CASE WHEN jsonb_array_length(COALESCE(pe.data->'items', '[]'::jsonb)) > 0 THEN 1.0 ELSE 0.0 END) AS linked_ratio,
-                EXTRACT(EPOCH FROM (NOW() - MAX(p.published_at))) / 3600.0 AS freshness_hours
-            FROM posts p
-            LEFT JOIN post_enrichments pe
-                ON pe.post_id = p.id
-               AND pe.kind = 'crawl'
-            WHERE p.source_id = s.id
-              AND p.created_at >= NOW() - INTERVAL '30 days'
-        ) post_metrics ON TRUE
+        LEFT JOIN post_metrics pm ON pm.source_id = s.id
         LEFT JOIN LATERAL (
             SELECT *
             FROM source_runs
