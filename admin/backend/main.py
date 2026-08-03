@@ -29,6 +29,7 @@ from shared.config import get_settings
 from shared.metrics import set_admin_manual_job_metrics
 from shared.metrics import set_admin_scheduler_running
 from shared.metrics import set_last_post_age
+from shared.metrics import set_source_freshness
 from shared.metrics import set_llm_finops_snapshot
 from shared.metrics import set_redis_stream_metrics
 from shared.redis_streams import collect_redis_stream_snapshot
@@ -232,6 +233,39 @@ async def _refresh_last_post_age_metric() -> None:
         logging.getLogger(__name__).exception("Failed to refresh last-post-age metric")
 
 
+async def _refresh_source_freshness_metric() -> None:
+    """Update frontier_source_freshness_hours per enabled source.
+
+    Catches feeds that report last_run=success but only serve ancient content
+    (e.g. a dead RSS feed whose newest item is years old). Isolated in its own try
+    so a Postgres failure never blocks the other metric refreshes in /metrics.
+    """
+    try:
+        engine = get_engine()
+        async with AsyncSession(engine) as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT
+                        s.id AS source_id,
+                        s.workspace_id AS workspace_id,
+                        s.name AS source_name,
+                        s.source_type AS source_type,
+                        EXTRACT(EPOCH FROM (NOW() - MAX(p.published_at))) / 3600.0 AS freshness_hours
+                    FROM sources s
+                    JOIN posts p ON p.source_id = s.id
+                    WHERE s.is_enabled = TRUE
+                      AND p.published_at IS NOT NULL
+                    GROUP BY s.id, s.workspace_id, s.name, s.source_type
+                    """
+                )
+            )
+            rows = [dict(row) for row in result.mappings().all()]
+        set_source_freshness("admin", rows)
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to refresh source-freshness metric")
+
+
 @app.get("/metrics")
 async def metrics():
     try:
@@ -245,6 +279,7 @@ async def metrics():
         stream_snapshot = await collect_redis_stream_snapshot(get_settings().redis_url)
         set_redis_stream_metrics("admin", stream_snapshot)
         await _refresh_last_post_age_metric()
+        await _refresh_source_freshness_metric()
     except Exception:
         logging.getLogger(__name__).exception("Failed to refresh admin metrics snapshot")
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

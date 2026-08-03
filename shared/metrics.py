@@ -47,6 +47,12 @@ try:
         "Age in seconds of the freshest post per workspace (data-silence detector).",
         ["service", "workspace"],
     )
+    SOURCE_FRESHNESS_HOURS = Gauge(
+        "frontier_source_freshness_hours",
+        "Hours since the newest post per enabled source (silent-stale-feed detector; "
+        "catches feeds that respond green but serve only ancient content).",
+        ["service", "workspace", "source_id", "source_name", "source_type"],
+    )
     LLM_PROMPT_TOKENS_TOTAL = Counter(
         "frontier_llm_prompt_tokens_total",
         "Total prompt tokens reported by LLM providers.",
@@ -357,6 +363,7 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     RELEVANCE_AUDIT_GAUGE = None
     GRAPH_HEALTH_GAUGE = None
     LAST_POST_AGE_SECONDS = None
+    SOURCE_FRESHNESS_HOURS = None
     LLM_PROMPT_TOKENS_TOTAL = None
     LLM_COMPLETION_TOKENS_TOTAL = None
     LLM_BILLABLE_TOKENS_TOTAL = None
@@ -466,6 +473,25 @@ def set_last_post_age(service: str, ages_by_workspace: dict[str, float]) -> None
         if not workspace_id or age_seconds is None:
             continue
         LAST_POST_AGE_SECONDS.labels(service=service, workspace=workspace_id).set(float(age_seconds))
+
+
+def set_source_freshness(service: str, rows: list[dict]) -> None:
+    """Per-source content freshness in hours. Emits only enabled sources with a known
+    newest publish date; clears each refresh so disabled/removed sources drop out."""
+    if SOURCE_FRESHNESS_HOURS is None:
+        return
+    SOURCE_FRESHNESS_HOURS.clear()
+    for row in rows or []:
+        hours = row.get("freshness_hours")
+        if hours is None:
+            continue
+        SOURCE_FRESHNESS_HOURS.labels(
+            service=service,
+            workspace=str(row.get("workspace_id") or ""),
+            source_id=str(row.get("source_id") or ""),
+            source_name=str(row.get("source_name") or ""),
+            source_type=str(row.get("source_type") or ""),
+        ).set(float(hours))
 
 
 def note_searxng_request(service: str, mode: str, status: str) -> None:
