@@ -13,6 +13,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import get_settings
+from shared.provenance import (
+    IndependenceMetrics,
+    ProvenancePost,
+    compute_independence_score,
+    echo_edges,
+    independence_metrics,
+)
 from worker.integrations.qdrant_client import QdrantFrontierClient
 from worker.services.clustering_math import (
     bucket_start as _bucket_start,
@@ -255,6 +262,110 @@ def _coherence(posts: list[ClusterPost], centroid: list[float]) -> float:
     )
 
 
+def _provenance(posts: list[ClusterPost]) -> IndependenceMetrics:
+    """Independence proxy over a cluster's raw member posts.
+
+    Collapses same-artifact echoes (same canonical URL / near-identical text or title)
+    so counts reflect distinct voices, not distinct feeds. Additive to raw source_count;
+    see docs/provenance-independence-layer.md. distinct_originators stays None here
+    (ClusterPost has no entity types) and is filled from Neo4j Concept.category later.
+    """
+    return independence_metrics(
+        [
+            ProvenancePost(
+                post_id=post.post_id,
+                source_id=post.source_id,
+                published_at=post.published_at,
+                url=post.url,
+                title=post.title,
+                vector=post.vector,
+            )
+            for post in posts
+        ]
+    )
+
+
+def _provenance_fields(metrics: IndependenceMetrics, *, raw_source_count: int) -> dict[str, Any]:
+    """Provenance fields for a cluster item; deduped count is clamped <= raw for sanity.
+
+    single_day_spike is carried in-memory (not a column) so a later originator pass can
+    recompute independence_score consistently.
+    """
+    return {
+        "deduped_source_count": min(metrics.deduped_source_count, raw_source_count),
+        "distinct_voices": metrics.distinct_voices,
+        "echo_ratio": metrics.echo_ratio,
+        "arrival_dispersion": metrics.arrival_dispersion,
+        "distinct_originators": metrics.distinct_originators,
+        "independence_score": metrics.independence_score,
+        "single_day_spike": metrics.single_day_spike,
+    }
+
+
+def _echoes_from(
+    metrics: IndependenceMetrics, posts: list[ClusterPost], workspace_id: str
+) -> list[dict[str, Any]]:
+    """Build ECHO_OF edge payloads (echo -> earliest origin) for a same-artifact grouping."""
+    pub_by_id = {post.post_id: post.published_at for post in posts}
+    return [
+        {
+            "workspace_id": workspace_id,
+            "echo_id": edge.echo_post_id,
+            "origin_id": edge.origin_post_id,
+            "method": edge.method,
+            "score": edge.score,
+            "lag_hours": edge.lag_hours,
+            "origin_first_seen": (
+                pub_by_id[edge.origin_post_id].isoformat()
+                if pub_by_id.get(edge.origin_post_id)
+                else None
+            ),
+        }
+        for edge in echo_edges(metrics.groups)
+    ]
+
+
+async def _apply_originators(
+    session: AsyncSession, neo4j: Any, items: list[dict[str, Any]], table: str
+) -> int:
+    """Fill distinct_originators + recompute independence_score from Neo4j org/person
+    concepts for already-persisted rows. Best-effort; `table` is a fixed literal."""
+    clusters = [
+        {
+            "id": it.get("cluster_id") or it.get("signal_id"),
+            "workspace_id": it["workspace_id"],
+            "doc_ids": it["doc_ids"],
+        }
+        for it in items
+        if (it.get("cluster_id") or it.get("signal_id")) and it.get("doc_ids")
+    ]
+    if not clusters:
+        return 0
+    counts = await neo4j.count_originators_batch(clusters)
+    updated = 0
+    for it in items:
+        cid = it.get("cluster_id") or it.get("signal_id")
+        originators = counts.get(cid)
+        if not originators:
+            continue
+        score = compute_independence_score(
+            deduped_source_count=int(it.get("deduped_source_count") or 0),
+            distinct_originators=originators,
+            echo_ratio=float(it.get("echo_ratio") or 0.0),
+            arrival_dispersion=float(it.get("arrival_dispersion") or 0.0),
+            single_day_spike=bool(it.get("single_day_spike")),
+        )
+        await session.execute(
+            text(
+                f"UPDATE {table} SET distinct_originators = :orig, "
+                f"independence_score = :score, updated_at = NOW() WHERE id = :id"
+            ),
+            {"orig": originators, "score": score, "id": cid},
+        )
+        updated += 1
+    return updated
+
+
 def _trend_cluster_index_text(item: dict[str, Any]) -> str:
     doc_ids = item.get("doc_ids") or []
     source_count = int(item.get("source_count") or 0)
@@ -312,6 +423,12 @@ def _trend_cluster_index_payload(
             "has_recent_change_point": bool(item.get("has_recent_change_point")),
             "doc_count": len(doc_ids),
             "source_count": source_count,
+            "deduped_source_count": item.get("deduped_source_count", 0),
+            "distinct_voices": item.get("distinct_voices", 0),
+            "echo_ratio": item.get("echo_ratio", 0.0),
+            "arrival_dispersion": item.get("arrival_dispersion", 0.0),
+            "distinct_originators": item.get("distinct_originators"),
+            "independence_score": item.get("independence_score", 0.0),
             "doc_ids": doc_ids,
             "embedding_version": get_settings().gigachat_embeddings_model,
             "semantic_cluster_ids": list(item.get("semantic_cluster_ids") or []),
@@ -639,18 +756,24 @@ async def _upsert_semantic(
             """
             INSERT INTO semantic_clusters (
                 id, workspace_id, cluster_key, title, representative_post_id, post_count, source_count,
+                deduped_source_count, distinct_voices, echo_ratio, arrival_dispersion, distinct_originators, independence_score,
                 doc_ids, source_ids, top_concepts, evidence, representative_evidence, related_cluster_ids,
                 lifecycle_state, avg_relevance, avg_source_score, freshness_score, coherence_score, explainability,
                 time_window, embedding_version, first_seen_at, last_seen_at, detected_at, created_at, updated_at
             ) VALUES (
                 :id, :workspace_id, :cluster_key, :title, :representative_post_id, :post_count, :source_count,
+                :deduped_source_count, :distinct_voices, :echo_ratio, :arrival_dispersion, :distinct_originators, :independence_score,
                 CAST(:doc_ids AS jsonb), CAST(:source_ids AS jsonb), CAST(:top_concepts AS jsonb), CAST(:evidence AS jsonb),
                 CAST(:representative_evidence AS jsonb), CAST(:related_cluster_ids AS jsonb), :lifecycle_state,
                 :avg_relevance, :avg_source_score, :freshness_score, :coherence_score, CAST(:explainability AS jsonb),
                 :time_window, :embedding_version, :first_seen_at, :last_seen_at, NOW(), NOW(), NOW()
             ) ON CONFLICT (id) DO UPDATE SET
                 cluster_key = EXCLUDED.cluster_key, title = EXCLUDED.title, representative_post_id = EXCLUDED.representative_post_id,
-                post_count = EXCLUDED.post_count, source_count = EXCLUDED.source_count, doc_ids = EXCLUDED.doc_ids,
+                post_count = EXCLUDED.post_count, source_count = EXCLUDED.source_count,
+                deduped_source_count = EXCLUDED.deduped_source_count, distinct_voices = EXCLUDED.distinct_voices,
+                echo_ratio = EXCLUDED.echo_ratio, arrival_dispersion = EXCLUDED.arrival_dispersion,
+                distinct_originators = EXCLUDED.distinct_originators, independence_score = EXCLUDED.independence_score,
+                doc_ids = EXCLUDED.doc_ids,
                 source_ids = EXCLUDED.source_ids, top_concepts = EXCLUDED.top_concepts, evidence = EXCLUDED.evidence,
                 representative_evidence = EXCLUDED.representative_evidence, related_cluster_ids = EXCLUDED.related_cluster_ids,
                 lifecycle_state = EXCLUDED.lifecycle_state, avg_relevance = EXCLUDED.avg_relevance,
@@ -670,6 +793,12 @@ async def _upsert_semantic(
             "representative_post_id": item["representative_post_id"],
             "post_count": item["post_count"],
             "source_count": item["source_count"],
+            "deduped_source_count": item.get("deduped_source_count", 0),
+            "distinct_voices": item.get("distinct_voices", 0),
+            "echo_ratio": item.get("echo_ratio", 0.0),
+            "arrival_dispersion": item.get("arrival_dispersion", 0.0),
+            "distinct_originators": item.get("distinct_originators"),
+            "independence_score": item.get("independence_score", 0.0),
             "doc_ids": json.dumps(item["doc_ids"]),
             "source_ids": json.dumps(item["source_ids"]),
             "top_concepts": json.dumps(item["top_concepts"]),
@@ -710,13 +839,15 @@ async def _upsert_signal(
                     burst_score, coherence, novelty, source_diversity_score, freshness_score, evidence_strength_score,
                     velocity_score, acceleration_score, baseline_rate, current_rate, change_point_count,
                     change_point_strength, has_recent_change_point, signal_score, signal_stage, doc_count,
-                    source_count, doc_ids, semantic_cluster_ids, keywords, explainability, category,
+                    source_count, deduped_source_count, distinct_voices, echo_ratio, arrival_dispersion, distinct_originators, independence_score,
+                    doc_ids, semantic_cluster_ids, keywords, explainability, category,
                     detected_at, created_at, updated_at
                 ) VALUES (
                     :id, :workspace_id, :cluster_key, 'stable', :title, :title_ru, :insight, :opportunity, :time_horizon,
                     :burst_score, :coherence, :novelty, :source_diversity_score, :freshness_score, :evidence_strength_score,
                     :velocity_score, :acceleration_score, :baseline_rate, :current_rate, :change_point_count,
-                    :change_point_strength, :has_recent_change_point, :signal_score, :signal_stage, :doc_count, :source_count, CAST(:doc_ids AS jsonb),
+                    :change_point_strength, :has_recent_change_point, :signal_score, :signal_stage, :doc_count, :source_count,
+                    :deduped_source_count, :distinct_voices, :echo_ratio, :arrival_dispersion, :distinct_originators, :independence_score, CAST(:doc_ids AS jsonb),
                     CAST(:semantic_cluster_ids AS jsonb), CAST(:keywords AS jsonb), CAST(:explainability AS jsonb),
                     NULL, NOW(), NOW(), NOW()
                 ) ON CONFLICT (id) DO UPDATE SET
@@ -730,7 +861,11 @@ async def _upsert_signal(
                     change_point_count = EXCLUDED.change_point_count, change_point_strength = EXCLUDED.change_point_strength,
                     has_recent_change_point = EXCLUDED.has_recent_change_point,
                     signal_score = EXCLUDED.signal_score, signal_stage = EXCLUDED.signal_stage, doc_count = EXCLUDED.doc_count,
-                    source_count = EXCLUDED.source_count, doc_ids = EXCLUDED.doc_ids, semantic_cluster_ids = EXCLUDED.semantic_cluster_ids,
+                    source_count = EXCLUDED.source_count,
+                    deduped_source_count = EXCLUDED.deduped_source_count, distinct_voices = EXCLUDED.distinct_voices,
+                    echo_ratio = EXCLUDED.echo_ratio, arrival_dispersion = EXCLUDED.arrival_dispersion,
+                    distinct_originators = EXCLUDED.distinct_originators, independence_score = EXCLUDED.independence_score,
+                    doc_ids = EXCLUDED.doc_ids, semantic_cluster_ids = EXCLUDED.semantic_cluster_ids,
                     keywords = EXCLUDED.keywords, explainability = EXCLUDED.explainability, detected_at = NOW(), updated_at = NOW()
                 """
             ),
@@ -761,6 +896,12 @@ async def _upsert_signal(
                 "signal_stage": item["signal_stage"],
                 "doc_count": len(item["doc_ids"]),
                 "source_count": item["source_count"],
+                "deduped_source_count": item.get("deduped_source_count", 0),
+                "distinct_voices": item.get("distinct_voices", 0),
+                "echo_ratio": item.get("echo_ratio", 0.0),
+                "arrival_dispersion": item.get("arrival_dispersion", 0.0),
+                "distinct_originators": item.get("distinct_originators"),
+                "independence_score": item.get("independence_score", 0.0),
                 "doc_ids": json.dumps(item["doc_ids"]),
                 "semantic_cluster_ids": json.dumps(item["semantic_cluster_ids"]),
                 "keywords": json.dumps(item["keywords"]),
@@ -775,12 +916,14 @@ async def _upsert_signal(
             INSERT INTO emerging_signals (
                 id, workspace_id, signal_key, title, signal_stage, signal_score, confidence,
                 velocity_score, acceleration_score, baseline_rate, current_rate, change_point_count,
-                change_point_strength, has_recent_change_point, supporting_semantic_cluster_ids, doc_ids, source_ids, source_count, keywords, evidence,
+                change_point_strength, has_recent_change_point, supporting_semantic_cluster_ids, doc_ids, source_ids, source_count,
+                deduped_source_count, distinct_voices, echo_ratio, arrival_dispersion, distinct_originators, independence_score, keywords, evidence,
                 explainability, recommended_watch_action, detected_at, first_seen_at, last_seen_at, created_at, updated_at
             ) VALUES (
                 :id, :workspace_id, :signal_key, :title, :signal_stage, :signal_score, :confidence,
                 :velocity_score, :acceleration_score, :baseline_rate, :current_rate, :change_point_count,
                 :change_point_strength, :has_recent_change_point, CAST(:semantic_cluster_ids AS jsonb), CAST(:doc_ids AS jsonb), CAST(:source_ids AS jsonb), :source_count,
+                :deduped_source_count, :distinct_voices, :echo_ratio, :arrival_dispersion, :distinct_originators, :independence_score,
                 CAST(:keywords AS jsonb), CAST(:evidence AS jsonb), CAST(:explainability AS jsonb), :recommended_watch_action,
                 NOW(), :first_seen_at, :last_seen_at, NOW(), NOW()
             ) ON CONFLICT (id) DO UPDATE SET
@@ -791,7 +934,11 @@ async def _upsert_signal(
                 change_point_count = EXCLUDED.change_point_count, change_point_strength = EXCLUDED.change_point_strength,
                 has_recent_change_point = EXCLUDED.has_recent_change_point,
                 supporting_semantic_cluster_ids = EXCLUDED.supporting_semantic_cluster_ids, doc_ids = EXCLUDED.doc_ids,
-                source_ids = EXCLUDED.source_ids, source_count = EXCLUDED.source_count, keywords = EXCLUDED.keywords,
+                source_ids = EXCLUDED.source_ids, source_count = EXCLUDED.source_count,
+                deduped_source_count = EXCLUDED.deduped_source_count, distinct_voices = EXCLUDED.distinct_voices,
+                echo_ratio = EXCLUDED.echo_ratio, arrival_dispersion = EXCLUDED.arrival_dispersion,
+                distinct_originators = EXCLUDED.distinct_originators, independence_score = EXCLUDED.independence_score,
+                keywords = EXCLUDED.keywords,
                 evidence = EXCLUDED.evidence, explainability = EXCLUDED.explainability,
                 recommended_watch_action = EXCLUDED.recommended_watch_action, detected_at = NOW(),
                 first_seen_at = LEAST(emerging_signals.first_seen_at, EXCLUDED.first_seen_at),
@@ -817,6 +964,12 @@ async def _upsert_signal(
             "doc_ids": json.dumps(item["doc_ids"]),
             "source_ids": json.dumps(item["source_ids"]),
             "source_count": item["source_count"],
+            "deduped_source_count": item.get("deduped_source_count", 0),
+            "distinct_voices": item.get("distinct_voices", 0),
+            "echo_ratio": item.get("echo_ratio", 0.0),
+            "arrival_dispersion": item.get("arrival_dispersion", 0.0),
+            "distinct_originators": item.get("distinct_originators"),
+            "independence_score": item.get("independence_score", 0.0),
             "keywords": json.dumps(item["keywords"]),
             "evidence": json.dumps(item["evidence"]),
             "explainability": json.dumps({**item["explainability"], "run_id": run_id}),
@@ -1149,11 +1302,20 @@ def _merge_signal_candidates(
                     for item in (other.get("evidence") or [])
                     if item not in (current.get("evidence") or [])
                 ]
+                current["series_posts"] = (current.get("series_posts") or []) + (
+                    other.get("series_posts") or []
+                )
                 merged_count += 1
         if merged_into_current:
             explainability = dict(current.get("explainability") or {})
             explainability["merged_signal_ids"] = merged_into_current
             current["explainability"] = explainability
+            _merged_prov = _provenance(current.get("series_posts") or [])
+            current.update(
+                _provenance_fields(
+                    _merged_prov, raw_source_count=int(current.get("source_count") or 0)
+                )
+            )
         kept.append(current)
     return kept, merged_count
 
@@ -1233,6 +1395,8 @@ def _semantic_results(
             for p in sorted(group, key=lambda x: x.published_at, reverse=True)[:5]
         ]
         source_dist = Counter(post.source_id for post in group)
+        prov = _provenance(group)
+        prov_echoes = _echoes_from(prov, group, representative.workspace_id)
         results.append(
             {
                 "cluster_key": cluster_key,
@@ -1242,6 +1406,8 @@ def _semantic_results(
                 "representative_post_id": representative.post_id,
                 "post_count": len(group),
                 "source_count": len(source_dist),
+                **_provenance_fields(prov, raw_source_count=len(source_dist)),
+                "_echo_edges": prov_echoes,
                 "doc_ids": [p.post_id for p in group],
                 "source_ids": sorted(source_dist),
                 "top_concepts": concepts,
@@ -1413,6 +1579,13 @@ def _merge_semantic_candidates(
         if merged_ids:
             explainability = dict(current.get("explainability") or {})
             explainability["merged_semantic_ids"] = merged_ids
+            _merged_prov = _provenance(current["posts"])
+            current.update(
+                _provenance_fields(_merged_prov, raw_source_count=current["source_count"])
+            )
+            current["_echo_edges"] = _echoes_from(
+                _merged_prov, current["posts"], current["workspace_id"]
+            )
             explainability["top_terms"] = _top_terms(current["posts"])
             explainability["top_concepts"] = current["top_concepts"]
             explainability["source_distribution"] = dict(
@@ -1697,6 +1870,7 @@ def _signal_results(
                 for term in (item.get("explainability", {}) or {}).get("top_terms", [])
             ).most_common(8)
         ]
+        prov_trend = _provenance([post for item in semantic_group for post in item["posts"]])
         payload = {
             "existing_id": existing.get("id") if existing else None,
             "signal_key": signal_key,
@@ -1709,6 +1883,7 @@ def _signal_results(
             "doc_ids": doc_ids,
             "source_ids": source_ids,
             "source_count": len(source_ids),
+            **_provenance_fields(prov_trend, raw_source_count=len(source_ids)),
             "keywords": keywords,
             "evidence": evidence,
             "recommended_watch_action": (
@@ -2326,6 +2501,35 @@ async def run_semantic_clustering(workspace_id: str | None = None) -> dict[str, 
                     semantic=semantic,
                 )
             )
+
+            # Provenance post-pass: ECHO_OF edges + originator fill (best-effort; the
+            # UPDATEs ride the commit below and a Neo4j failure never breaks clustering).
+            try:
+                from worker.integrations.neo4j_client import Neo4jFrontierClient
+
+                _neo4j = Neo4jFrontierClient()
+                try:
+                    _echoes = [edge for item in semantic for edge in item.get("_echo_edges", [])]
+                    if _echoes:
+                        logger.info(
+                            "provenance echo edges run_id=%s count=%d",
+                            run_id,
+                            await _neo4j.upsert_echo_edges(_echoes),
+                        )
+                    _filled = (
+                        await _apply_originators(session, _neo4j, semantic, "semantic_clusters")
+                        + await _apply_originators(session, _neo4j, stable, "trend_clusters")
+                        + await _apply_originators(session, _neo4j, emerging, "emerging_signals")
+                    )
+                    if _filled:
+                        logger.info(
+                            "provenance originators filled run_id=%s count=%d", run_id, _filled
+                        )
+                finally:
+                    await _neo4j.close()
+            except Exception:
+                logger.exception("provenance post-pass failed (non-fatal) run_id=%s", run_id)
+
             await _lifecycle_updates(
                 session,
                 workspace_id,
