@@ -92,6 +92,9 @@ export default {
         this.meta = data && data.meta ? data.meta : null;
         const nodes = (data && data.nodes) || [];
         this.built = nodes.length > 0;
+        // Гасим оверлей загрузки ДО построения: контейнер графа всегда в DOM,
+        // но cytoscape должен инициализироваться в полностью видимом контейнере.
+        this.loading = false;
         // Перед перестроением — уничтожаем прошлый инстанс, чтобы не течь.
         this.destroyGraph();
         if (nodes.length) {
@@ -180,12 +183,20 @@ export default {
           },
         ],
         layout: {
-          name: 'cose', // force-directed; на ≤150 узлах отрабатывает быстро
-          animate: false,
+          name: 'cose',
+          // classic cose с animate:false выполняет ВСЕ итерации синхронно и блокирует
+          // главный поток (на ~100 узлах вкладка виснет). Поэтому крупный граф строим
+          // АСИНХРОННО (animate:true — не блокирует поток) с урезанным числом итераций,
+          // а маленький — синхронно и мгновенно. Подтверждено докой cytoscape.
+          animate: nodes.length > 60,
+          animationDuration: 400,
+          refresh: nodes.length > 60 ? 4 : 10,
+          numIter: nodes.length > 60 ? 180 : 1000,
           fit: true,
           padding: 28,
           idealEdgeLength: 110,
           nodeRepulsion: 400000,
+          randomize: false,
         },
       });
 
@@ -227,11 +238,16 @@ export default {
       </div>
     </div>
 
-    <div class="card"><div class="card__body--flush">
-      <StateBlock :loading="loading" :error="error" :empty="!built"
-        empty-text="Нет данных графа для этих фильтров" @retry="load">
-        <div ref="canvas" style="width:100%;height:600px;background:var(--bg);border-radius:var(--r-md)"></div>
-      </StateBlock>
+    <div class="card"><div class="card__body--flush" style="position:relative">
+      <!-- Контейнер графа ВСЕГДА смонтирован: ref стабилен, cytoscape меряет реальный размер.
+           Загрузка/ошибка/пусто — оверлеем поверх, а не подменой слота (иначе ref пропадает
+           в момент buildGraph и cytoscape строит в пустоту). -->
+      <div ref="canvas" style="width:100%;height:600px;background:var(--bg);border-radius:var(--r-md)"></div>
+      <div v-if="loading || error || !built"
+        style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg);border-radius:var(--r-md)">
+        <StateBlock :loading="loading" :error="error" :empty="!built"
+          empty-text="Нет данных графа для этих фильтров" @retry="load"/>
+      </div>
     </div></div>
 
     <p class="muted text-sm mt-4" v-if="built">Нажми на узел или ребро — откроются детали.</p>
