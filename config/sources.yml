@@ -2333,7 +2333,12 @@ sources:
     name: arXiv cs.HC — Automotive
     url: https://rss.arxiv.org/rss/cs.HC
     schedule_cron: "17 */2 * * *"
-    is_enabled: false
+    # Включён 2026-08-03 первым в раскате auto_hmi (arXiv дешёвый и предсказуемый —
+    # проверяет весь путь ingest→enrich→index до того, как включать телеграм-каналы).
+    # Флаг обязан совпадать с БД: bootstrap делает ON CONFLICT DO UPDATE SET
+    # is_enabled = EXCLUDED.is_enabled, то есть YAML всегда побеждает и следующий
+    # bootstrap молча выключил бы источник, если оставить здесь false.
+    is_enabled: true
     extra:
       rollout_batch: batch:auto_hmi
       preset: arxiv_cs_hc
