@@ -291,3 +291,55 @@ Notes:
 - The script selects posts by `indexing_status.updated_at` and `embedding_status`.
 - Default status is `dropped`; keep it narrow unless you have a reason to replay a broader class.
 - Use UTC boundaries to avoid timezone confusion during incident review.
+
+## 12. Бэкапы и S3 lifecycle (бакет забился / `QuotaExceeded`)
+
+Ночной бэкап (`scripts/backup-stack.sh`, cron `30 3 * * *`) кладёт локальную копию в
+`backups/<DAY>/` и заливает её в S3/Cloud.ru (`scripts/backup_s3_upload.py` внутри
+worker-образа). Локальный ретеншн — `BACKUP_RETENTION_DAYS` (по умолч. 7д), чистит
+**только локальную** копию. S3-копию ретеншн НЕ трогает — за неё отвечает
+**lifecycle бакета**.
+
+**Симптом:** в `backups/backup.log` — `S3UploadFailedError ... QuotaExceeded:
+Bucket space quota exceeded`; на S3 у свежих дней только часть файлов (или один
+MANIFEST.txt). Значит бакет упёрся в квоту (**~15 GiB**). Локальные дампы при этом
+целые — проверь `du -sh backups/*/` и `df -h` (диск обычно свободен).
+
+**Причина по умолчанию:** `backups/` без правила истечения → дампы (~3.9 GiB/день,
+из них Qdrant `dense_2560`-снапшот ~2.1 GiB) копятся на S3 вечно и выжирают квоту.
+
+**Разбор наполнения бакета** (сумма/кол-во по префиксам, топ крупных):
+
+```bash
+# на сервере; креды берутся из .env через worker-образ
+docker run --rm --env-file /opt/frontier-intelligence/.env \
+  -v /opt/frontier-intelligence/scripts:/scripts:ro frontier-intelligence-worker \
+  python /scripts/s3_bucket_usage.py </dev/null
+```
+
+**Lifecycle как код.** Источник истины — `DESIRED_RULES` в
+`scripts/s3_lifecycle_apply.py`. Правило живёт на бакете (server-side), НЕ в `.env`;
+`put_bucket_lifecycle_configuration` заменяет конфиг целиком. Текущие правила:
+`media/ 30д`, `vision/ 14д`, `crawl/ 7д`, **`backups/ 2д`** (интерим под квоту),
+`abort-multipart` 1д.
+
+```bash
+# на сервере, в worker-образе (там boto3 + .env)
+docker run --rm --env-file /opt/frontier-intelligence/.env \
+  -v /opt/frontier-intelligence/scripts:/scripts:ro frontier-intelligence-worker \
+  python /scripts/s3_lifecycle_apply.py </dev/null            # dry-run: current vs desired
+# ... тот же вызов с `--apply` в конце — записать DESIRED_RULES
+```
+
+Прогонять `--apply` после **пересоздания бакета** или изменения `DESIRED_RULES`.
+
+**Разжать квоту прямо сейчас** (когда заливка уже падает): удалить старые
+`backups/<DAY>/` через `s3.delete_objects` (список → удаление), затем при желании
+перезалить свежий полный локальный день через `backup_s3_upload.py`
+(`... python /scripts/backup_s3_upload.py /backup "backups/<DAY>"`).
+
+**Держать offsite-историю дольше 2 дней** (под квоту 15 GiB не влезает 14д):
+поднять квоту бакета на Cloud.ru → вернуть `backups/` на 14д; **или** исключить
+перегенерируемые `dense_2560`-снапшоты из S3-заливки (`backup-stack.sh`) → payload
+падает до ~1.75 GiB/день, влезает 5-7 дней (минус: на полном DR векторы Qdrant
+придётся пере-эмбеддить из PG).
