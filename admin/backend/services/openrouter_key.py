@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 
@@ -12,6 +13,8 @@ import httpx
 from shared.config import get_settings
 from shared.metrics import set_openrouter_key_snapshot
 from shared.redis_client import get_client
+
+logger = logging.getLogger(__name__)
 
 _CACHE_LOCK = asyncio.Lock()
 _CACHE_KEY = "admin:openrouter_key:last_ok"
@@ -55,6 +58,33 @@ def _normalize_key_payload(payload: Any) -> dict[str, Any]:
         "free_model_rpm_limit": 20,
         "free_model_daily_limit": _expected_free_requests_daily_limit(is_free_tier),
         "fetched_at": time.time(),
+    }
+
+
+def _normalize_credits_payload(payload: Any) -> dict[str, Any]:
+    """Extract the real account balance from GET /credits.
+
+    ``total_credits - total_usage`` is the actual remaining balance. The key
+    endpoint's ``limit_remaining`` only reflects an optional per-key spend cap
+    and is null (→ coerced to 0 downstream) for an uncapped key, so it must not
+    be used as the balance.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+
+    def _number(name: str) -> float:
+        try:
+            return float(data.get(name) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    total_credits = _number("total_credits")
+    total_usage = _number("total_usage")
+    return {
+        "total_credits": total_credits,
+        "total_usage": total_usage,
+        "credit_balance": total_credits - total_usage,
     }
 
 
@@ -103,7 +133,9 @@ async def fetch_openrouter_key() -> dict[str, Any]:
         set_openrouter_key_snapshot("admin", payload)
         return payload
 
-    key_url = f"{settings.openrouter_base_url.rstrip('/')}/key"
+    base_url = settings.openrouter_base_url.rstrip("/")
+    key_url = f"{base_url}/key"
+    credits_url = f"{base_url}/credits"
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
         "HTTP-Referer": settings.openrouter_referrer,
@@ -116,6 +148,15 @@ async def fetch_openrouter_key() -> dict[str, Any]:
             response = await client.get(key_url, headers=headers)
             response.raise_for_status()
             payload = _normalize_key_payload(response.json())
+            # The real account balance lives on /credits, not on the key. Enrich
+            # best-effort so a transient /credits failure never drops the key
+            # snapshot itself.
+            try:
+                credits_resp = await client.get(credits_url, headers=headers)
+                credits_resp.raise_for_status()
+                payload.update(_normalize_credits_payload(credits_resp.json()))
+            except Exception as credits_exc:
+                logger.warning("openrouter_credits_fetch_failed: %s", credits_exc)
     except Exception as exc:
         cached = await _load_cached_snapshot()
         if cached:

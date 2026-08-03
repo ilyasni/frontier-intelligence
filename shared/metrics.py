@@ -232,6 +232,11 @@ try:
         "Remaining OpenRouter credit limit reported by the current key.",
         ["service"],
     )
+    OPENROUTER_CREDIT_BALANCE = Gauge(
+        "frontier_openrouter_credit_balance",
+        "OpenRouter account credit balance in USD (total_credits - total_usage from /credits).",
+        ["service"],
+    )
     OPENROUTER_KEY_USAGE_DAILY = Gauge(
         "frontier_openrouter_key_usage_daily",
         "Current UTC-day usage reported by the OpenRouter key endpoint.",
@@ -398,6 +403,7 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     OPENROUTER_KEY_AVAILABLE = None
     OPENROUTER_KEY_REFRESH_TIMESTAMP = None
     OPENROUTER_KEY_LIMIT_REMAINING = None
+    OPENROUTER_CREDIT_BALANCE = None
     OPENROUTER_KEY_USAGE_DAILY = None
     OPENROUTER_KEY_FREE_TIER = None
     OPENROUTER_HEALTH_SUCCESS_RATE = None
@@ -765,6 +771,12 @@ def set_openrouter_key_snapshot(service: str, payload: dict) -> None:
         OPENROUTER_KEY_REFRESH_TIMESTAMP.labels(service=service).set(float(fetched_at))
     limit_remaining = payload.get("limit_remaining")
     OPENROUTER_KEY_LIMIT_REMAINING.labels(service=service).set(float(limit_remaining or 0.0))
+    # Account balance comes from /credits, not the key's limit_remaining (which is
+    # null for an uncapped key). Only publish when known so a transient /credits
+    # failure retains the last good value instead of flapping to 0.
+    credit_balance = payload.get("credit_balance")
+    if credit_balance is not None and OPENROUTER_CREDIT_BALANCE is not None:
+        OPENROUTER_CREDIT_BALANCE.labels(service=service).set(float(credit_balance))
     OPENROUTER_KEY_USAGE_DAILY.labels(service=service, kind="credits").set(
         float(payload.get("usage_daily") or 0.0)
     )

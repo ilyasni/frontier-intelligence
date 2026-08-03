@@ -165,14 +165,14 @@ groups:
           description: "OpenRouter 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. Dynamic OR fallback will spill to Polza or Giga and can raise cost."
 
       - alert: FrontierOpenRouterCreditLow
-        expr: frontier_openrouter_key_limit_remaining{service="admin"} < 5
+        expr: frontier_openrouter_credit_balance{service="admin"} < 5
         for: 10m
         labels:
           severity: info
           service: admin
         annotations:
-          summary: "OpenRouter remaining credit is low"
-          description: "OpenRouter reported only {{ $value }} credits remaining for the current key. Free traffic may still work, but paid fallback headroom and future paid routing are limited."
+          summary: "OpenRouter account credit balance is low"
+          description: "OpenRouter account balance is only ${{ $value }} (total_credits - total_usage from /credits). Paid fallback headroom is limited. NB: this is the account balance, not the key's limit_remaining, which is null/0 for an uncapped key."
 
       - alert: FrontierOpenRouterKeyRefreshStale
         expr: time() - frontier_openrouter_key_refresh_timestamp_seconds{service="admin"} > 1800
