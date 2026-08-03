@@ -149,6 +149,85 @@ class Neo4jFrontierClient:
                 self._build_related_pairs(normalized_concepts),
             )
 
+    async def upsert_echo_edges(self, echoes: list[dict]) -> int:
+        """Write (:Document)-[:ECHO_OF]->(:Document) provenance edges.
+
+        Provenance layer (docs/provenance-independence-layer.md, Layer 2). Each echo dict:
+        {workspace_id, echo_id, origin_id, method, score, lag_hours, origin_first_seen}.
+        origin = earliest post in a same-artifact group; every other member echoes it.
+        Best-effort and idempotent (MERGE). Returns the number of edges written.
+        """
+        if not echoes:
+            return 0
+        async with self.driver.session() as session:
+            await session.execute_write(self._upsert_echo_tx, echoes)
+        return len(echoes)
+
+    @staticmethod
+    async def _upsert_echo_tx(tx, echoes: list[dict]) -> None:
+        await (await tx.run(
+            """
+            UNWIND $echoes AS e
+            MERGE (origin:Document {id: e.origin_id})
+              ON CREATE SET origin.workspace_id = e.workspace_id
+            SET origin.first_seen_at = CASE
+                    WHEN e.origin_first_seen IS NULL THEN origin.first_seen_at
+                    WHEN origin.first_seen_at IS NULL THEN e.origin_first_seen
+                    WHEN e.origin_first_seen < origin.first_seen_at THEN e.origin_first_seen
+                    ELSE origin.first_seen_at END
+            MERGE (echo:Document {id: e.echo_id})
+              ON CREATE SET echo.workspace_id = e.workspace_id
+            MERGE (echo)-[r:ECHO_OF]->(origin)
+            SET r.method = e.method, r.score = e.score, r.lag_hours = e.lag_hours
+            """,
+            echoes=echoes,
+        )).consume()
+
+    async def count_originators_batch(self, clusters: list[dict]) -> dict[str, int]:
+        """Batch distinct-originator counts. clusters: [{id, workspace_id, doc_ids}].
+
+        Returns {id: count of distinct org/person concepts mentioned by the cluster's docs}.
+        Clusters with no matching concepts are omitted (treat as 0).
+        """
+        if not clusters:
+            return {}
+        out: dict[str, int] = {}
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                UNWIND $clusters AS cl
+                MATCH (d:Document)-[:MENTIONS]->(c:Concept)
+                WHERE c.workspace_id = cl.workspace_id
+                  AND d.id IN cl.doc_ids
+                  AND toLower(coalesce(c.category, '')) IN ['org', 'person']
+                RETURN cl.id AS id, count(DISTINCT c.norm) AS originators
+                """,
+                clusters=clusters,
+            )
+            async for row in result:
+                out[row["id"]] = int(row["originators"] or 0)
+        return out
+
+    async def count_originators(self, workspace_id: str, doc_ids: list[str]) -> int:
+        """Distinct named-actor concepts (category org/person) mentioned by these docs.
+
+        Proxy for 'distinct originators' vs 'distinct feeds' (provenance layer, Layer 3).
+        Reliability depends on the enrichment prompt tagging org/person categories.
+        """
+        if not doc_ids:
+            return 0
+        async with self.driver.session() as session:
+            row = await (await session.run(
+                """
+                MATCH (d:Document)-[:MENTIONS]->(c:Concept {workspace_id: $ws})
+                WHERE d.id IN $doc_ids
+                  AND toLower(coalesce(c.category, '')) IN ['org', 'person']
+                RETURN count(DISTINCT c.norm) AS originators
+                """,
+                ws=workspace_id, doc_ids=doc_ids,
+            )).single()
+        return int((row or {}).get("originators") or 0)
+
     async def graph_health(self, workspace_id: str) -> dict[str, Any]:
         """Контур D (RSI): метрики здоровья концепт-графа для Grafana.
 

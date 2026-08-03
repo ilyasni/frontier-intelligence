@@ -18,6 +18,13 @@ class SemanticCluster(Base, TimestampMixin):
     representative_post_id: Mapped[Optional[str]] = mapped_column(Text)
     post_count: Mapped[int] = mapped_column(Integer, default=0)
     source_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Provenance / independence proxy (docs/provenance-independence-layer.md).
+    deduped_source_count: Mapped[int] = mapped_column(Integer, default=0)
+    distinct_voices: Mapped[int] = mapped_column(Integer, default=0)
+    echo_ratio: Mapped[float] = mapped_column(Float, default=0.0)
+    arrival_dispersion: Mapped[float] = mapped_column(Float, default=0.0)
+    distinct_originators: Mapped[Optional[int]] = mapped_column(Integer)
+    independence_score: Mapped[float] = mapped_column(Float, default=0.0)
     doc_ids: Mapped[list] = mapped_column(JSON, default=list)
     source_ids: Mapped[list] = mapped_column(JSON, default=list)
     top_concepts: Mapped[list] = mapped_column(JSON, default=list)

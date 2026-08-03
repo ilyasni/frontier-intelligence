@@ -9,7 +9,7 @@
   "category": "одна категория из списка или other",
   "reasoning": "коротко, почему пост релевантен или нет",
   "concepts": [
-    {"name": "concept name", "category": "technology|design|business_models|science|society|other", "weight": 1}
+    {"name": "concept name", "category": "technology|design|business_models|science|society|person|org|other", "weight": 1}
   ]
 }
 

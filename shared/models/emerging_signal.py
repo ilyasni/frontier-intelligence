@@ -29,6 +29,13 @@ class EmergingSignal(Base, TimestampMixin):
     doc_ids: Mapped[list] = mapped_column(JSON, default=list)
     source_ids: Mapped[list] = mapped_column(JSON, default=list)
     source_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Provenance / independence proxy (docs/provenance-independence-layer.md).
+    deduped_source_count: Mapped[int] = mapped_column(Integer, default=0)
+    distinct_voices: Mapped[int] = mapped_column(Integer, default=0)
+    echo_ratio: Mapped[float] = mapped_column(Float, default=0.0)
+    arrival_dispersion: Mapped[float] = mapped_column(Float, default=0.0)
+    distinct_originators: Mapped[Optional[int]] = mapped_column(Integer)
+    independence_score: Mapped[float] = mapped_column(Float, default=0.0)
     keywords: Mapped[list] = mapped_column(JSON, default=list)
     evidence: Mapped[list] = mapped_column(JSON, default=list)
     explainability: Mapped[dict] = mapped_column(JSON, default=dict)
