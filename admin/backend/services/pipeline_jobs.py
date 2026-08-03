@@ -340,16 +340,21 @@ async def run_missing_signals_job(workspace_id: str | None = None) -> dict:
         results = []
         for active_workspace_id in await list_active_workspace_ids():
             engine = get_engine()
+            # Счётчики отсева: без них ручной refresh отдаёт «ноль» без причины
+            # ровно так же, как плановый прогон (см. cluster_runs.summary).
+            counters: dict[str, int] = {}
             async with AsyncSession(engine) as session:
                 items = await run_missing_signals_refresh(
                     session,
                     workspace_id=active_workspace_id,
+                    counters=counters,
                 )
                 await session.commit()
             results.append(
                 {
                     "workspace_id": active_workspace_id,
                     "missing_signals": len(items),
+                    **counters,
                 }
             )
         total = sum(int(item.get("missing_signals") or 0) for item in results)
@@ -366,12 +371,23 @@ async def run_missing_signals_job(workspace_id: str | None = None) -> dict:
         }
 
     engine = get_engine()
+    counters: dict[str, int] = {}
     async with AsyncSession(engine) as session:
-        items = await run_missing_signals_refresh(session, workspace_id=workspace_id)
+        items = await run_missing_signals_refresh(
+            session,
+            workspace_id=workspace_id,
+            counters=counters,
+        )
         await session.commit()
     logger.info(
-        "Missing signals refresh completed for workspace=%s, missing_signals=%s",
+        "Missing signals refresh completed for workspace=%s, missing_signals=%s, counters=%s",
         workspace_id,
         len(items),
+        counters,
     )
-    return {"status": "ok", "workspace_id": workspace_id, "missing_signals": len(items)}
+    return {
+        "status": "ok",
+        "workspace_id": workspace_id,
+        "missing_signals": len(items),
+        **counters,
+    }

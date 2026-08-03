@@ -2667,6 +2667,11 @@ async def run_signal_analysis(workspace_id: str | None = None) -> dict[str, Any]
         )
         await session.commit()
         missing_signals: list[dict[str, Any]] = []
+        # Счётчики gap-анализа заполняются внутри run_missing_signals_analysis и
+        # уезжают в cluster_runs.summary: прометеевские метрики не переживают
+        # дочерний процесс задания (admin/backend/scheduler.py::_run_job_subprocess),
+        # поэтому без них «ноль сигналов» неотличим от «генератор тем умер».
+        missing_counters: dict[str, int] = {}
         qdrant_index = {"indexed": 0, "failed": 0, "skipped": 0}
         try:
             semantic = await _load_semantic_state(session, workspace_id, cluster_cfg, qdrant)
@@ -2687,6 +2692,7 @@ async def run_signal_analysis(workspace_id: str | None = None) -> dict[str, Any]
                     semantic=semantic,
                     stable=stable,
                     emerging=emerging,
+                    counters=missing_counters,
                 )
             except Exception:
                 logger.exception("Missing signals analysis failed for workspace=%s", workspace_id)
@@ -2706,6 +2712,11 @@ async def run_signal_analysis(workspace_id: str | None = None) -> dict[str, Any]
                 {
                     "semantic_clusters_loaded": len(semantic),
                     "missing_signals_created_or_updated": len(missing_signals),
+                    # topics_generated / topics_dropped_by_stoplist /
+                    # topics_dropped_by_results / topics_dropped_by_gap /
+                    # searxng_errors / topics_kept — по этим числам видно, кто
+                    # виноват в нуле, без чтения логов дочернего процесса.
+                    **missing_counters,
                     **summary,
                 },
                 quality,

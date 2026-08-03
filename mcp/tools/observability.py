@@ -417,6 +417,8 @@ async def list_clusters(req: ClusterListRequest) -> dict:
             """
             SELECT
                 id, workspace_id, title, representative_post_id, post_count, source_count,
+                deduped_source_count, distinct_voices, echo_ratio, arrival_dispersion,
+                distinct_originators, independence_score,
                 lifecycle_state, avg_relevance, avg_source_score, freshness_score, coherence_score,
                 source_ids, top_concepts, time_window, embedding_version,
                 first_seen_at, last_seen_at, detected_at
@@ -437,6 +439,8 @@ async def list_clusters(req: ClusterListRequest) -> dict:
                 evidence_strength_score, velocity_score, acceleration_score, baseline_rate,
                 current_rate, change_point_count, change_point_strength, has_recent_change_point,
                 signal_score, signal_stage, doc_count, source_count,
+                deduped_source_count, distinct_voices, echo_ratio, arrival_dispersion,
+                distinct_originators, independence_score,
                 keywords, category, detected_at
             FROM trend_clusters
             WHERE (CAST(:ws AS text) IS NULL OR workspace_id = CAST(:ws AS text))
@@ -454,7 +458,9 @@ async def list_clusters(req: ClusterListRequest) -> dict:
                 id, workspace_id, title, signal_stage, signal_score, confidence,
                 velocity_score, acceleration_score, baseline_rate, current_rate,
                 change_point_count, change_point_strength, has_recent_change_point,
-                source_count, keywords, recommended_watch_action, detected_at
+                source_count, deduped_source_count, distinct_voices, echo_ratio, arrival_dispersion,
+                distinct_originators, independence_score,
+                keywords, recommended_watch_action, detected_at
             FROM emerging_signals
             WHERE (CAST(:ws AS text) IS NULL OR workspace_id = CAST(:ws AS text))
               AND signal_stage = ANY(:stages)
@@ -625,7 +631,9 @@ async def list_emerging_signals(req: EmergingSignalListRequest) -> dict:
                 id, workspace_id, title, signal_stage, signal_score, confidence,
                 velocity_score, acceleration_score, baseline_rate, current_rate,
                 change_point_count, change_point_strength, has_recent_change_point,
-                source_count, keywords, recommended_watch_action, detected_at
+                source_count, deduped_source_count, distinct_voices, echo_ratio, arrival_dispersion,
+                distinct_originators, independence_score,
+                keywords, recommended_watch_action, detected_at
             FROM emerging_signals
             WHERE (CAST(:ws AS text) IS NULL OR workspace_id = CAST(:ws AS text))
               AND signal_stage = ANY(:stages)
@@ -644,21 +652,37 @@ async def list_emerging_signals(req: EmergingSignalListRequest) -> dict:
 @router.post("/list_missing_signals")
 async def list_missing_signals(req: MissingSignalListRequest) -> dict:
     assert_known_workspace(req.workspace)
-    return {
-        "signals": await _fetch_rows(
+    signals = await _fetch_rows(
+        """
+        SELECT
+            id, workspace_id, topic, gap_score, opportunity,
+            searxng_frequency, frontier_frequency, evidence_urls, category,
+            updated_at
+        FROM missing_signals
+        WHERE (CAST(:ws AS text) IS NULL OR workspace_id = CAST(:ws AS text))
+        ORDER BY gap_score DESC, updated_at DESC
+        LIMIT :limit
+        """,
+        {"ws": req.workspace, "limit": req.limit},
+    )
+    response: dict = {"signals": signals}
+    if not signals:
+        # Пустой массив честно означает «строк нет», но не отвечает на вопрос,
+        # был ли прогон вообще и чем он кончился. last_run отдаётся только при
+        # пустой выдаче, чтобы «пусто» отличалось от «сломано»; ключ signals
+        # не меняется — его читают frontier_brief и шлюз.
+        response["last_run"] = await _fetch_one(
             """
-            SELECT
-                id, workspace_id, topic, gap_score, opportunity,
-                searxng_frequency, frontier_frequency, evidence_urls, category,
-                updated_at
-            FROM missing_signals
-            WHERE (CAST(:ws AS text) IS NULL OR workspace_id = CAST(:ws AS text))
-            ORDER BY gap_score DESC, updated_at DESC
-            LIMIT :limit
+            SELECT id, workspace_id, status, started_at, finished_at, summary
+            FROM cluster_runs
+            WHERE stage = 'signal-analysis'
+              AND (CAST(:ws AS text) IS NULL OR workspace_id = CAST(:ws AS text))
+            ORDER BY started_at DESC
+            LIMIT 1
             """,
-            {"ws": req.workspace, "limit": req.limit},
+            {"ws": req.workspace},
         )
-    }
+    return response
 
 
 @router.post("/get_cluster_details")
@@ -734,6 +758,13 @@ async def get_cluster_evidence(req: ClusterEvidenceRequest) -> dict:
                 "title": semantic_row["title"],
                 "representative_post_id": semantic_row.get("representative_post_id"),
                 "post_count": semantic_row["post_count"],
+                "source_count": semantic_row.get("source_count"),
+                "deduped_source_count": semantic_row.get("deduped_source_count"),
+                "distinct_voices": semantic_row.get("distinct_voices"),
+                "echo_ratio": semantic_row.get("echo_ratio"),
+                "arrival_dispersion": semantic_row.get("arrival_dispersion"),
+                "distinct_originators": semantic_row.get("distinct_originators"),
+                "independence_score": semantic_row.get("independence_score"),
                 "source_ids": semantic_row.get("source_ids") or [],
                 "top_concepts": semantic_row.get("top_concepts") or [],
                 "time_window": semantic_row.get("time_window"),
@@ -770,6 +801,13 @@ async def get_cluster_evidence(req: ClusterEvidenceRequest) -> dict:
                 "change_point_strength": trend_row.get("change_point_strength"),
                 "has_recent_change_point": trend_row.get("has_recent_change_point"),
                 "doc_count": trend_row.get("doc_count"),
+                "source_count": trend_row.get("source_count"),
+                "deduped_source_count": trend_row.get("deduped_source_count"),
+                "distinct_voices": trend_row.get("distinct_voices"),
+                "echo_ratio": trend_row.get("echo_ratio"),
+                "arrival_dispersion": trend_row.get("arrival_dispersion"),
+                "distinct_originators": trend_row.get("distinct_originators"),
+                "independence_score": trend_row.get("independence_score"),
                 "keywords": trend_row.get("keywords") or [],
                 "category": trend_row.get("category"),
                 "detected_at": trend_row.get("detected_at"),
@@ -796,6 +834,12 @@ async def get_cluster_evidence(req: ClusterEvidenceRequest) -> dict:
                 "change_point_strength": emerging_row.get("change_point_strength"),
                 "has_recent_change_point": emerging_row.get("has_recent_change_point"),
                 "source_count": emerging_row.get("source_count"),
+                "deduped_source_count": emerging_row.get("deduped_source_count"),
+                "distinct_voices": emerging_row.get("distinct_voices"),
+                "echo_ratio": emerging_row.get("echo_ratio"),
+                "arrival_dispersion": emerging_row.get("arrival_dispersion"),
+                "distinct_originators": emerging_row.get("distinct_originators"),
+                "independence_score": emerging_row.get("independence_score"),
                 "keywords": emerging_row.get("keywords") or [],
                 "recommended_watch_action": emerging_row.get("recommended_watch_action"),
                 "detected_at": emerging_row.get("detected_at"),

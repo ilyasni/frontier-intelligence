@@ -325,7 +325,46 @@ class Settings(BaseSettings):
     missing_signals_enabled: bool = Field(True, alias="MISSING_SIGNALS_ENABLED")
     missing_signals_window_days: int = Field(30, alias="MISSING_SIGNALS_WINDOW_DAYS")
     missing_signals_topic_limit: int = Field(8, alias="MISSING_SIGNALS_TOPIC_LIMIT")
-    missing_signals_min_gap_score: float = Field(0.35, alias="MISSING_SIGNALS_MIN_GAP_SCORE")
+    # 0.35 калибровался под неограниченную сумму в _frontier_frequency: presence
+    # там был min(1.0, sum/3.5), поэтому любая тема с суммой >= 1.83 отсеивалась
+    # всегда (замерено 2026-08-03: три из трёх design_lenses воркспейса design).
+    # После нормировки обе стороны вычитания лежат в [0, 1], и порог означает
+    # ровно «пол по внешним свидетельствам». Значение выбрано между двумя
+    # посчитанными точками _external_signal_strength при SEARXNG_MAX_RESULTS=5 и
+    # типичных для живого SearXNG оценках 0.4-0.5:
+    #   2 результата с ОДНОГО домена -> 0.303 (не проходит)
+    #   2 результата с ДВУХ доменов  -> 0.363 (проходит)
+    # То есть MISSING_SIGNALS_MIN_EXTERNAL_RESULTS=2 не противоречит арифметике,
+    # но одно-доменная выдача сама по себе порогом не считается. Осмысленный
+    # коридор — (0.303, 0.363]; при 0.30 (значение до 2026-08-03) одно-доменные
+    # выдачи проходили с запасом 0.003, и фильтр вырождался в «SearXNG вообще
+    # ответил». Одно-доменная выдача всё же пройдёт, если средняя оценка
+    # результатов выше 1.0 (слагаемое min(avg/3,1)*0.15), — на живых числах
+    # такого не встречается.
+    missing_signals_min_gap_score: float = Field(0.33, alias="MISSING_SIGNALS_MIN_GAP_SCORE")
+    # Доля корпуса, при которой тема считается покрытой полностью (presence = 1.0).
+    # Заменяет литерал 3.5 из _gap_score, который был привязан к старой шкале.
+    # Условие прохождения: frontier_frequency <= saturation * (external_strength -
+    # min_gap_score). На замеренной таблице design (64 кластера, external на
+    # практическом потолке 0.8728) при 0.30 отсекаются «design» (presence 0.94,
+    # gap 0.0) и «interaction design» (presence 0.57, gap 0.2998 — при прежнем
+    # пороге 0.30 отсев держался на 0.0002, ножевой край; при 0.33 запас 0.03),
+    # проходят «service design» 0.4041, «visual culture» 0.7688 и «automotive HMI
+    # design» 0.8728.
+    # ВНИМАНИЕ (2026-08-03): колонка presence в этой таблице замерена при
+    # IDF-взвешенном пороге покрытия _MIN_TOPIC_OVERLAP = 0.30. С тех пор вес
+    # токена — редкость 1 - df/N, а порог 0.40, и мера перестала зависеть от
+    # размера корпуса отдельно от долей df/N. Сами настройки не тронуты и значат
+    # ровно то же, но конкретные presence/gap по темам требуют перезамера на живых
+    # данных — направление сдвига не монотонно (совпадение по общему токену стало
+    # весить чуть больше, по различающему чуть меньше). Что НЕ зависит от той
+    # таблицы и потому осталось в силе — обоснование min_gap_score ниже: оно
+    # держится на коридоре external_strength (0.303, 0.363], а его правка не
+    # касалась.
+    missing_signals_presence_saturation: float = Field(
+        0.30,
+        alias="MISSING_SIGNALS_PRESENCE_SATURATION",
+    )
     missing_signals_min_external_results: int = Field(
         2,
         alias="MISSING_SIGNALS_MIN_EXTERNAL_RESULTS",

@@ -288,6 +288,7 @@ services:
       POLZA_TEXT_MODEL: ${POLZA_TEXT_MODEL:-deepseek/deepseek-v3.2}
       POLZA_SYNTHESIS_MODEL: ${POLZA_SYNTHESIS_MODEL:-deepseek/deepseek-v3.2}
       POLZA_VISION_MODEL: ${POLZA_VISION_MODEL:-}
+      NOVELTY_JUDGE_FALLBACK_MODEL: ${NOVELTY_JUDGE_FALLBACK_MODEL:-deepseek/deepseek-v3.2}
       GIGACHAT_EMBEDDINGS_MODEL: ${GIGACHAT_EMBEDDINGS_MODEL:-EmbeddingsGigaR}
       GIGACHAT_MODEL_LITE: ${GIGACHAT_MODEL_LITE:-GigaChat-2}
       GIGACHAT_MODEL: ${GIGACHAT_MODEL:-GigaChat-2}
@@ -325,6 +326,26 @@ services:
       S3_BUCKET_NAME: ${S3_BUCKET_NAME}
       S3_REGION: ${S3_REGION:-ru-central-1}
       SEARXNG_URL: http://searxng:8080
+      # Gap-анализ (missing signals) живёт в worker/services/missing_signals.py.
+      # Долгоживущий процесс worker его не крутит (worker/main.py — только
+      # enrichment/reindex/vision), но образ несёт и код, и scripts/, поэтому
+      # `docker compose exec worker python scripts/run_semantic_clustering.py <ws>`
+      # запускает ровно ту же функцию. Без проброса ручной прогон считал бы по
+      # дефолтам из shared/config.py, а плановый — по .env: два разных ответа на
+      # одних данных. Значения по умолчанию обязаны совпадать с shared/config.py.
+      SEARXNG_ENABLED: ${SEARXNG_ENABLED:-true}
+      SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES:-general,news}
+      SEARXNG_MAX_RESULTS: ${SEARXNG_MAX_RESULTS:-5}
+      SEARXNG_TIMEOUT_SECONDS: ${SEARXNG_TIMEOUT_SECONDS:-8}
+      SEARXNG_CACHE_TTL: ${SEARXNG_CACHE_TTL:-3600}
+      MISSING_SIGNALS_ENABLED: ${MISSING_SIGNALS_ENABLED:-true}
+      MISSING_SIGNALS_TOPIC_LIMIT: ${MISSING_SIGNALS_TOPIC_LIMIT:-8}
+      MISSING_SIGNALS_MIN_GAP_SCORE: ${MISSING_SIGNALS_MIN_GAP_SCORE:-0.33}
+      MISSING_SIGNALS_PRESENCE_SATURATION: ${MISSING_SIGNALS_PRESENCE_SATURATION:-0.30}
+      MISSING_SIGNALS_MIN_EXTERNAL_RESULTS: ${MISSING_SIGNALS_MIN_EXTERNAL_RESULTS:-2}
+      MISSING_SIGNALS_MAX_EVIDENCE_URLS: ${MISSING_SIGNALS_MAX_EVIDENCE_URLS:-5}
+      MISSING_SIGNALS_TIME_RANGE: ${MISSING_SIGNALS_TIME_RANGE:-month}
+      MISSING_SIGNALS_LANGUAGE: ${MISSING_SIGNALS_LANGUAGE:-auto}
       PADDLEOCR_URL: ${PADDLEOCR_URL:-}
       XDG_CACHE_HOME: /cache
       HF_HOME: /cache/huggingface
@@ -507,6 +528,27 @@ services:
       OPENAI_API_BASE: http://gpt2giga-proxy:8090/v1
       GIGACHAT_PROXY_URL: http://gpt2giga-proxy:8090
       SEARXNG_URL: http://searxng:8080
+      # Единственный сервис, который реально крутит gap-анализ: scheduler зовёт
+      # run_missing_signals / run_semantic_clusters через `python -m
+      # admin.backend.manual_jobs` в дочернем процессе, а тот наследует именно это
+      # окружение. До 2026-08-03 ни одной MISSING_SIGNALS_* здесь не было (проверено
+      # docker inspect на живом контейнере): пороги были задокументированы в
+      # .env.example как операторские ручки, но правка .env не меняла ничего —
+      # значения брались из дефолтов, запечённых в образ, и «перетюнить» их можно
+      # было только пересборкой. Дефолты обязаны совпадать с shared/config.py.
+      SEARXNG_ENABLED: ${SEARXNG_ENABLED:-true}
+      SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES:-general,news}
+      SEARXNG_MAX_RESULTS: ${SEARXNG_MAX_RESULTS:-5}
+      SEARXNG_TIMEOUT_SECONDS: ${SEARXNG_TIMEOUT_SECONDS:-8}
+      SEARXNG_CACHE_TTL: ${SEARXNG_CACHE_TTL:-3600}
+      MISSING_SIGNALS_ENABLED: ${MISSING_SIGNALS_ENABLED:-true}
+      MISSING_SIGNALS_TOPIC_LIMIT: ${MISSING_SIGNALS_TOPIC_LIMIT:-8}
+      MISSING_SIGNALS_MIN_GAP_SCORE: ${MISSING_SIGNALS_MIN_GAP_SCORE:-0.33}
+      MISSING_SIGNALS_PRESENCE_SATURATION: ${MISSING_SIGNALS_PRESENCE_SATURATION:-0.30}
+      MISSING_SIGNALS_MIN_EXTERNAL_RESULTS: ${MISSING_SIGNALS_MIN_EXTERNAL_RESULTS:-2}
+      MISSING_SIGNALS_MAX_EVIDENCE_URLS: ${MISSING_SIGNALS_MAX_EVIDENCE_URLS:-5}
+      MISSING_SIGNALS_TIME_RANGE: ${MISSING_SIGNALS_TIME_RANGE:-month}
+      MISSING_SIGNALS_LANGUAGE: ${MISSING_SIGNALS_LANGUAGE:-auto}
       NEO4J_URL: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
