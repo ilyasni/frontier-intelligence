@@ -37,6 +37,17 @@ id_ed25519*
 # Server-local SearXNG config. Commit searxng/settings.example.yml instead.
 searxng/settings.yml
 !searxng/settings.example.yml
+# Ручные снапшоты этого файла перед правкой (settings.yml.bak-before-engines-YYYYMMDD).
+# Правило выше — точный путь, снапшот под него не подпадает, а secret_key в нём тот же.
+# Без этой строки `git add .` утащит боевой ключ в историю.
+searxng/*.bak
+searxng/*.bak-*
+
+# Серверные артефакты, которые генерируются на месте, а не пишутся руками:
+# дневные дайджесты алертов (scripts/alert-triage-deliver.sh) и метрики
+# textfile-коллектора (scripts/export-analysis-freshness.sh по крону).
+docs/ops/alert-digests/
+prometheus/textfile/
 
 # Runtime / Docker volume data.
 # Keep schema and helper files under storage/** tracked; only exclude actual data dumps/dirs.

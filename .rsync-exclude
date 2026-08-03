@@ -1,9 +1,18 @@
 # Runtime secrets
+#
+# ВНИМАНИЕ: синтаксис здесь rsync-овый, НЕ .gitignore.
+#   1) rsync — first-match-wins: правило, стоящее выше, побеждает.
+#   2) строка «!pattern» НЕ отменяет исключение. rsync молча трактует её
+#      как обычный шаблон с именем «!pattern», который ни с чем не совпадает.
+#      Отмена задаётся правилом «+ pattern» (плюс и ПРОБЕЛ).
+# Поэтому каждое «+ »-правило обязано стоять ВЫШЕ широкого шаблона,
+# который иначе поглотил бы файл. Проверять так:
+#   rsync -av --dry-run -vv --exclude-from=.rsync-exclude ./ /tmp/x/ | grep hiding
++ .env.example
++ .env.balanced.example
 .env
 .env.*
 *.env
-!.env.example
-!.env.balanced.example
 runtime/
 
 # Python artifacts
@@ -36,8 +45,9 @@ id_rsa*
 id_ed25519*
 
 # Server-local SearXNG config with secret_key. Use settings.example.yml as template.
+# «+ »-правило стоит выше исключения (см. заметку про синтаксис в начале файла).
++ searxng/settings.example.yml
 searxng/settings.yml
-!searxng/settings.example.yml
 
 # Docker volume data.
 # Do not exclude storage/postgres, storage/neo4j, or storage/qdrant wholesale:
@@ -50,6 +60,11 @@ storage/**/*.sqlite
 storage/**/*.db
 grafana/data/
 prometheus/data/
+# Метрики textfile-коллектора генерирует на сервере cron
+# (scripts/export-analysis-freshness.sh). В репозитории их нет, поэтому
+# без этого правила `sync-push --delete` сносит каталог, серия исчезает,
+# и FrontierAnalysisStale замолкает вместе с ней.
+prometheus/textfile/
 
 # Docs archive and bulky local knowledge packs
 docs/old_docs*/
@@ -85,6 +100,16 @@ desktop.ini
 
 # Local backups (in-repo, генерируются scripts/backup-stack.sh; не синхронизировать)
 backups/
+
+# Ручные снапшоты конфигов, которые делаются перед правкой прямо на сервере
+# (settings.yml.bak-before-engines-YYYYMMDD и т.п.). Локально их нет, значит
+# `sync-push --delete` стирает точку отката ровно тогда, когда она нужна.
+*.bak
+*.bak-*
+
+# Ежедневный лог разбора алертов живёт только на сервере (scripts/alert-triage-deliver.sh).
+# Исключаем, чтобы `sync-push --delete` не стирал историю дайджестов.
+docs/ops/alert-digests/
 
 # Temporary files
 test_write.txt

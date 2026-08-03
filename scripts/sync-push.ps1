@@ -101,7 +101,11 @@ if ($DryRun) {
     Write-Host "[DRY-RUN] Изменений не будет. Только просмотр." -ForegroundColor Yellow
 }
 
-if (-not $NoDelete -and -not $DryRun) {
+if (-not $NoDelete) {
+    # --delete добавляется и в dry-run: под --dry-run он ничего не удаляет,
+    # зато показывает список удалений. Без него предпросмотр врал — обещал
+    # «только эти файлы» и умалчивал, что боевой запуск снесёт с сервера всё,
+    # чего нет локально (так уехали prometheus/textfile/ и .bak-снапшот searxng).
     $args += "--delete"
     # --delete-excluded намеренно НЕ используется:
     # он удалял бы storage/neo4j/, sessions/, .env с сервера
