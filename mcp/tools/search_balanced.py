@@ -249,6 +249,44 @@ async def _synthesize_balanced(
         await client.close()
 
 
+def _merge_own_corpus(*responses: dict[str, Any]) -> dict[str, Any] | None:
+    """Свести блоки own_corpus трёх подзапросов в один блок ответа.
+
+    Хиты уносят own_stake сами — это ключи верхнего уровня хита. А размер корпуса,
+    пороги и флаг деградации живут на уровне ответа, и без них число на карточке
+    нечитаемо: на корпусе в полсотни чанков own_stake — это «есть/нет сигнала»,
+    а не величина, и отличить неудавшийся замер от выключенной оси тоже нечем.
+
+    size / top_k / thresholds у трёх подзапросов одинаковы (одни и те же Settings и
+    один и тот же корпус) — берётся первое измеренное значение. scored_hits
+    суммируется. degraded — ИЛИ: частично деградировавший ответ не имеет права
+    выглядеть чистым.
+
+    None, если ни один подзапрос блока не отдал: при OWN_STAKE_ENABLED=false ключа
+    в ответе не появляется, и сравнение двух выдач остаётся честной проверкой.
+    """
+    blocks = [block for block in responses if isinstance(block, dict)]
+    if not blocks:
+        return None
+    merged: dict[str, Any] = {
+        "size": None,
+        "top_k": blocks[0].get("top_k"),
+        "scored_hits": 0,
+        "thresholds": blocks[0].get("thresholds"),
+        "degraded": False,
+    }
+    for block in blocks:
+        if merged["size"] is None and block.get("size") is not None:
+            merged["size"] = block.get("size")
+        if merged["top_k"] is None and block.get("top_k") is not None:
+            merged["top_k"] = block.get("top_k")
+        if merged["thresholds"] is None and block.get("thresholds") is not None:
+            merged["thresholds"] = block.get("thresholds")
+        merged["scored_hits"] += int(block.get("scored_hits") or 0)
+        merged["degraded"] = bool(merged["degraded"] or block.get("degraded"))
+    return merged
+
+
 @router.post("")
 async def search_balanced(req: BalancedSearchRequest) -> dict[str, Any]:
     assert_known_workspace(req.workspace)
@@ -319,7 +357,14 @@ async def search_balanced(req: BalancedSearchRequest) -> dict[str, Any]:
         competitor_evidence=competitor_evidence,
         external_results=external_results,
     )
-    return {
+    own_corpus = _merge_own_corpus(
+        *[
+            search["own_corpus"]
+            for search in (main_search, counter_search, ru_search)
+            if search.get("own_corpus") is not None
+        ]
+    )
+    response: dict[str, Any] = {
         "signals": main_search["results"],
         "counter_signals": counter_search["results"],
         "global_signals": main_search["results"],
@@ -358,3 +403,8 @@ async def search_balanced(req: BalancedSearchRequest) -> dict[str, Any]:
         ),
         "synthesis": synthesis,
     }
+    if own_corpus is not None:
+        # Тот же контракт, что у search_frontier: ключ появляется только при
+        # включённой второй оси, иначе ответ побайтово прежний.
+        response["own_corpus"] = own_corpus
+    return response

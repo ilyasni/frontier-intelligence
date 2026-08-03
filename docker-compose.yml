@@ -252,6 +252,13 @@ services:
       QDRANT_TRENDS_COLLECTION_ALIAS: ${QDRANT_TRENDS_COLLECTION_ALIAS:-}
       QDRANT_FILTER_EMBEDDING_VERSION: ${QDRANT_FILTER_EMBEDDING_VERSION:-true}
       QDRANT_ENFORCE_COLLECTION_SCHEMA: ${QDRANT_ENFORCE_COLLECTION_SCHEMA:-true}
+      # own_stake (задача B) здесь НЕ пробрасывается, и это проверенное решение, а не
+      # пропуск. QdrantHybridClient.__init__ выставляет self.own_corpus_collection в любом
+      # процессе, но в worker/, admin/ и ingest/ нет ни одного вызова own_stake_scores /
+      # upsert_own_corpus_chunk / own_corpus_size — атрибут собирается и не читается.
+      # Ось считается на поиске в mcp, коллекцию заводит scripts/init_storage.py, а корпус
+      # индексирует scripts/index_own_corpus.py — обе запускаются с хоста и читают .env
+      # напрямую, мимо compose. Появится вызов own-corpus внутри worker — добавлять сюда.
       NEO4J_URL: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
@@ -433,6 +440,40 @@ services:
       QDRANT_TRENDS_COLLECTION_ALIAS: ${QDRANT_TRENDS_COLLECTION_ALIAS:-}
       QDRANT_FILTER_EMBEDDING_VERSION: ${QDRANT_FILTER_EMBEDDING_VERSION:-true}
       QDRANT_ENFORCE_COLLECTION_SCHEMA: ${QDRANT_ENFORCE_COLLECTION_SCHEMA:-true}
+      # own_stake (задача B) — вторая ось карточки: косинус запроса к отдельному корпусу
+      # автора. Считается на поиске (mcp/tools/search_frontier.py), поэтому это
+      # единственный сервис, которому ручки нужны вообще (почему не worker — см. блок
+      # worker). Коллекция отдельная, без workspace_id, payload-фильтр к ней не
+      # применяется, hybrid_search и get_frontier_brief в неё не ходят. Имя должно
+      # совпадать с тем, под которым корпус залит scripts/index_own_corpus.py.
+      QDRANT_OWN_CORPUS_COLLECTION: ${QDRANT_OWN_CORPUS_COLLECTION:-own_corpus}
+      # false по умолчанию: пока корпус не наполнен, own_stake шумный. Включение НЕ меняет
+      # порядок выдачи — own_stake не входит в score, добавляются только ключи own_stake и
+      # stake_quadrant. Если после включения порядок поехал — сломан инвариант, а не настройка.
+      OWN_STAKE_ENABLED: ${OWN_STAKE_ENABLED:-false}
+      OWN_STAKE_TOP_K: ${OWN_STAKE_TOP_K:-3}
+      # Пороги квадрантов — ПЛЕЙСХОЛДЕРЫ. Взять их неоткуда: score на выдаче при включённом
+      # sparse — RRF-балл, а не косинус, и между запросами он несопоставим. Настоящие
+      # значения подбираются по накопленной разметке card_feedback (задача C, гейт — 60 пар
+      # с обоими числами; list_card_feedback отдаёт axes_filled_total именно под этот счёт).
+      # Обоснование каждой цифры — в .env.example и shared/config.py:44-54. Дефолты обязаны
+      # совпадать с shared/config.py, иначе `docker run --env-file` и compose разложат одну
+      # и ту же карточку по разным квадрантам.
+      OWN_STAKE_HIGH: ${OWN_STAKE_HIGH:-0.60}
+      RELEVANCE_HIGH: ${RELEVANCE_HIGH:-0.40}
+      # Внешнее заземление выдачи: mcp/tools/search_frontier.py и search_balanced.py читают
+      # searxng_enabled / searxng_categories / searxng_max_results напрямую и поднимают
+      # SearXNGClient, который дочитывает searxng_url / searxng_timeout_seconds /
+      # searxng_cache_ttl. До 2026-08-03 ни одной SEARXNG_* здесь не было: worker и admin
+      # слушались .env, а mcp — дефолтов, запечённых в образ. Практический эффект —
+      # SEARXNG_ENABLED=false останавливал внешние вызовы везде, кроме поиска, то есть
+      # ровно там, где их больше всего. Дефолты обязаны совпадать с shared/config.py.
+      SEARXNG_URL: http://searxng:8080
+      SEARXNG_ENABLED: ${SEARXNG_ENABLED:-true}
+      SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES:-general,news}
+      SEARXNG_MAX_RESULTS: ${SEARXNG_MAX_RESULTS:-5}
+      SEARXNG_TIMEOUT_SECONDS: ${SEARXNG_TIMEOUT_SECONDS:-8}
+      SEARXNG_CACHE_TTL: ${SEARXNG_CACHE_TTL:-3600}
       NEO4J_URL: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}

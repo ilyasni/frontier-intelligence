@@ -21,6 +21,7 @@ from qdrant_client.models import (
     PointIdsList,
     PointStruct,
     Prefetch,
+    QueryRequest,
     Range,
     SparseIndexParams,
     SparseVectorParams,
@@ -64,6 +65,20 @@ _TREND_PAYLOAD_INDEXES = [
     ("source_count", PayloadSchemaType.INTEGER),
     ("embedding_version", PayloadSchemaType.KEYWORD),
 ]
+
+# Корпус автора (ТЗ B). Ни workspace_id, ни embedding_version здесь нет намеренно:
+# коллекция живёт вне общего поиска, _build_payload_filter к ней не применяется,
+# и версия эмбеддинга зашита в само имя коллекции.
+_OWN_CORPUS_PAYLOAD_INDEXES = [
+    ("doc_kind", PayloadSchemaType.KEYWORD),
+    ("path", PayloadSchemaType.KEYWORD),
+    ("indexed_at", PayloadSchemaType.DATETIME),
+]
+
+# Страховка от пустого QDRANT_OWN_CORPUS_COLLECTION: с пустой базой
+# qdrant_collection_name_for_embedding подставляет "frontier_docs", и личный корпус
+# уехал бы в общий индекс.
+_DEFAULT_OWN_CORPUS_COLLECTION = "own_corpus"
 
 
 def _freshness_boost(published_at: str | None) -> float:
@@ -218,11 +233,24 @@ class QdrantFrontierClient:
             self.trends_collection_base,
             settings.gigachat_embeddings_model,
         )
+        # Корпус автора (ТЗ B). Алиаса нет намеренно: базовое имя не создаётся вообще,
+        # всегда используется версионированное — смена модели эмбеддингов не должна
+        # молча оставить own_stake считаться по коллекции с другой размерностью.
+        self.own_corpus_collection_base = (
+            str(getattr(settings, "qdrant_own_corpus_collection", "") or "").strip()
+            or _DEFAULT_OWN_CORPUS_COLLECTION
+        )
+        self.own_corpus_collection = qdrant_collection_name_for_embedding(
+            self.own_corpus_collection_base,
+            settings.gigachat_embeddings_model,
+        )
         self.embedding_version = str(settings.gigachat_embeddings_model or "").strip()
         self._documents_runtime_ready = False
         self._trends_runtime_ready = False
+        self._own_corpus_runtime_ready = False
         self._documents_schema_checked = False
         self._trends_schema_checked = False
+        self._own_corpus_schema_checked = False
 
     def _effective_embedding_version(self, embedding_version: str | None) -> str | None:
         if not self.settings.qdrant_filter_embedding_version:
@@ -260,6 +288,16 @@ class QdrantFrontierClient:
         }
 
     def _trend_vectors_config(self) -> dict[str, VectorParams]:
+        size, distance = self._expected_dense_schema(self.embedding_version)
+        return {
+            "dense": VectorParams(
+                size=int(size or self.settings.embed_dim),
+                distance=self._distance_enum(distance),
+                hnsw_config=HnswConfigDiff(m=16, ef_construct=100),
+            )
+        }
+
+    def _own_corpus_vectors_config(self) -> dict[str, VectorParams]:
         size, distance = self._expected_dense_schema(self.embedding_version)
         return {
             "dense": VectorParams(
@@ -388,6 +426,47 @@ class QdrantFrontierClient:
                 target_collection=seed_collection,
             )
         self._trends_runtime_ready = True
+
+    async def _ensure_own_corpus_ready(self) -> None:
+        """Создать коллекцию корпуса автора.
+
+        Только dense: корпус запрашивается вектором карточки, а не текстом, BM25-ветка
+        ему не нужна. Алиас не создаётся — цель всегда версионированное имя.
+        Вызывается только с пути записи (индексация корпуса), не с пути поиска.
+        """
+        if self._own_corpus_runtime_ready:
+            return
+        await self._ensure_collection_exists(
+            collection_name=self.own_corpus_collection,
+            vectors_config=self._own_corpus_vectors_config(),
+            payload_indexes=_OWN_CORPUS_PAYLOAD_INDEXES,
+        )
+        self._own_corpus_runtime_ready = True
+
+    async def _own_corpus_exists(self) -> bool:
+        """Проверка существования коллекции без её создания.
+
+        Читающий путь не должен создавать коллекцию: отсутствие корпуса — это 0.0
+        на карточке, а не запись в Qdrant с горячего пути поиска. Положительный ответ
+        кэшируется, отрицательный — нет: корпус появляется внешним скриптом, и
+        долгоживущий процесс MCP обязан это увидеть без рестарта.
+        """
+        if self._own_corpus_runtime_ready:
+            return True
+        try:
+            exists = bool(await self.client.collection_exists(self.own_corpus_collection))
+        except Exception as exc:
+            logger.warning(
+                "qdrant_own_corpus_exists_check_failed",
+                extra={
+                    "collection_name": self.own_corpus_collection,
+                    "error": str(exc),
+                },
+            )
+            return False
+        if exists:
+            self._own_corpus_runtime_ready = True
+        return exists
 
     @staticmethod
     def _expected_dense_schema(model: str) -> tuple[int | None, str]:
@@ -568,6 +647,172 @@ class QdrantFrontierClient:
                 }
             )
         return documents
+
+    async def upsert_own_corpus_chunk(
+        self,
+        *,
+        path: str,
+        chunk_idx: int,
+        dense_vector: list[float],
+        doc_kind: str,
+        indexed_at: str | None = None,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Записать один чанк корпуса автора, вернуть id точки.
+
+        Идемпотентность: id = uuid5(NAMESPACE_URL, "own:{path}:{chunk_idx}") — повторный
+        прогон индексации перезаписывает точку, а не плодит дубли.
+
+        Текст чанка в payload не кладётся: коллекция личная, а для отладки хватает
+        path + chunk_idx. Если вызывающему нужен ещё один служебный ключ — extra_payload,
+        канонические ключи его перекрывают.
+        """
+        normalized_path = str(path or "").strip()
+        if not normalized_path:
+            raise ValueError("own_corpus_chunk_requires_path")
+        if not dense_vector:
+            raise ValueError("own_corpus_chunk_requires_dense_vector")
+        await self._ensure_own_corpus_ready()
+        await self._ensure_collection_schema(
+            collection_name=self.own_corpus_collection,
+            expected_model=self.embedding_version,
+            checked_attr="_own_corpus_schema_checked",
+        )
+        point_id = str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"own:{normalized_path}:{int(chunk_idx)}")
+        )
+        payload: dict[str, Any] = {
+            **(extra_payload or {}),
+            "doc_kind": str(doc_kind or "").strip().lower(),
+            "path": normalized_path,
+            "chunk_idx": int(chunk_idx),
+            "indexed_at": indexed_at or datetime.now(UTC).isoformat(),
+        }
+        await self.client.upsert(
+            collection_name=self.own_corpus_collection,
+            points=[
+                PointStruct(
+                    id=point_id,
+                    vector={"dense": list(dense_vector)},
+                    payload=payload,
+                )
+            ],
+            wait=True,
+        )
+        return point_id
+
+    async def own_corpus_size(self) -> int:
+        """Число точек в корпусе автора; 0, если коллекции ещё нет.
+
+        Пока корпус в десятки чанков, own_stake читается как «есть / нет замера»,
+        а не как величина — размер корпуса рядом с числом это единственная честная
+        подпись (риск 1 ТЗ B).
+        """
+        if not await self._own_corpus_exists():
+            return 0
+        try:
+            result = await self.client.count(
+                collection_name=self.own_corpus_collection,
+                exact=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "qdrant_own_corpus_count_failed",
+                extra={
+                    "collection_name": self.own_corpus_collection,
+                    "error": str(exc),
+                },
+            )
+            return 0
+        return int(getattr(result, "count", 0) or 0)
+
+    async def own_stake_scores(
+        self,
+        vectors: dict[str, list[float]],
+        *,
+        top_k: int,
+    ) -> dict[str, float] | None:
+        """doc_id → максимальный косинус к корпусу автора; None — замер не состоялся.
+
+        Максимум, а не среднее: вопрос в том, есть ли у автора хотя бы один свой замер
+        по теме, а не размазана ли тема по всему корпусу.
+
+        Число возвращается ОТДЕЛЬНЫМ словарём и никогда не подмешивается в score —
+        порядок выдачи с включённым own_stake обязан совпадать с выключенным.
+
+        Контракт отказа. 0.0 значит «корпус проверен, своего замера по теме нет», и
+        писать его можно только там, где корпус действительно проверен: пустая
+        коллекция и отсутствующая коллекция (обе видны вызывающему как
+        own_corpus_size() == 0). Недоступный Qdrant и невыровненный batch-ответ дают
+        None — измерения не было, и ноль здесь был бы выдуманным числом, которое
+        поиск отдаст как факт, а разметка обратной связи запишет в card_feedback
+        навсегда. Исключение не бросается: вторая ось не имеет права ронять поиск.
+        Doc_id без пригодного вектора в ответе просто отсутствует — тоже «не измеряли».
+        """
+        scores: dict[str, float] = {}
+        if not vectors:
+            return scores
+        # float() обязателен: QueryRequest валидирует вектор в strict-режиме и
+        # отвергает int'ы, которые может дать сериализация чужого клиента.
+        usable: dict[str, list[float]] = {
+            str(doc_id): [float(value) for value in vector]
+            for doc_id, vector in vectors.items()
+            if vector
+        }
+        if not usable:
+            return scores
+        if not await self._own_corpus_exists():
+            # Коллекции нет — это проверенный ноль, а не неизвестность:
+            # own_corpus_size() вернёт 0 и снимет двусмысленность на карточке.
+            return {doc_id: 0.0 for doc_id in usable}
+
+        doc_ids = list(usable.keys())
+        limit = max(1, int(top_k))
+        requests = [
+            QueryRequest(
+                query=usable[doc_id],
+                using="dense",
+                limit=limit,
+                with_payload=False,
+            )
+            for doc_id in doc_ids
+        ]
+        try:
+            responses = await self.client.query_batch_points(
+                collection_name=self.own_corpus_collection,
+                requests=requests,
+            )
+        except Exception as exc:
+            logger.warning(
+                "qdrant_own_stake_batch_failed",
+                extra={
+                    "collection_name": self.own_corpus_collection,
+                    "batch_size": len(requests),
+                    "error": str(exc),
+                },
+            )
+            return None
+
+        responses = list(responses or [])
+        if len(responses) != len(doc_ids):
+            # Ответ не выровнен с запросом — доверять позиционному соответствию
+            # нечему, и «недостающие» doc_id остались бы нулями, которых никто
+            # не измерял. Деградируем целиком.
+            logger.warning(
+                "qdrant_own_stake_batch_size_mismatch",
+                extra={
+                    "collection_name": self.own_corpus_collection,
+                    "requested": len(doc_ids),
+                    "received": len(responses),
+                },
+            )
+            return None
+        for doc_id, response in zip(doc_ids, responses):
+            best = 0.0
+            for point in getattr(response, "points", None) or []:
+                best = max(best, float(getattr(point, "score", 0.0) or 0.0))
+            scores[doc_id] = round(max(0.0, min(1.0, best)), 4)
+        return scores
 
     async def close(self) -> None:
         await self.client.close()

@@ -31,6 +31,28 @@ class Settings(BaseSettings):
         alias="QDRANT_ENFORCE_COLLECTION_SCHEMA",
     )
 
+    # own_stake — вторая ось карточки (ТЗ B).
+    # Корпус автора лежит в ОТДЕЛЬНОЙ коллекции без workspace_id: _build_payload_filter
+    # к ней не применяется, hybrid_search и get_frontier_brief в неё не ходят.
+    # Здесь хранится только база имени; фактическое имя коллекции версионируется
+    # моделью эмбеддингов через qdrant_collection_name_for_embedding.
+    qdrant_own_corpus_collection: str = Field("own_corpus", alias="QDRANT_OWN_CORPUS_COLLECTION")
+    own_stake_enabled: bool = Field(False, alias="OWN_STAKE_ENABLED")
+    # Сколько ближайших чанков корпуса запрашивать на карточку. Агрегация — max,
+    # поэтому top_k > 1 нужен только как страховка от дублей в корпусе.
+    own_stake_top_k: int = Field(3, alias="OWN_STAKE_TOP_K")
+    # ПЛЕЙСХОЛДЕРЫ, а не измеренные величины. Вывести их из кода нельзя: own_stake —
+    # честный косинус в [0,1], а score в выдаче — RRF-ранг (sparse включён по умолчанию),
+    # несопоставимый между запросами. Калибруются по накопленным парам «выбрана /
+    # не выбрана» из задачи C (таблица card_feedback, ~60 пар за 12 недель); до тех пор
+    # квадрант читать как грубую отсечку, а не как измерение.
+    # own_stake_high = 0.60 — верхняя граница фонового косинуса между несвязанными
+    # русскими текстами у EmbeddingsGigaR; выше — кандидат в «свой замер есть».
+    # relevance_high = 0.40 — единственное наблюдавшееся живое значение score (0.41)
+    # из разбора выдачи; это RRF-балл, а не порог качества.
+    own_stake_high: float = Field(0.60, alias="OWN_STAKE_HIGH")
+    relevance_high: float = Field(0.40, alias="RELEVANCE_HIGH")
+
     # Neo4j
     neo4j_url: str = Field("bolt://neo4j:7687", alias="NEO4J_URL")
     neo4j_user: str = Field("neo4j", alias="NEO4J_USER")
