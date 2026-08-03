@@ -50,6 +50,28 @@ _PRIVATE_HOSTS = {
     "xray",
 }
 
+# ── TTL кэша ─────────────────────────────────────────────────────────────────
+#
+# Пустая выдача кэшируется, но своим — коротким — TTL.
+#
+# Кэшировать пустой ответ всё-таки надо: HTTP 200 с нулём результатов почти
+# всегда означает, что набор движков лежит, и долбить мёртвый апстрим на каждый
+# вызов бессмысленно. Но хранить эту пустоту час — значит растянуть поломку на
+# час ПОСЛЕ её устранения: ровно это и наблюдалось 2026-08-03, когда после
+# починки searxng/settings.yml те же темы продолжали отдавать [] из кэша и
+# починка выглядела как несработавшая.
+#
+# Отсюда порядок величины — минуты, а не часы. 120 с выбраны по циклу проверки
+# руками: правишь конфиг движков → перезапускаешь searxng → перезапускаешь
+# анализ и смотришь. Две минуты этот цикл переживает без «почему всё ещё пусто»,
+# и при этом мёртвый апстрим по одному и тому же запросу опрашивается не чаще
+# ~30 раз в час. Штатный missing_signals ходит по расписанию куда реже двух
+# минут, так что в норме этот TTL не стоит ничего: он защищает только от
+# горячего цикла ретраев.
+_CACHE_TTL_FLOOR_SECONDS = 60
+_EMPTY_CACHE_TTL_DEFAULT_SECONDS = 120
+_EMPTY_CACHE_TTL_FLOOR_SECONDS = 10
+
 
 def sanitize_result_url(url: str) -> str | None:
     raw = str(url or "").strip()
@@ -124,6 +146,51 @@ class SearXNGClient:
             return None
         return httpx.BasicAuth(user, password)
 
+    def _engines_fingerprint(self) -> str:
+        """
+        Отпечаток набора движков — единственное, что клиент про них знает.
+
+        Набор движков живёт в searxng/settings.yml и монтируется ТОЛЬКО в
+        контейнер searxng (`./searxng:/etc/searxng` в docker-compose.yml). Ни
+        worker, ни admin, ни mcp этот файл не видят и увидеть не могут. Спросить
+        сам сервис можно (GET /config отдаёт список движков), но это лишний
+        сетевой запрос перед каждым холодным поиском и новая точка отказа: если
+        /config не ответил, отпечаток пришлось бы чем-то подменить — то есть
+        подставить значение, которое ПРИТВОРЯЕТСЯ, что отслеживает конфигурацию.
+
+        Поэтому отпечаток объявляет оператор: SEARXNG_ENGINES_FINGERPRINT.
+        Он честно отслеживает ровно одно — то, что оператор задекларировал.
+        Правило эксплуатации: поменял searxng/settings.yml — поменяй и его
+        (удобнее всего класть туда sha256 самого файла). Не поменял —
+        инвалидации не будет. Это известное ограничение схемы, а не незаметный
+        дефект: сам факт наличия поля в материале ключа виден в коде и в тестах.
+
+        Чтение — прямым обращением к полю, а НЕ через getattr с дефолтом.
+        Разница не косметическая. До 2026-08-04 здесь стоял
+        `getattr(..., "searxng_engines_fingerprint", "")`, а поля с таким именем
+        в shared/config.py не было вовсе; Settings объявлен с extra="ignore",
+        поэтому SEARXNG_ENGINES_FINGERPRINT из .env отбрасывался ещё до чтения.
+        Правило эксплуатации выше физически не могло сработать: отпечаток был
+        константой "" при любом .env, вклад поля в ключ сводился к одноразовому
+        бампу префикса v1→v2, и всё это выглядело исправным. Прямое обращение
+        превращает «поля нет» из тихого дефолта в AttributeError, а
+        tests/test_searxng_client_honesty.py дополнительно пришпиливает
+        объявление поля и его алиас к shared/config.py.
+        """
+        return str(self._settings.searxng_engines_fingerprint or "").strip()
+
+    def _cache_ttl_for(self, results: list[dict[str, Any]]) -> int:
+        """TTL записи: пустой выдаче — свой короткий, валидной — полный."""
+        full_ttl = max(_CACHE_TTL_FLOOR_SECONDS, int(self._settings.searxng_cache_ttl))
+        if results:
+            return full_ttl
+        # Прямое чтение поля, а не getattr с дефолтом: у Settings extra="ignore",
+        # и необъявленное поле означало бы, что SEARXNG_EMPTY_CACHE_TTL из .env молча
+        # выбрасывается, а getattr это прячет за «дефолтом». Пусть лучше падает.
+        empty_ttl = int(self._settings.searxng_empty_cache_ttl)
+        # Пустота не должна жить дольше валидной выдачи ни при какой настройке.
+        return min(full_ttl, max(_EMPTY_CACHE_TTL_FLOOR_SECONDS, empty_ttl))
+
     def _cache_key(
         self,
         *,
@@ -132,6 +199,7 @@ class SearXNGClient:
         language: str | None,
         time_range: str | None,
         limit: int,
+        engines_fingerprint: str,
     ) -> str:
         digest = hashlib.sha256(
             json.dumps(
@@ -141,12 +209,16 @@ class SearXNGClient:
                     "language": language,
                     "time_range": time_range,
                     "limit": limit,
+                    "engines_fingerprint": engines_fingerprint,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
-        return f"searxng:v1:{digest}"
+        # v2 — в материал ключа добавлен engines_fingerprint. Префикс поднят
+        # намеренно: записи v1 (в том числе часовые пустоты, из-за которых
+        # починка движков выглядела несработавшей) после выката не читаются.
+        return f"searxng:v2:{digest}"
 
     async def search(
         self,
@@ -177,14 +249,24 @@ class SearXNGClient:
             language=effective_language,
             time_range=effective_time_range,
             limit=effective_limit,
+            engines_fingerprint=self._engines_fingerprint(),
         )
 
         try:
             async with Redis.from_url(self._settings.redis_url, decode_responses=True) as redis:
                 cached = await redis.get(cache_key)
                 if cached:
-                    note_searxng_request(self._service_name, mode, "cache_hit")
-                    return json.loads(cached)
+                    cached_items: list[dict[str, Any]] = json.loads(cached)
+                    # Отдача пустоты из кэша считается отдельно: при коротком TTL
+                    # всплеск запросов по мёртвой теме — это одна запись "empty"
+                    # и хвост попаданий, и они не должны маскироваться под
+                    # обычные cache_hit по здоровой выдаче.
+                    note_searxng_request(
+                        self._service_name,
+                        mode,
+                        "cache_hit" if cached_items else "cache_hit_empty",
+                    )
+                    return cached_items
         except Exception:
             logger.debug("searxng_cache_read_failed", exc_info=True)
 
@@ -222,7 +304,12 @@ class SearXNGClient:
                 note_rate_limit_event(self._service_name, "searxng", mode)
             response.raise_for_status()
             payload = response.json()
-            note_searxng_request(self._service_name, mode, "success")
+            if not isinstance(payload, dict):
+                # Тело-не-объект — дефект апстрима, а не удачный запрос. Раньше
+                # метрика успевала записать "success" прямо здесь, и только
+                # потом вызов падал на payload.get(...) уже вне try: в счётчике
+                # такой запрос выглядел успешным.
+                raise TypeError("searxng returned a non-object JSON body")
         except Exception:
             note_searxng_request(self._service_name, mode, "error")
             raise
@@ -240,11 +327,17 @@ class SearXNGClient:
             seen_urls.add(item["url"])
             normalized.append(item)
 
+        # Статус считается по тому, что реально получил вызывающий, а не по коду
+        # ответа: 200 с нулём пригодных результатов — это "empty", отдельная
+        # серия. Имена "success"/"error" не трогаем — на них смотрят алерты
+        # FrontierSearxngErrorBurst и FrontierSearxngNoSuccessfulQueries.
+        note_searxng_request(self._service_name, mode, "success" if normalized else "empty")
+
         try:
             async with Redis.from_url(self._settings.redis_url, decode_responses=True) as redis:
                 await redis.setex(
                     cache_key,
-                    max(60, int(self._settings.searxng_cache_ttl)),
+                    self._cache_ttl_for(normalized),
                     json.dumps(normalized, ensure_ascii=False),
                 )
         except Exception:

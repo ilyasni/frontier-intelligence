@@ -40,16 +40,35 @@
      и вечно пустым. Значения `for`, `expr`, `summary` теперь валидируются, а имя метрики
      под матчером workspace пришпилено реестром EXPECTED_PARTITION_METRIC.
 
+Ревизия 2026-08-03, вторая (две дыры, найденные мутационным прогоном по этому же файлу):
+
+  7. Оба реестра — EXPECTED_TIER_THRESHOLD_SECONDS и EXPECTED_PARTITION_METRIC — жили
+     ТОЛЬКО в этом файле, и правка «alerts.yml плюс реестр» проходила молча.
+       • Все четыре порога, поделённые на 100 в обоих местах, оставляли зелёными все 18
+         проверок: реестр сходится, отношение «низкообъёмный мягче высокообъёмного»
+         сохранено, эскалация warn→critical сохранена — а алерт теперь стреляет через
+         3.6 минуты тишины по каждому workspace. Проверялись пропорции, не величины.
+       • Метрика, переименованная в alerts.yml и в реестре, но не в экспортёре, тоже
+         оставляла всё зелёным: серии не существует, четыре алерта молчат навсегда.
+     Оба реестра теперь пришпилены к состоянию ВНЕ этого файла: имя метрики сверяется
+     с объявлениями в shared/metrics.py, а величина порога — с длительностью, которую
+     правило само называет в своём `description` («…уже {{ $value }} (>6ч)»).
+  8. `description` не проверялся вообще — ни на присутствие, ни на содержимое, хотя
+     именно он приходит дежурному в Telegram. Теперь это обязательное непустое поле,
+     а у правил-партиций ещё и единственное место, где порог записан словами.
+
 Правила ищутся по структуре выражения (наличие матчера на label `workspace`), а не по
 номерам строк и не по списку имён: любое новое правило с перечислением workspace в регулярке
 попадает в проверки автоматически.
 
-Файлы читаются как есть, без импорта кода проекта: тест не зависит ни от заглушек
-tests/conftest.py, ни от наличия pydantic/bs4/boto3 в тест-образе.
+Конфиги читаются как есть, код проекта разбирается ast'ом без импорта: тест не зависит ни
+от заглушек tests/conftest.py, ни от наличия pydantic/bs4/boto3/prometheus_client в
+тест-образе (импорт shared/metrics.py ещё и зарегистрировал бы метрики в глобальном реестре).
 """
 
 from __future__ import annotations
 
+import ast
 import re
 from collections import defaultdict
 from functools import lru_cache
@@ -66,6 +85,8 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACES_YML = REPO_ROOT / "config" / "workspaces.yml"
 ALERTS_YML = REPO_ROOT / "prometheus" / "alerts.yml"
+# Экспортёр: единственное место, где серия действительно объявляется. Разбирается ast'ом.
+METRICS_MODULE = REPO_ROOT / "shared" / "metrics.py"
 
 # Ключи, без которых правило деградирует молча: без `for` алерт дёргается на одиночном
 # скрейпе, без `severity` его некуда роутить, без `summary` уведомление приходит пустым.
@@ -110,10 +131,46 @@ TIER_LOOSENESS_ORDER: dict[str, int] = {"high_volume": 0, "low_volume": 1}
 # Серия, на которой держится партиция. Опечатка в имени оставляет выражение
 # синтаксически целым и вечно пустым — матчер по workspace при этом цел, поэтому
 # все проверки покрытия продолжают «видеть» правило.
+# Реестр сверяется НЕ только с alerts.yml, но и с shared/metrics.py: одинаковое
+# переименование здесь и в alerts.yml иначе проходит молча, а экспортёр продолжает
+# публиковать старое имя (см. test_declared_partition_metric_is_actually_exported).
 EXPECTED_PARTITION_METRIC: dict[str, str] = {
     "FrontierNoNewPosts": "frontier_last_post_age_seconds",
     "FrontierNoNewPostsCritical": "frontier_last_post_age_seconds",
 }
+
+# Фабрики prometheus_client, вызов которых объявляет серию в shared/metrics.py.
+_METRIC_FACTORIES: frozenset[str] = frozenset(
+    {"Counter", "Gauge", "Histogram", "Summary", "Info", "Enum"}
+)
+
+# Единицы, которыми правило называет свой порог в тексте («…уже {{ $value }} (>6ч)»).
+# Текст на русском, поэтому и единицы русские; латиница добавлена на случай правки.
+_PROSE_UNIT_SECONDS: dict[str, int] = {
+    "с": 1,
+    "сек": 1,
+    "секунд": 1,
+    "s": 1,
+    "м": 60,
+    "мин": 60,
+    "минут": 60,
+    "m": 60,
+    "ч": 3600,
+    "час": 3600,
+    "часа": 3600,
+    "часов": 3600,
+    "h": 3600,
+    "д": 86400,
+    "сут": 86400,
+    "суток": 86400,
+    "d": 86400,
+}
+# `(>6ч)`, `(>24ч, порог …)`. Хвостовой lookahead не даёт `ч` съесть начало «часов».
+_PROSE_DURATION = re.compile(
+    r">\s*(\d+(?:[.,]\d+)?)\s*("
+    + "|".join(sorted((re.escape(unit) for unit in _PROSE_UNIT_SECONDS), key=len, reverse=True))
+    + r")(?![0-9A-Za-zА-Яа-яЁё])"
+)
 
 # `\bworkspace` не даст зацепить cross_workspace и подобные лейблы: `_` — словесный символ,
 # границы слова перед `workspace` внутри `cross_workspace` нет.
@@ -157,6 +214,7 @@ class AlertRule(NamedTuple):
     expr: str
     for_raw: Any
     summary: Any
+    description: Any
     tier: str | None
     severity: str | None
     labels: tuple[str, ...]
@@ -220,6 +278,39 @@ def _extract_workspace_matchers(expr: str) -> tuple[WorkspaceMatcher, ...]:
     return tuple(found)
 
 
+@lru_cache(maxsize=1)
+def _exported_metric_names() -> frozenset[str]:
+    """
+    Имена серий, реально объявленных в shared/metrics.py.
+
+    Разбор ast'ом, а не импортом: prometheus_client в тест-образе может отсутствовать,
+    а импорт модуля ещё и зарегистрировал бы все метрики в глобальном реестре процесса.
+    """
+    tree = ast.parse(METRICS_MODULE.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        factory = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if factory not in _METRIC_FACTORIES:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            names.add(first.value)
+    return frozenset(names)
+
+
+def _stated_durations_seconds(text: Any) -> tuple[float, ...]:
+    """Длительности, названные в тексте правила словами: `(>6ч)` → (21600.0,)."""
+    if not isinstance(text, str):
+        return ()
+    return tuple(
+        float(amount.replace(",", ".")) * _PROSE_UNIT_SECONDS[unit]
+        for amount, unit in _PROSE_DURATION.findall(text)
+    )
+
+
 def _parse_duration_seconds(raw: Any) -> int | None:
     """Длительность Prometheus (`15m`, `1h30m`) в секундах. None — не разбирается."""
     if not isinstance(raw, str) or not raw:
@@ -261,6 +352,7 @@ def _alert_rules() -> tuple[AlertRule, ...]:
                     expr=expr,
                     for_raw=raw.get("for"),
                     summary=annotations.get("summary"),
+                    description=annotations.get("description"),
                     tier=None if tier is None else str(tier),
                     severity=None if severity is None else str(severity),
                     labels=tuple(str(key) for key in labels),
@@ -348,7 +440,7 @@ def _observed_tiers(workspace: str) -> frozenset[str]:
 
 
 def test_config_files_exist() -> None:
-    for path in (WORKSPACES_YML, ALERTS_YML):
+    for path in (WORKSPACES_YML, ALERTS_YML, METRICS_MODULE):
         assert path.is_file(), f"missing required file: {path}"
 
 
@@ -372,6 +464,10 @@ def test_extraction_is_not_vacuous() -> None:
     )
     tiers = {rule.tier for rule in _partitioning_rules()}
     assert len(tiers) >= 2, f"expected at least two distinct volume tiers, found {tiers}"
+    assert len(_exported_metric_names()) >= 20, (
+        f"shared/metrics.py parsed into {len(_exported_metric_names())} metric names — the "
+        "ast extractor is broken, and the exporter anchor below would pass vacuously"
+    )
 
 
 # ── 3. Валидность alerts.yml и обязательные поля правил ──────────────────────
@@ -393,7 +489,8 @@ def test_alerts_yaml_is_valid_mapping() -> None:
 
 def test_every_rule_has_the_house_required_keys() -> None:
     """
-    alert / expr / for / labels.severity / annotations.summary — ключ И пригодное значение.
+    alert / expr / for / labels.severity / annotations.summary / .description — ключ
+    И пригодное значение.
 
     Пропущенный `for` — алерт стреляет с одного скрейпа; пропущенный `severity` — правило
     не матчится роутом alertmanager и уходит в никуда; пустой `summary` — уведомление
@@ -401,6 +498,10 @@ def test_every_rule_has_the_house_required_keys() -> None:
 
     Присутствия ключа мало: `alert: ""` или `expr: ""` — тоже мёртвое правило, а ключ
     на месте. Поэтому проверяются значения.
+
+    `description` добавлен в 2026-08-03: он не проверялся вообще, хотя именно он уходит
+    дежурному в Telegram, и он же — единственное место, где порог правила записан словами
+    (см. test_partitioning_rule_text_states_the_expression_threshold).
     """
     problems: list[str] = []
     for rule in _alert_rules():
@@ -422,6 +523,13 @@ def test_every_rule_has_the_house_required_keys() -> None:
             problems.append(f"{rule.where}: annotations.summary is missing")
         elif not (isinstance(rule.summary, str) and rule.summary.strip()):
             problems.append(f"{rule.where}: annotations.summary={rule.summary!r} is empty")
+        if "description" not in rule.annotations:
+            problems.append(f"{rule.where}: annotations.description is missing")
+        elif not (isinstance(rule.description, str) and rule.description.strip()):
+            problems.append(
+                f"{rule.where}: annotations.description={rule.description!r} is empty — "
+                "the on-call notification would arrive with a title and nothing else"
+            )
     assert not problems, "alerts.yml rules violate the required shape:\n  " + "\n  ".join(
         problems
     )
@@ -634,6 +742,70 @@ def test_partitioning_rules_alert_on_the_declared_metric() -> None:
     stale = sorted(set(EXPECTED_PARTITION_METRIC) - {name for name, _ in _partition_families()})
     assert not stale, f"EXPECTED_PARTITION_METRIC lists families that no longer exist: {stale}"
     assert not problems, "\n  ".join(["partitioning rules alert on the wrong series:", *problems])
+
+
+def test_declared_partition_metric_is_actually_exported() -> None:
+    """
+    Реестр выше сверял alerts.yml сам с собой через литерал в этом файле — и переименование,
+    сделанное в обоих местах сразу, проходило молча.
+
+    Мутационный прогон 2026-08-03: `frontier_last_post_age_seconds` → `..._second` в alerts.yml
+    И в EXPECTED_PARTITION_METRIC оставляло зелёными все 18 проверок. При этом экспортёр
+    (shared/metrics.py) продолжает публиковать старое имя, серии из выражения не существует,
+    и все четыре порога молчат навсегда — то есть проверялось согласие двух литералов, а не
+    существование метрики.
+
+    Поэтому имя сверяется с объявлением в экспортёре: это состояние ВНЕ этого файла.
+    """
+    exported = _exported_metric_names()
+    unexported = sorted(set(EXPECTED_PARTITION_METRIC.values()) - exported)
+    assert not unexported, (
+        f"alerts.yml partitions on metrics that shared/metrics.py never declares: {unexported}. "
+        "The expression stays syntactically valid and selects nothing, so coverage and "
+        "disjointness still 'agree' while the alerts are permanently silent. Rename the metric "
+        "in the exporter too, or fix the typo."
+    )
+
+
+def test_partitioning_rule_text_states_the_expression_threshold() -> None:
+    """
+    Величина порога, а не только его пропорция.
+
+    Мутационный прогон 2026-08-03: все ЧЕТЫРЕ порога, поделённые на 100 в alerts.yml и в
+    EXPECTED_TIER_THRESHOLD_SECONDS, оставляли зелёными все 18 проверок. Реестр сходится
+    (его поправили тем же движением), «низкообъёмный мягче высокообъёмного» сохранено,
+    эскалация warn→critical сохранена — пропорции целы, а алерт теперь стреляет после
+    3.6 минут тишины по каждому workspace. Ни один assert не смотрел на величину.
+
+    Третья точка отсчёта — текст самого правила: `description` называет порог словами
+    («…уже {{ $value | humanizeDuration }} (>6ч)»). Он приходит дежурному в Telegram,
+    живёт в alerts.yml, а не в тесте, и правится не тем же движением, что число в `expr`.
+    Разошлись число и текст — расходится и то, что дежурный прочитает, с тем, что сработало.
+    """
+    problems: list[str] = []
+    for family, rules in _partition_families():
+        for rule in rules:
+            prose = " ".join(
+                part for part in (rule.description, rule.summary) if isinstance(part, str)
+            )
+            stated = _stated_durations_seconds(prose)
+            if rule.threshold is None:
+                problems.append(f"{rule.where}: threshold is not statically readable from `expr`")
+            elif not stated:
+                problems.append(
+                    f"{family}: {rule.where} never states its threshold in words. Put it in "
+                    "`description` as `(>6ч)` — otherwise the number in `expr` is pinned only "
+                    "by a literal that lives in the test file, and both can be rescaled together."
+                )
+            elif not any(abs(value - rule.threshold) < 1.0 for value in stated):
+                problems.append(
+                    f"{rule.where}: `expr` fires at {rule.threshold} s, but the text promises "
+                    f"{sorted(stated)} s. One of the two was edited alone; the on-call reader "
+                    "and the alert now disagree about what happened."
+                )
+    assert not problems, "\n  ".join(
+        ["rule text and rule expression state different thresholds:", *problems]
+    )
 
 
 def test_partitioning_thresholds_match_the_declared_tiers() -> None:

@@ -444,8 +444,24 @@ groups:
           summary: "SearXNG is returning repeated errors"
           description: "{{ $labels.service }} {{ $labels.mode }} queries saw {{ $value }} SearXNG errors in the last 15 minutes. Check upstream engines and SearXNG availability."
 
+      # Статус успеха в этой серии называется "success" — так его пишет
+      # worker/services/searxng_client.py через note_searxng_request (единственный
+      # производитель метрики). Статуса "ok" не существовало никогда: до
+      # 2026-08-04 здесь стоял именно он, селектор не выбирал ни одной серии,
+      # `пустой вектор == 0` давал пустой вектор, и правило не могло сработать ни
+      # при какой частоте ошибок — при том что severity критический и notify:
+      # telegram. Соответствие имён статусов между клиентом и этим файлом
+      # проверяется в tests/test_searxng_client_honesty.py.
+      #
+      # `unless`, а не `(успехи == 0) and (ошибки >= 5)`: у counter'а
+      # prometheus_client дочерняя серия создаётся только при ПЕРВОМ инкременте с
+      # такими лейблами. Если движки лежат с самого старта процесса (ровно тот
+      # случай, ради которого правило и существует), серии со status="success" для
+      # этой пары (service, mode) не существует, `increase(...)` пуст, и сравнение
+      # `== 0` снова даёт пустой вектор. `unless` вычитает успехи из ошибок и на
+      # отсутствующей серии ведёт себя правильно: вычитать нечего — алерт остаётся.
       - alert: FrontierSearxngNoSuccessfulQueries
-        expr: (sum by (service, mode) (increase(frontier_searxng_requests_total{status="ok"}[30m])) == 0) and (sum by (service, mode) (increase(frontier_searxng_requests_total{status="error"}[30m])) >= 5)
+        expr: (sum by (service, mode) (increase(frontier_searxng_requests_total{status="error"}[30m])) >= 5) unless (sum by (service, mode) (increase(frontier_searxng_requests_total{status="success"}[30m])) > 0)
         for: 10m
         labels:
           severity: warning

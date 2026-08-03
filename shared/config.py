@@ -342,8 +342,30 @@ class Settings(BaseSettings):
     searxng_password: str = Field("", alias="SEARXNG_PASSWORD")
     searxng_timeout_seconds: float = Field(8.0, alias="SEARXNG_TIMEOUT_SECONDS")
     searxng_cache_ttl: int = Field(3600, alias="SEARXNG_CACHE_TTL")
+    # TTL для ПУСТОЙ выдачи — отдельный и намеренно короткий. Пустой ответ почти
+    # всегда значит «набор движков лежит», и кэшировать его на час означает прятать
+    # починку: 03.08.2026 после правки searxng/settings.yml те же темы ещё час
+    # отдавали [] из кэша, и правка выглядела нерабочей. Две минуты хватает, чтобы
+    # не долбить мёртвый апстрим, и не переживает цикл «поправил → перезапустил →
+    # проверил». Плановые прогоны gap-анализа идут кратно реже, им это ничего не стоит.
+    # Объявлено полем, а не читается через getattr: у Settings model_config
+    # extra="ignore", поэтому необъявленный ключ из .env молча выбрасывается — ровно
+    # так searxng_engines_fingerprint оказался константой при любом содержимом .env.
+    searxng_empty_cache_ttl: int = Field(120, alias="SEARXNG_EMPTY_CACHE_TTL")
     searxng_max_results: int = Field(5, alias="SEARXNG_MAX_RESULTS")
     searxng_categories: str = Field("general,news", alias="SEARXNG_CATEGORIES")
+    # Отпечаток набора движков: единственный инвалидатор кэша поиска
+    # (worker/services/searxng_client.py::_cache_key). Сам набор живёт в
+    # searxng/settings.yml, а тот смонтирован ТОЛЬКО в контейнер searxng — вывести
+    # отпечаток из своего окружения клиент не может, поэтому значение объявляет
+    # оператор. Правило эксплуатации: поменял searxng/settings.yml — положи сюда
+    # новое значение (удобнее всего sha256 самого файла), иначе закэшированные
+    # ответы (в том числе пустые) продолжат отдаваться со старым ключом.
+    # Поля не существовало до 2026-08-04, и это был не «пока не добавили»:
+    # model_config стоит на extra="ignore", то есть SEARXNG_ENGINES_FINGERPRINT из
+    # .env отбрасывался ещё ДО того, как клиент пытался его прочесть, и отпечаток
+    # был константной пустой строкой при любом содержимом .env.
+    searxng_engines_fingerprint: str = Field("", alias="SEARXNG_ENGINES_FINGERPRINT")
     missing_signals_enabled: bool = Field(True, alias="MISSING_SIGNALS_ENABLED")
     missing_signals_window_days: int = Field(30, alias="MISSING_SIGNALS_WINDOW_DAYS")
     missing_signals_topic_limit: int = Field(8, alias="MISSING_SIGNALS_TOPIC_LIMIT")

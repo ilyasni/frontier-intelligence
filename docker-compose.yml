@@ -345,6 +345,10 @@ services:
       SEARXNG_MAX_RESULTS: ${SEARXNG_MAX_RESULTS:-5}
       SEARXNG_TIMEOUT_SECONDS: ${SEARXNG_TIMEOUT_SECONDS:-8}
       SEARXNG_CACHE_TTL: ${SEARXNG_CACHE_TTL:-3600}
+      # Инвалидатор кэша поиска: входит в материал ключа _cache_key. Пусто — кэш
+      # не инвалидируется правкой searxng/settings.yml (см. .env.example).
+      SEARXNG_ENGINES_FINGERPRINT: ${SEARXNG_ENGINES_FINGERPRINT:-}
+      SEARXNG_EMPTY_CACHE_TTL: ${SEARXNG_EMPTY_CACHE_TTL:-120}
       MISSING_SIGNALS_ENABLED: ${MISSING_SIGNALS_ENABLED:-true}
       MISSING_SIGNALS_TOPIC_LIMIT: ${MISSING_SIGNALS_TOPIC_LIMIT:-8}
       MISSING_SIGNALS_MIN_GAP_SCORE: ${MISSING_SIGNALS_MIN_GAP_SCORE:-0.33}
@@ -474,6 +478,10 @@ services:
       SEARXNG_MAX_RESULTS: ${SEARXNG_MAX_RESULTS:-5}
       SEARXNG_TIMEOUT_SECONDS: ${SEARXNG_TIMEOUT_SECONDS:-8}
       SEARXNG_CACHE_TTL: ${SEARXNG_CACHE_TTL:-3600}
+      # Инвалидатор кэша поиска: входит в материал ключа _cache_key. Пусто — кэш
+      # не инвалидируется правкой searxng/settings.yml (см. .env.example).
+      SEARXNG_ENGINES_FINGERPRINT: ${SEARXNG_ENGINES_FINGERPRINT:-}
+      SEARXNG_EMPTY_CACHE_TTL: ${SEARXNG_EMPTY_CACHE_TTL:-120}
       NEO4J_URL: bolt://neo4j:7687
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
@@ -593,6 +601,10 @@ services:
       SEARXNG_MAX_RESULTS: ${SEARXNG_MAX_RESULTS:-5}
       SEARXNG_TIMEOUT_SECONDS: ${SEARXNG_TIMEOUT_SECONDS:-8}
       SEARXNG_CACHE_TTL: ${SEARXNG_CACHE_TTL:-3600}
+      # Инвалидатор кэша поиска: входит в материал ключа _cache_key. Пусто — кэш
+      # не инвалидируется правкой searxng/settings.yml (см. .env.example).
+      SEARXNG_ENGINES_FINGERPRINT: ${SEARXNG_ENGINES_FINGERPRINT:-}
+      SEARXNG_EMPTY_CACHE_TTL: ${SEARXNG_EMPTY_CACHE_TTL:-120}
       MISSING_SIGNALS_ENABLED: ${MISSING_SIGNALS_ENABLED:-true}
       MISSING_SIGNALS_TOPIC_LIMIT: ${MISSING_SIGNALS_TOPIC_LIMIT:-8}
       MISSING_SIGNALS_MIN_GAP_SCORE: ${MISSING_SIGNALS_MIN_GAP_SCORE:-0.33}
