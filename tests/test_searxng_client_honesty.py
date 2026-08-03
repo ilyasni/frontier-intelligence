@@ -553,19 +553,64 @@ async def test_empty_ttl_never_outlives_the_full_ttl(monkeypatch: pytest.MonkeyP
     assert rig.redis.setex_calls[0][1] == 100
 
 
-async def test_empty_ttl_falls_back_to_the_module_default_when_setting_is_absent(
-    rig: Rig,
-) -> None:
+def test_empty_ttl_is_a_declared_settings_field() -> None:
     """
-    Поля searxng_empty_cache_ttl может ещё не быть в shared/config.py — клиент
-    обязан работать до того, как его туда добавят (чтение через getattr).
+    Поле обязано существовать в shared/config.py, а не читаться через getattr.
+
+    Здесь раньше стоял тест-близнец, удостоверявший ОБРАТНОЕ: что клиент умеет
+    жить без поля, читая его через `getattr(..., default)`. Он был написан, пока
+    поля действительно не было, и пережил момент, когда оно появилось, — то есть
+    защищал молчаливую деградацию. У Settings `model_config` стоит на
+    `extra="ignore"`: pydantic-settings читает окружение ТОЛЬКО по объявленным
+    полям, а необъявленный ключ отбрасывает без единого слова. Значит
+    `getattr`-с-дефолтом означал бы «SEARXNG_EMPTY_CACHE_TTL из .env не доезжает
+    никогда, а выглядит как настроенный» — ровно так до 2026-08-04 жил
+    searxng_engines_fingerprint.
+
+    Проверяется состояние ВНЕ этого файла: фикстура FakeSettings задаёт атрибут
+    сама и потому увидеть дефект не может в принципе.
     """
+    assert _settings_extra_policy() == "ignore", (
+        "политика extra у Settings изменилась — пересмотри рассуждение ниже: именно "
+        'extra="ignore" делает необъявленное поле невидимым'
+    )
+    aliases = _settings_aliases("searxng_empty_cache_ttl")
+    assert "SEARXNG_EMPTY_CACHE_TTL" in aliases, (
+        "поле searxng_empty_cache_ttl не связано с SEARXNG_EMPTY_CACHE_TTL "
+        f"(найденные алиасы: {list(aliases)}) — переменная из .env не доедет"
+    )
+    assert _settings_default("searxng_empty_cache_ttl") == sx._EMPTY_CACHE_TTL_DEFAULT_SECONDS, (
+        "дефолт поля разошёлся с модульной константой клиента — одна из сторон отстала"
+    )
+
+
+def test_empty_ttl_has_no_silent_default(rig: Rig) -> None:
+    """
+    Пропажа поля обязана падать, а не подставлять число.
+
+    Обратная сторона теста выше: вернут `getattr` с дефолтом — удаление поля
+    перестанет быть заметным. Метод зовём напрямую: запись в кэш обёрнута в
+    `except Exception`, поэтому через search() AttributeError был бы проглочен,
+    и тест бы врал.
+    """
+    source = ast.parse(CLIENT_PY.read_text(encoding="utf-8"))
+    for node in ast.walk(source):
+        if not isinstance(node, ast.FunctionDef) or node.name != "_cache_ttl_for":
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call):
+                name = getattr(inner.func, "id", None) or getattr(inner.func, "attr", None)
+                assert name != "getattr", (
+                    "_cache_ttl_for снова читает настройку через getattr: отсутствие "
+                    "поля в Settings опять станет тихим дефолтом"
+                )
+        break
+    else:  # pragma: no cover - метод не переименовывали
+        raise AssertionError("метод _cache_ttl_for не найден в клиенте")
+
     delattr(rig.settings, "searxng_empty_cache_ttl")
-    rig.respond_with(EMPTY_PAYLOAD)
-
-    await rig.search()
-
-    assert rig.redis.setex_calls[0][1] == sx._EMPTY_CACHE_TTL_DEFAULT_SECONDS
+    with pytest.raises(AttributeError):
+        rig.client._cache_ttl_for([])
 
 
 # ── 3. Метрика различает ноль и не-ноль ──────────────────────────────────────
