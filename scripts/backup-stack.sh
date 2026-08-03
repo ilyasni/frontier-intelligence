@@ -55,8 +55,83 @@ fi
 
 # --- 2. Qdrant (snapshot API по каждой коллекции) ---
 step "qdrant"
-COLLS="$(curl -sS -m 10 "${QDRANT_HDR[@]}" "$QDRANT_URL/collections" \
-         | grep -oE '"name":"[^"]+"' | sed 's/"name":"//; s/"$//')"
+# Бэкапим только «живые» коллекции. Базовая коллекция, вытесненная
+# версионированной (frontier_docs -> frontier_docs__embeddingsgigar__dense_2560,
+# на которую указывает алиас frontier_docs_active), — исторический остаток: в неё
+# не пишут, но её снапшот стоил 641 MB каждую ночь. Вместе с ростом основного
+# снапшота это упирало бакет в квоту, и не доезжал как раз самый важный файл.
+#
+# Правило самоподдерживающееся: пропускаем ТОЛЬКО базу, у которой есть
+# алиасированный потомок с префиксом "<база>__". Коллекцию без алиаса и без
+# потомка бэкапим — молча терять данные хуже, чем потратить место.
+# BACKUP_QDRANT_ALL=1 отключает фильтр вытеснения целиком (на случай полного DR).
+#
+# Отдельно — список исключений QDRANT_BACKUP_EXCLUDE. Он НЕ про место, а про то,
+# что вообще не должно покидать хост. По умолчанию туда попадает личный корпус
+# автора (задача B): коллекция создаётся в init_storage.py безусловно, ещё до
+# решения включать вторую ось, и правило «нет алиаса и нет потомка → бэкапим»
+# аккуратно уносит её в общий S3-бакет. Текста чанков в payload нет, но есть
+# path/heading/project по приватным репозиториям и неопубликованным черновикам
+# плюс сами векторы. Исключение сильнее BACKUP_QDRANT_ALL: полный DR — это про
+# восстановимость стека, а корпус восстанавливается прогоном index_own_corpus.py
+# с машины автора. Отключается только явно: QDRANT_BACKUP_EXCLUDE= (пустое значение).
+# Совпадение по точному имени и по версионированным потомкам "<имя>__...".
+QDRANT_BACKUP_EXCLUDE="${QDRANT_BACKUP_EXCLUDE-${QDRANT_OWN_CORPUS_COLLECTION:-own_corpus}}"
+COLLS_JSON="$(curl -sS -m 10 "${QDRANT_HDR[@]}" "$QDRANT_URL/collections" || true)"
+ALIASES_JSON="$(curl -sS -m 10 "${QDRANT_HDR[@]}" "$QDRANT_URL/aliases" || true)"
+QDRANT_SEL="$(COLLS_JSON="$COLLS_JSON" ALIASES_JSON="$ALIASES_JSON" \
+         QDRANT_BACKUP_EXCLUDE="$QDRANT_BACKUP_EXCLUDE" \
+         BACKUP_QDRANT_ALL="${BACKUP_QDRANT_ALL:-0}" python3 -c '
+import json, os, sys
+
+try:
+    colls = [c["name"] for c in json.loads(os.environ["COLLS_JSON"])["result"]["collections"]]
+    targets = {a["collection_name"] for a in json.loads(os.environ["ALIASES_JSON"])["result"]["aliases"]}
+except Exception:
+    sys.exit(1)
+
+patterns = [p for p in os.environ.get("QDRANT_BACKUP_EXCLUDE", "").replace(",", " ").split() if p]
+
+
+def is_excluded(name):
+    return any(name == p or name.startswith(p + "__") for p in patterns)
+
+
+keep, skipped, excluded = [], [], []
+for name in colls:
+    if is_excluded(name):
+        excluded.append(name)
+    elif os.environ.get("BACKUP_QDRANT_ALL") == "1" or name in targets:
+        keep.append(name)
+    elif any(t.startswith(name + "__") for t in targets):
+        skipped.append(name)
+    else:
+        keep.append(name)
+
+for name in skipped:
+    print("qdrant: пропуск вытесненной коллекции " + name, file=sys.stderr)
+for name in excluded:
+    print("qdrant: исключено из выгрузки (QDRANT_BACKUP_EXCLUDE) " + name, file=sys.stderr)
+print(" ".join(keep))
+print(" ".join(skipped + excluded))
+' || true)"
+# Вторая строка — всё, чей локальный снапшот подлежит удалению из каталога выгрузки:
+# и вытесненные коллекции, и исключённые.
+DEAD_COLLS="$(printf '%s\n' "$QDRANT_SEL" | tail -1)"
+COLLS="$(printf '%s\n' "$QDRANT_SEL" | head -1)"
+
+# Убрать снапшоты вытесненных и исключённых коллекций из каталога выгрузки. Без
+# этого пропуск на шаге снапшота ничего не даёт: backup_s3_upload.py выгружает
+# КАТАЛОГ целиком, поэтому файл, оставшийся от прогона до появления фильтра (или от
+# другого прогона в тот же день — каталог именован по дате), всё равно уезжает
+# в S3. Ровно так 02.08.2026 обратно уехали 611 MiB, только что удалённые.
+for c in $DEAD_COLLS; do
+  if [ -f "$DEST/qdrant_${c}.snapshot" ]; then
+    echo "qdrant: удаляю локальный снапшот qdrant_${c}.snapshot (коллекция не подлежит выгрузке)"
+    rm -f "$DEST/qdrant_${c}.snapshot"
+  fi
+done
+
 if [ -z "$COLLS" ]; then
   mark_fail "qdrant list collections"
 else
