@@ -516,6 +516,25 @@ class EnrichmentTask:
                 """), {"post_id": post_id, "status": status, "qdrant_id": qdrant_id, "error": error})
             await session.commit()
 
+    async def _record_reject_status(self, post_id: str, error: str) -> None:
+        """Best-effort error bookkeeping for the pre-save reject paths.
+
+        Bad-event / unknown-workspace / disabled-source rejections run *before*
+        _save_post, so the posts row does not exist yet and this write trips the
+        indexing_status_post_id_fkey FK violation. That failure must never
+        propagate: _gather_process_bounded swallows it via
+        gather(return_exceptions=True), which would skip the XACK that follows
+        and leave the message pending in the PEL forever (poison message).
+        """
+        try:
+            await self._update_indexing_status(post_id, "error", error=error)
+        except Exception as exc:
+            logger.warning(
+                "reject-path indexing_status write skipped post=%s: %s",
+                post_id[:8],
+                exc,
+            )
+
     async def _get_existing_qdrant_id(self, post_id: str) -> str:
         """Return current qdrant_point_id from indexing_status, or empty string."""
         async with self.Session() as session:
@@ -538,6 +557,8 @@ class EnrichmentTask:
                 STREAM_IN, GROUP, CONSUMER, idle_ms, start_id=start_id, count=50
             )
             if messages:
+                messages = await self._drop_poison_pending(messages)
+            if messages:
                 await self._gather_process_bounded(messages)
                 total += len(messages)
             # XAUTOCLAIM can skip deleted PEL entries and return no messages for
@@ -556,7 +577,80 @@ class EnrichmentTask:
             start_id="0-0",
             count=self.settings.indexing_batch_size,
         )
-        return messages
+        return await self._drop_poison_pending(messages)
+
+    async def _pending_delivery_counts(self, msg_ids: list[str]) -> dict[str, int]:
+        """Map msg_id → real PEL times_delivered for our consumer's pending."""
+        if not msg_ids:
+            return {}
+        try:
+            entries = await self.redis.xpending_range(
+                STREAM_IN, GROUP, "-", "+", count=max(len(msg_ids), 1), consumer=CONSUMER
+            )
+        except Exception as exc:
+            logger.warning("xpending_range failed during poison check: %s", exc)
+            return {}
+        counts: dict[str, int] = {}
+        for entry in entries or []:
+            mid = str(entry.get("message_id") or "")
+            try:
+                counts[mid] = int(entry.get("times_delivered") or 0)
+            except (TypeError, ValueError):
+                counts[mid] = 0
+        return counts
+
+    async def _drop_poison_message(self, msg_id: str, data: dict, delivery_count: int) -> None:
+        """Force-drop a message redelivered past the cap to the DLQ, then ack.
+
+        Backstop for messages that die *before* the guarded retry path (e.g. an
+        unhandled error in the pre-save section): they never bump the app-level
+        retry_count, so only the Redis PEL delivery counter reveals them. Without
+        this they loop in the PEL forever (see the disabled-source FK-violation
+        incident).
+        """
+        sid = str(data.get("source_id") or "")
+        eid = str(data.get("external_id") or "")
+        pid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{sid}:{eid}")) if sid and eid else ""
+        reason = f"poison_max_deliveries:{delivery_count}"
+        try:
+            await self.redis.xadd(
+                self.settings.indexing_dlq_stream,
+                {
+                    "stream": STREAM_IN,
+                    "group": GROUP,
+                    "msg_id": msg_id,
+                    "post_id": pid,
+                    "error": reason,
+                    "delivery_count": str(delivery_count),
+                    "payload": json.dumps(data, ensure_ascii=False),
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to DLQ poison msg %s: %s", msg_id, exc)
+        if pid:
+            await self._record_reject_status(pid, error=reason[:500])
+        await self.redis.xack(STREAM_IN, GROUP, msg_id)
+        logger.error(
+            "Enrichment poison message dropped to DLQ msg_id=%s post=%s delivery_count=%d",
+            msg_id,
+            pid[:8] if pid else "",
+            delivery_count,
+        )
+
+    async def _drop_poison_pending(self, messages: list) -> list:
+        """Return reclaimed messages minus any past the delivery cap (→ DLQ)."""
+        if not messages:
+            return messages
+        cap = max(1, int(self.settings.indexing_max_deliveries or 1))
+        counts = await self._pending_delivery_counts([mid for mid, _ in messages])
+        fresh: list = []
+        for msg_id, data in messages:
+            delivered = counts.get(msg_id, 0)
+            if delivered >= cap:
+                await self._drop_poison_message(msg_id, data, delivered)
+            else:
+                fresh.append((msg_id, data))
+        return fresh
 
     async def _cleanup_dead_consumers(self):
         """Delete consumers that are idle > 1h and have no pending messages."""
@@ -589,7 +683,7 @@ class EnrichmentTask:
             sid, eid = filtered.get("source_id"), filtered.get("external_id")
             if sid and eid:
                 pid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{sid}:{eid}"))
-                await self._update_indexing_status(pid, "error", error=f"bad_event: {exc}"[:500])
+                await self._record_reject_status(pid, error=f"bad_event: {exc}"[:500])
             await self.redis.xack(STREAM_IN, GROUP, msg_id)
             return
 
@@ -597,8 +691,8 @@ class EnrichmentTask:
         if not ws:
             logger.warning("Unknown workspace %s, skipping", event.workspace_id)
             pid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{event.source_id}:{event.external_id}"))
-            await self._update_indexing_status(
-                pid, "error", error=f"unknown_workspace:{event.workspace_id}"[:500],
+            await self._record_reject_status(
+                pid, error=f"unknown_workspace:{event.workspace_id}"[:500],
             )
             await self.redis.xack(STREAM_IN, GROUP, msg_id)
             return
@@ -608,7 +702,7 @@ class EnrichmentTask:
         if validation_error:
             logger.error("Source validation failed, rejecting event %s: %s", msg_id, validation_error)
             pid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{event.source_id}:{event.external_id}"))
-            await self._update_indexing_status(pid, "error", error=validation_error[:500])
+            await self._record_reject_status(pid, error=validation_error[:500])
             await self.redis.xack(STREAM_IN, GROUP, msg_id)
             return
 

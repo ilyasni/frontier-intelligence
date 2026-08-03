@@ -184,6 +184,16 @@ class RedisClient:
                     messages.append((msg_id, data))
         return next_id, messages
 
+    async def xpending_range(
+        self, stream: str, group: str,
+        min_id: str = "-", max_id: str = "+",
+        count: int = 100, consumer: str | None = None,
+    ) -> list[dict]:
+        """Per-message pending detail incl. times_delivered (real PEL counter)."""
+        return await self.redis.xpending_range(
+            stream, group, min=min_id, max=max_id, count=count, consumername=consumer
+        )
+
     async def xpending_summary(self, stream: str, group: str) -> dict:
         """Return XPENDING summary: {pending, min_id, max_id, consumers: {name: count}}."""
         result = await self.redis.xpending(stream, group)

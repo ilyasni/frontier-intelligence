@@ -441,6 +441,14 @@ class Settings(BaseSettings):
     # Одновременных process_event в батче (релевантность+концепты+embed) — меньше 429 от GigaChat
     indexing_max_concurrency: int = Field(1, alias="INDEXING_MAX_CONCURRENCY")
     indexing_max_retries: int = Field(5, alias="INDEXING_MAX_RETRIES")
+    # PEL delivery-count cap for the enrichment reclaim path. Deliberately higher
+    # than indexing_max_retries: the Redis PEL counter also grows on worker
+    # restarts and slow-message reclaims, and a poison message (one that dies
+    # before the guarded retry path and never bumps the app-level retry_count)
+    # is only detectable via this real redelivery counter. Past this many
+    # redeliveries the message is force-dropped to indexing_dlq_stream.
+    indexing_max_deliveries: int = Field(20, alias="INDEXING_MAX_DELIVERIES")
+    indexing_dlq_stream: str = Field("stream:posts:parsed:dlq", alias="INDEXING_DLQ_STREAM")
     indexing_backoff_ms: int = Field(2000, alias="INDEXING_BACKOFF_MS")
     sparse_vectors_enabled: bool = Field(True, alias="SPARSE_VECTORS_ENABLED")
 

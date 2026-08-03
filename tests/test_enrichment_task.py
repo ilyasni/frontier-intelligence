@@ -73,6 +73,76 @@ async def test_dropped_post_clears_graph_status_and_qdrant_id() -> None:
     }
 
 
+async def test_disabled_source_event_is_acked_even_if_status_write_fails() -> None:
+    """Regression: a disabled-source reject runs before _save_post, so the posts
+    row is absent and the indexing_status write hits an FK violation. That must
+    not skip the XACK — otherwise the message loops in the PEL forever."""
+    task = EnrichmentTask.__new__(EnrichmentTask)
+    task.settings = SimpleNamespace(
+        default_relevance_threshold=0.6,
+        indexing_max_retries=5,
+    )
+    task.redis = SimpleNamespace(xack=AsyncMock(), xadd=AsyncMock())
+    task._get_workspace = AsyncMock(return_value={"id": "disruption", "name": "Disruption"})
+    task._get_source = AsyncMock(
+        return_value={"id": "rss-source", "is_enabled": False, "source_type": "rss"}
+    )
+    # Simulate the FK violation on the pre-save reject path.
+    task._update_indexing_status = AsyncMock(side_effect=RuntimeError("fk violation"))
+    task._save_post = AsyncMock()
+    # Real _validate_source_event and _record_reject_status run (not stubbed).
+
+    await task.process_event(
+        "1-0",
+        {
+            "workspace_id": "disruption",
+            "source_id": "rss-source",
+            "external_id": "42",
+            "content": "post from a disabled source",
+            "has_media": False,
+            "media_urls": [],
+            "linked_urls": [],
+        },
+    )
+
+    # Despite the status write raising, the message is acknowledged and never saved.
+    task.redis.xack.assert_awaited_once_with("stream:posts:parsed", "enrichment_workers", "1-0")
+    task._save_post.assert_not_awaited()
+
+
+async def test_reclaim_drops_poison_message_past_delivery_cap() -> None:
+    """Backstop: a message redelivered past indexing_max_deliveries is force-
+    dropped to the DLQ (using the real PEL counter), not reprocessed forever."""
+    task = EnrichmentTask.__new__(EnrichmentTask)
+    task.settings = SimpleNamespace(
+        indexing_max_deliveries=20,
+        indexing_dlq_stream="stream:posts:parsed:dlq",
+    )
+    task.redis = SimpleNamespace(
+        xpending_range=AsyncMock(
+            return_value=[
+                {"message_id": "10-0", "times_delivered": 42},
+                {"message_id": "20-0", "times_delivered": 2},
+            ]
+        ),
+        xadd=AsyncMock(),
+        xack=AsyncMock(),
+    )
+    task._record_reject_status = AsyncMock()
+
+    messages = [
+        ("10-0", {"source_id": "s", "external_id": "poison"}),
+        ("20-0", {"source_id": "s", "external_id": "ok"}),
+    ]
+    fresh = await task._drop_poison_pending(messages)
+
+    # Poison dropped to DLQ + acked; the healthy one is kept for processing.
+    assert [mid for mid, _ in fresh] == ["20-0"]
+    task.redis.xack.assert_awaited_once_with("stream:posts:parsed", "enrichment_workers", "10-0")
+    assert task.redis.xadd.await_args.args[0] == "stream:posts:parsed:dlq"
+    task._record_reject_status.assert_awaited_once()
+
+
 async def test_relevant_post_writes_lang_valence_and_region_to_qdrant() -> None:
     task = EnrichmentTask.__new__(EnrichmentTask)
     task.settings = SimpleNamespace(
@@ -316,14 +386,19 @@ async def test_not_called_relevance_still_drops() -> None:
 
 async def test_startup_reclaim_continues_after_deleted_pel_hole() -> None:
     task = EnrichmentTask.__new__(EnrichmentTask)
-    task.settings = SimpleNamespace(indexing_claim_idle_ms=600_000)
+    task.settings = SimpleNamespace(
+        indexing_claim_idle_ms=600_000,
+        indexing_max_deliveries=20,
+        indexing_dlq_stream="stream:posts:parsed:dlq",
+    )
     task.redis = SimpleNamespace(
         xautoclaim=AsyncMock(
             side_effect=[
                 ("1700000000000-0", []),
                 ("0-0", [("3-0", {"source_id": "rss-source", "external_id": "99"})]),
             ]
-        )
+        ),
+        xpending_range=AsyncMock(return_value=[]),
     )
     task._gather_process_bounded = AsyncMock()
 
