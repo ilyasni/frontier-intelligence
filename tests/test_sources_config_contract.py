@@ -20,6 +20,8 @@
     `StructuredSource.fetch`. `TelegramSource` наследуется от `AbstractSource` и пишет свой
     `fetch()` сам, мимо этого пути. Записанный, но не работающий фильтр хуже отсутствующего:
     следующий читатель уверен, что поток отфильтрован, и отсекает только LLM ниже по трубе.
+    2026-08-03 девять таких блоков удалены из config/sources.yml, реестр опустошён,
+    проверка стала жёсткой: ни один telegram-источник не имеет права нести `filters`.
 
 (b) Источник со ссылкой на несуществующий workspace бутстрапится «в никуда»: строка в
     `sources` появится, а качать он будет в пространство, которого нет ни в одном отчёте.
@@ -66,29 +68,26 @@ ALL_SOURCE_FILES = (
     SOURCE_DEFINITIONS_PY,
 )
 
-# ── Реестр известного дефекта (a) ────────────────────────────────────────────
-# Девять telegram-источников, у которых блок filters УЖЕ записан и УЖЕ не работает.
-# Четыре из них включены и качают прямо сейчас: tg_ru_nami_russia, tg_ru_yandex_auto,
+# ── Реестр дефекта (a): ПУСТ с 2026-08-03 ────────────────────────────────────
+# Было девять telegram-источников, у которых блок filters записан и не работает.
+# Четыре из них качали прямо в тот момент: tg_ru_nami_russia, tg_ru_yandex_auto,
 # tg_ru_sber_auto, tg_ru_rbc_auto — их include/exclude_keywords и lang_allow не
-# применяются ни разу. Реестр существует не чтобы узаконить это, а чтобы:
-#   * НОВЫЙ telegram-источник с filters стал красным (test_no_new_telegram_source_...);
-#   * реестр не сгнил — вычистили блок, но забыли строку здесь, тоже красное
-#     (test_telegram_dead_filters_ledger_is_current).
-# Правильная починка — удалить блоки из YAML (или научить TelegramSource фильтровать,
-# тогда красным станет test_telegram_filters_are_still_dead и реестр надо снести целиком).
-TELEGRAM_DEAD_FILTERS_LEDGER: frozenset[str] = frozenset(
-    {
-        "tg_ru_autoruonline",
-        "tg_ru_autostatis",
-        "tg_ru_russianev",
-        "tg_ru_avtovaz_official",
-        "tg_ru_nami_russia",
-        "tg_ru_yandex_auto",
-        "tg_ru_sber_auto",
-        "tg_ru_izvestia_auto",
-        "tg_ru_rbc_auto",
-    }
-)
+# применялись ни разу. Что именно было заявлено и никогда не выполнялось:
+#   tg_ru_autoruonline     lang_allow: [ru]
+#   tg_ru_autostatis       lang_allow: [ru]
+#   tg_ru_russianev        lang_allow: [ru] + include EV-темы + exclude развлекательного
+#   tg_ru_avtovaz_official lang_allow: [ru] + include АвтоВАЗ/производство + exclude конкурсов
+#   tg_ru_nami_russia      lang_allow: [ru] + include стандарты/сертификация + exclude музея
+#   tg_ru_yandex_auto      lang_allow: [ru] + include навигация/мультимедиа + exclude такси
+#   tg_ru_sber_auto        lang_allow: [ru] + include рынок/кредит/лизинг + exclude lifestyle
+#   tg_ru_izvestia_auto    lang_allow: [ru] + include рынок/закон + exclude криминала
+#   tg_ru_rbc_auto         lang_allow: [ru] + include рынок/regulation + exclude пробок
+# Ни одна из этих отсечек не существовала: поток шёл целиком, фильтровал только LLM.
+#
+# Блоки удалены из config/sources.yml, реестр опустошён, проверка ниже стала жёсткой —
+# allowlist'а больше нет. Константа оставлена пустой как ловушка на рецидив:
+# test_telegram_dead_filters_ledger_stays_empty не даст завести реестр заново молча.
+TELEGRAM_DEAD_FILTERS_LEDGER: frozenset[str] = frozenset()
 
 # ── Ожидаемое состояние батча auto_* (задача 6) ──────────────────────────────
 # Значения сверены с файлом 2026-08-03.
@@ -407,29 +406,36 @@ def test_telegram_filters_are_still_dead() -> None:
     )
 
 
-def test_no_new_telegram_source_carries_a_filters_block() -> None:
+def test_no_telegram_source_carries_a_filters_block() -> None:
     """
-    Главный сторож (a): новый telegram-источник с блоком filters — красное.
+    Главный сторож (a), жёсткий с 2026-08-03: НИ ОДИН telegram-источник не несёт filters.
 
-    Блок не применяется никогда, но в конфиге читается как «поток отфильтрован».
+    Никакого allowlist'а: блок не применяется никогда, но в конфиге читается как «поток
+    отфильтрован». Девять исторических блоков удалены; если строка появится снова —
+    здесь красное, независимо от того, новый это источник или вернули старый.
     """
     block, _ = _filters_contract()
-    offenders = _telegram_ids_with_filters()
-    new_offenders = sorted(offenders - TELEGRAM_DEAD_FILTERS_LEDGER)
-    assert not new_offenders, (
-        f"у telegram-источников появился блок {block!r}, который никогда не применится "
+    offenders = sorted(_telegram_ids_with_filters())
+    assert not offenders, (
+        f"у telegram-источников есть блок {block!r}, который никогда не применится "
         f"(matches_filters живёт в StructuredSource, TelegramSource туда не заходит): "
-        f"{new_offenders}. Убери блок — отсекать всё равно будет только LLM ниже по трубе."
+        f"{offenders}. Убери блок — отсекать всё равно будет только LLM ниже по трубе. "
+        "Нужна настоящая фильтрация телеграма — учи фильтровать TelegramSource, "
+        "тогда покраснеет test_telegram_filters_are_still_dead и этот тест надо будет снять."
     )
 
 
-def test_telegram_dead_filters_ledger_is_current() -> None:
-    """Реестр не должен гнить: вычистили блок — вычисти и строку в реестре."""
-    offenders = _telegram_ids_with_filters()
-    stale = sorted(TELEGRAM_DEAD_FILTERS_LEDGER - offenders)
-    assert not stale, (
-        f"в TELEGRAM_DEAD_FILTERS_LEDGER остались id, у которых блока filters больше нет: "
-        f"{stale}. Удали их из реестра — иначе он перестанет описывать реальность."
+def test_telegram_dead_filters_ledger_stays_empty() -> None:
+    """Ловушка на рецидив: реестр исключений нельзя завести заново, не удалив этот тест.
+
+    Пока константа пуста, `test_no_telegram_source_carries_a_filters_block` жёсткий.
+    Стоит вписать туда id — и проверка выше снова станет мягкой; тест не даст сделать
+    это молча.
+    """
+    assert TELEGRAM_DEAD_FILTERS_LEDGER == frozenset(), (
+        "TELEGRAM_DEAD_FILTERS_LEDGER снова не пуст. Мёртвый filters у telegram чинится "
+        "удалением блока из config/sources.yml, а не строкой в реестре: "
+        f"{sorted(TELEGRAM_DEAD_FILTERS_LEDGER)}"
     )
 
 

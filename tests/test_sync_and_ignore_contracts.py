@@ -318,48 +318,162 @@ def test_rsync_treats_bang_line_as_a_silent_no_op() -> None:
     assert rule is not None and rule.pattern == "*.txt", _describe(rule)
 
 
-# ── .rsync-exclude: что обязано не уезжать и не приезжать ────────────────────
+# ── Ожидания: ОДИН список на оба файла ───────────────────────────────────────
+#
+# Ревизия 2026-08-03. До неё сторона .gitignore была строго короче стороны rsync
+# (6 путей «закрыть» против 10 и 2 «сохранить» против 5), и дыра пряталась ровно
+# в этой разнице: удаление строки `!.env.balanced.example` из .gitignore не роняло
+# ни одного из 34 тестов — шаблон просто тихо переставал отслеживаться. Тем же
+# способом, каким тихо не отслеживался `searxng/settings.yml.bak-*` до инцидента (b).
+#
+# Поэтому ожидание теперь ОДНО на оба файла: разъехаться нечему, списка два, а не
+# четыре. Каждый секрет проверяется в обоих файлах, каждый шаблон — тоже в обоих.
+# Асимметрия допускается только явная, через DELIBERATE_ASYMMETRY ниже.
 
-RSYNC_MUST_EXCLUDE: tuple[str, ...] = (
+CLOSED_IN_BOTH: tuple[str, ...] = (
+    # Секреты окружения.
     ".env",
-    "sessions/anything.session",
+    ".env.production",
+    # Telethon-сессии = доступ к аккаунту без пароля.
+    "sessions/prod.session",
+    "telethon.session",
+    # Ключевой материал.
     "private.key",
     "x.pem",
+    "id_rsa",
+    # Инциденты (a) и (b): боевой secret_key и ручные снапшоты того же файла.
     "searxng/settings.yml",
-    # Инцидент (a): ручной снапшот с тем же живым secret_key.
-    "searxng/settings.yml.bak-20260803",
+    "searxng/settings.yml.bak",
+    "searxng/settings.yml.bak-before-engines-20260803",
+    # Состояние, писанное на сервере: локально его нет, --delete стёр бы историю,
+    # а `git add .` затащил бы root-owned мусор в индекс.
     "backups/x",
     "runtime/x",
-    # Серверные артефакты: их локально нет, --delete снёс бы историю.
     "docs/ops/alert-digests/2026-08-01.md",
     "prometheus/textfile/x.prom",
+    # Данные docker-томов (в отличие от схемы и миграций рядом — см. KEPT_IN_BOTH).
+    "storage/postgres/data/base/1",
+    "prometheus/data/chunks_head/000001",
 )
 
-RSYNC_MUST_KEEP: tuple[str, ...] = (
+KEPT_IN_BOTH: tuple[str, ...] = (
+    # Шаблоны секретных файлов: если они перестают доезжать или отслеживаться,
+    # разворачивать стек не из чего, а заметно это только при развёртывании.
     ".env.example",
     ".env.balanced.example",
     "searxng/settings.example.yml",
+    # Конфиги, которыми стек описан.
     "docker-compose.yml",
+    "prometheus/alerts.yml",
+    "config/workspaces.yml",
+    "config/sources.yml",
+    # Схема рядом с исключёнными данными тома — та самая граница, ради которой в
+    # обоих файлах стоят точечные `storage/**/data/`, а не `storage/`.
+    "storage/postgres/init.sql",
     "shared/config.py",
 )
 
+# Единственные допустимые расхождения между файлами. Всё, что не здесь, обязано
+# вести себя одинаково; всё, что здесь, — объяснено и зафиксировано.
+DELIBERATE_ASYMMETRY: tuple[tuple[str, bool, bool, str], ...] = (
+    (
+        "tmp/.gitkeep",
+        True,
+        False,
+        "заглушка каталога: git обязан её отслеживать (`tmp/*` плюс `!tmp/.gitkeep`), "
+        "иначе tmp/ не создастся при клоне; rsync каталог tmp/ не возит целиком, "
+        "и возить пустышку незачем",
+    ),
+    (
+        ".git/config",
+        True,
+        False,
+        "git живёт ТОЛЬКО на сервере: без `.git/` в .rsync-exclude push с рабочей "
+        "станции затирал бы серверный чекаут вместе с историей. У .gitignore аналога "
+        "нет и быть не может — git не индексирует собственный служебный каталог",
+    ),
+)
 
-@pytest.mark.parametrize("path", RSYNC_MUST_EXCLUDE)
-def test_rsync_exclude_covers_secrets_and_server_only_paths(path: str) -> None:
-    excluded, rule = _is_excluded(path)
-    assert excluded, (
-        f"{path!r} is NOT excluded by .rsync-exclude: a --delete push would carry it "
-        f"across (or wipe the server copy). Decision: {_describe(rule)}"
+
+@pytest.mark.parametrize("path", CLOSED_IN_BOTH)
+def test_path_is_closed_in_both_files(path: str) -> None:
+    """
+    Дыра была одна и та же в двух файлах — значит и проверять надо парой.
+
+    Закрыть только .gitignore недостаточно: `sync-push --delete` утаскивает файл
+    мимо git вообще. Закрыть только .rsync-exclude недостаточно: `git add .`
+    коммитит его мимо rsync.
+    """
+    excluded, rsync_rule = _is_excluded(path)
+    ignored, git_rule = _is_ignored(path)
+    holes: list[str] = []
+    if not excluded:
+        holes.append(
+            f".rsync-exclude does not exclude it ({_describe(rsync_rule)}) — a --delete "
+            "push would carry it across, or wipe the server copy"
+        )
+    if not ignored:
+        holes.append(
+            f".gitignore does not ignore it ({_describe(git_rule)}) — 'git add .' would "
+            "commit it"
+        )
+    assert not holes, f"path {path!r} must be closed in both files: " + "; ".join(holes)
+
+
+@pytest.mark.parametrize("path", KEPT_IN_BOTH)
+def test_path_survives_in_both_files(path: str) -> None:
+    """
+    Зеркало предыдущего теста — та половина, которой не было.
+
+    Потерять файл можно двумя способами, и оба молчаливые: он перестаёт доезжать
+    до сервера (rsync) или перестаёт отслеживаться (git). Второй хуже: локально
+    файл на месте, в репозитории его нет, и узнаётся это на чистом клоне.
+    """
+    excluded, rsync_rule = _is_excluded(path)
+    ignored, git_rule = _is_ignored(path)
+    losses: list[str] = []
+    if excluded:
+        losses.append(f".rsync-exclude excludes it ({_describe(rsync_rule)}) — it never syncs")
+    if ignored:
+        losses.append(f".gitignore ignores it ({_describe(git_rule)}) — it is not tracked")
+    assert not losses, f"path {path!r} must survive in both files: " + "; ".join(losses)
+
+
+def test_kept_paths_name_files_that_actually_exist() -> None:
+    """
+    KEPT_IN_BOTH обязан сторожить реальные файлы, а не призраки.
+
+    Список выше — единственное место, где сказано «этот файл терять нельзя». Если
+    файл переименовали, а строку не поправили, тест `test_path_survives_in_both_files`
+    останется зелёным на несуществующем пути: ни один фильтр не исключает то, чего нет.
+    Здесь проверка смотрит в рабочее дерево, а не в свой же литерал.
+    """
+    missing = [path for path in KEPT_IN_BOTH if not (REPO_ROOT / path).exists()]
+    assert not missing, (
+        f"KEPT_IN_BOTH guards paths that do not exist in the working tree: {missing}. "
+        "Either the file was renamed (update the list AND both ignore files) or it was "
+        "deleted (drop the line) — until then the guard watches nothing."
     )
 
 
-@pytest.mark.parametrize("path", RSYNC_MUST_KEEP)
-def test_rsync_exclude_keeps_repository_files(path: str) -> None:
-    excluded, rule = _is_excluded(path)
-    assert not excluded, (
-        f"{path!r} IS excluded by .rsync-exclude but must be synced. "
-        f"Excluded by {_describe(rule)}"
+@pytest.mark.parametrize(("path", "rsync_blocks", "git_blocks", "why"), DELIBERATE_ASYMMETRY)
+def test_documented_asymmetries_still_hold(
+    path: str, rsync_blocks: bool, git_blocks: bool, why: str
+) -> None:
+    """Расхождение между файлами допустимо только объяснённое — и оно тоже фиксируется."""
+    excluded, rsync_rule = _is_excluded(path)
+    ignored, git_rule = _is_ignored(path)
+    assert excluded is rsync_blocks, (
+        f"{path!r}: .rsync-exclude {'must' if rsync_blocks else 'must NOT'} exclude it "
+        f"({why}). Decision: {_describe(rsync_rule)}"
     )
+    assert ignored is git_blocks, (
+        f"{path!r}: .gitignore {'must' if git_blocks else 'must NOT'} ignore it "
+        f"({why}). Decision: {_describe(git_rule)}"
+    )
+
+
+# ── .rsync-exclude: инварианты, у которых нет git-двойника ───────────────────
 
 
 def test_rsync_exclude_has_no_bang_lines() -> None:
@@ -411,67 +525,27 @@ def test_rsync_plus_rules_are_placed_above_the_rules_they_override() -> None:
     assert not dead, "misplaced '+ ' rules in .rsync-exclude: " + "; ".join(dead)
 
 
-# ── .gitignore: что обязано не попасть в историю ─────────────────────────────
-
-GIT_MUST_IGNORE: tuple[str, ...] = (
-    ".env",
-    "searxng/settings.yml",
-    # Инцидент (b): точный путь выше снапшот не закрывал, secret_key тот же.
-    "searxng/settings.yml.bak-before-engines-20260803",
-    "sessions/x.session",
-    "backups/x",
-    "runtime/x",
-)
-
-GIT_MUST_KEEP: tuple[str, ...] = (
-    ".env.example",
-    "searxng/settings.example.yml",
-)
-
-
-@pytest.mark.parametrize("path", GIT_MUST_IGNORE)
-def test_gitignore_covers_secrets(path: str) -> None:
-    ignored, rule = _is_ignored(path)
-    assert ignored, (
-        f"{path!r} is NOT ignored by .gitignore: 'git add .' would commit it. "
-        f"Decision: {_describe(rule)}"
-    )
-
-
-@pytest.mark.parametrize("path", GIT_MUST_KEEP)
-def test_gitignore_keeps_examples_tracked(path: str) -> None:
-    ignored, rule = _is_ignored(path)
-    assert not ignored, (
-        f"{path!r} IS ignored by .gitignore but must stay tracked "
-        f"(it is the template for the secret file). Ignored by {_describe(rule)}"
-    )
-
-
-# ── Оба файла сразу ──────────────────────────────────────────────────────────
-
-SECRET_BEARING_PATHS: tuple[str, ...] = (
-    ".env",
-    "searxng/settings.yml",
-    "searxng/settings.yml.bak-before-engines-20260803",
-    "searxng/settings.yml.bak",
-    "sessions/prod.session",
-)
-
-
-@pytest.mark.parametrize("path", SECRET_BEARING_PATHS)
-def test_secret_paths_are_closed_in_both_files(path: str) -> None:
+def test_gitignore_negations_are_not_buried_under_an_excluded_parent() -> None:
     """
-    Дыра была одна и та же в двух файлах — значит и проверять надо парой.
+    Git-двойник предыдущей проверки: `!`-правило, чей РОДИТЕЛЬСКИЙ каталог исключён
+    целиком, мертво — git внутрь такого каталога просто не спускается, и файл
+    остаётся неотслеживаемым, хотя строка о возврате в файле стоит.
 
-    Закрыть только .gitignore недостаточно: `sync-push --delete` утаскивает файл
-    мимо git вообще. Закрыть только .rsync-exclude недостаточно: `git add .`
-    коммитит его мимо rsync.
+    Как и в rsync-варианте, проверяется не порядок строк, а результат: каждый
+    литеральный путь из `!`-правила действительно отслеживается.
     """
-    excluded, rsync_rule = _is_excluded(path)
-    ignored, git_rule = _is_ignored(path)
-    holes: list[str] = []
-    if not excluded:
-        holes.append(f".rsync-exclude does not exclude it ({_describe(rsync_rule)})")
-    if not ignored:
-        holes.append(f".gitignore does not ignore it ({_describe(git_rule)})")
-    assert not holes, f"secret-bearing path {path!r}: " + "; ".join(holes)
+    literal_negations = [
+        rule
+        for rule in _gitignore_rules()
+        if rule.reinclude and not set(rule.pattern) & set("*?[")
+    ]
+    assert literal_negations, "no literal '!' rules found — the check would be vacuous"
+    dead: list[str] = []
+    for rule in literal_negations:
+        ignored, decider = _is_ignored(rule.pattern)
+        if ignored:
+            dead.append(
+                f"'!{rule.pattern}' (line {rule.lineno}) is dead — still ignored by "
+                f"{_describe(decider)}"
+            )
+    assert not dead, "dead '!' rules in .gitignore: " + "; ".join(dead)

@@ -1,6 +1,10 @@
 """
 Контракт schedule_cron: строка обязана означать то, что в ней написано.
 
+Долг закрыт 2026-08-03: врущих строк в config/sources.yml НЕТ, контракт жёсткий,
+списка исключений больше не существует (см. KNOWN_LYING_CRON_BY_SOURCE_ID ниже —
+он оставлен пустым как ловушка на попытку завести waiver заново).
+
 Что было измерено 2026-08-03.
 
 `ingest/scheduler.py:cron_to_minutes` не разбирает cron сам: он скармливает строку
@@ -55,161 +59,34 @@ SCHEDULER_PY = REPO_ROOT / "ingest" / "scheduler.py"
 MINUTES_PER_DAY = 1440
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Долг: записи config/sources.yml, чей schedule_cron СЕЙЧАС врёт.
+# Долг закрыт 2026-08-03. Таблица ниже пуста и обязана оставаться пустой.
 #
-# 123 источника из 168. Разбивка по строкам:
+# Было: 123 записи config/sources.yml из 168, чей schedule_cron означал не то, что
+# в нём написано. Разбивка на момент фиксации:
 #   '*/120 * * * *' — 38 шт., реально 60 (в 2 раза чаще заявленного)
 #   '*/180 * * * *' — 38 шт., реально 60 (в 3 раза)
 #   '*/360 * * * *' — 28 шт., реально 60 (в 6 раз)
 #   '*/90  * * * *' —  8 шт., реально 60
 #   '*/240 * * * *' —  7 шт., реально 60 (в 4 раза)
-#   '*/45  * * * *' —  4 шт., реально 45 ИЛИ 15 — как повезёт при старте
+#   '*/45  * * * *' —  4 шт., реально 45 ИЛИ 15 — как повезёт при старте ingest
 #
-# Долг записан ПАРАМИ id → schedule_cron, а не голыми id, и это принципиально.
-# Голый id работал бы как бессрочная индульгенция на любое расписание этого
-# источника: `*/120` (2x пере-опрос) можно было бы переписать в `*/45`
-# (нондетерминированные 15-или-45 минут, худший режим из описанных в шапке) или
-# в `*/360` (6x), и тест бы этого не увидел — id-то в списке. Зафиксирована
-# ровно та строка, которая врала 2026-08-03; любая её правка снимает waiver
-# и требует решения: либо чинишь, либо перезаписываешь пару осознанно.
+# Стало: все 123 переписаны на поле часов ('<m> */2|*/3|*/4|*/6 * * *'). Правило
+# пересчёта — ближайший выразимый интервал, при ничьей БОЛЬШИЙ (реже опрашиваем):
+# 120/180/240/360 выразимы точно, 90 → 120, 45 → 60. Тай-брейк выбран так, чтобы
+# ни один источник не стал опрашиваться ЧАЩЕ, чем до правки. Полный текст правила —
+# в шапке config/sources.yml.
 #
-# Список — не разрешение, а фиксация состояния на 2026-08-03. Он держит тест
-# зелёным сегодня и краснеет во все три стороны: добавили новую врущую строку —
-# тест падает; починили старую и не убрали id — падает; поменяли расписание
-# уже задолжавшего источника — падает.
-# Чинить пачками, вычёркивая отсюда. Правило пересчёта — в шапке батча
-# batch:auto_hmi в config/sources.yml: ближайший выразимый, ничья вверх
-# (75 → 60, 90 → 120, 120 → 120, 180 → 180, 240 → 180, 360 → 360, 45 → 30).
+# Почему словарь оставлен, а не удалён. Пустая таблица + жёсткий
+# `test_the_debt_list_stays_empty` — это ловушка на рецидив: вернуть механику waiver'ов
+# нельзя, не удалив явный тест. Просто выкинуть константу было бы слабее: следующий
+# автор завёл бы свой allowlist «на пару записей», и контракт снова стал бы мягким.
 #
-# `*/60 * * * *` (25 записей) в списке НЕТ намеренно: шаг тоже схлопывается в
-# минуту 0, но результат — 60 — совпадает с заявленным, строка не врёт.
+# `*/60 * * * *` в долге не было намеренно: шаг тоже схлопывается в минуту 0, но
+# результат — 60 — совпадает с заявленным, строка не врала. Такие записи получили
+# только фазовый офсет ('<m> * * * *'), частота не изменилась.
 # Проверка этого совпадения — test_step_of_exactly_60_collapses_but_does_not_lie.
 # ─────────────────────────────────────────────────────────────────────────────
-KNOWN_LYING_CRON_BY_SOURCE_ID: dict[str, str] = {
-    "ai_api_hn_topstories": "*/45 * * * *",
-    "ai_products_api_hn_topstories": "*/45 * * * *",
-    "ai_products_rss_algo_bridge": "*/360 * * * *",
-    "ai_products_rss_dtf": "*/120 * * * *",
-    "ai_products_rss_habr_ai_hub": "*/90 * * * *",
-    "ai_products_rss_hf_blog": "*/180 * * * *",
-    "ai_products_rss_latent_space": "*/180 * * * *",
-    "ai_products_rss_nvidia_dl": "*/180 * * * *",
-    "ai_products_rss_openai": "*/120 * * * *",
-    "ai_products_rss_simonwillison": "*/120 * * * *",
-    "ai_products_rss_verge_ai": "*/120 * * * *",
-    "ai_products_tg_addmeto": "*/180 * * * *",
-    "ai_products_tg_aihappens": "*/180 * * * *",
-    "ai_products_tg_cgevent": "*/120 * * * *",
-    "ai_products_tg_hiaimedia": "*/120 * * * *",
-    "ai_products_tg_llm_under_hood": "*/180 * * * *",
-    "ai_products_tg_techsparks": "*/120 * * * *",
-    "ai_products_web_anthropic_eng": "*/360 * * * *",
-    "ai_research_rss_ahead_of_ai": "*/360 * * * *",
-    "ai_research_rss_arxiv_cs_ai": "*/180 * * * *",
-    "ai_research_rss_arxiv_cs_cl": "*/180 * * * *",
-    "ai_research_rss_arxiv_cs_lg": "*/180 * * * *",
-    "ai_research_rss_arxiv_cs_ma": "*/180 * * * *",
-    "ai_research_rss_arxiv_cs_se": "*/180 * * * *",
-    "ai_research_rss_arxiv_stat_ml": "*/180 * * * *",
-    "ai_research_rss_bair": "*/360 * * * *",
-    "ai_research_rss_deepmind": "*/180 * * * *",
-    "ai_research_rss_eugene_yan": "*/360 * * * *",
-    "ai_research_rss_google_research": "*/180 * * * *",
-    "ai_research_rss_hamel": "*/360 * * * *",
-    "ai_research_rss_hf_blog": "*/180 * * * *",
-    "ai_research_rss_interconnects": "*/360 * * * *",
-    "ai_research_rss_mistral": "*/180 * * * *",
-    "ai_research_rss_mit_tech_review": "*/90 * * * *",
-    "ai_research_rss_msr": "*/180 * * * *",
-    "ai_research_rss_the_gradient": "*/360 * * * *",
-    "ai_research_tg_abstractdl": "*/180 * * * *",
-    "ai_research_tg_ai_newz": "*/120 * * * *",
-    "ai_research_tg_boris_again": "*/180 * * * *",
-    "ai_research_tg_cryptovalerii": "*/180 * * * *",
-    "ai_research_web_anthropic_news": "*/240 * * * *",
-    "ai_research_web_anthropic_research": "*/360 * * * *",
-    "ai_research_web_cohere": "*/360 * * * *",
-    "ai_research_web_meta_ai": "*/360 * * * *",
-    "ai_rss_ainews_smol": "*/120 * * * *",
-    "ai_rss_arxiv_cs_ai": "*/180 * * * *",
-    "ai_rss_arxiv_cs_cl": "*/180 * * * *",
-    "ai_rss_arxiv_cs_cv": "*/180 * * * *",
-    "ai_rss_arxiv_cs_lg": "*/180 * * * *",
-    "ai_rss_habr_ai_hub": "*/90 * * * *",
-    "ai_rss_hf_blog": "*/180 * * * *",
-    "ai_rss_import_ai": "*/360 * * * *",
-    "ai_rss_mit_tech_review": "*/90 * * * *",
-    "ai_rss_mit_tr_ai": "*/180 * * * *",
-    "ai_rss_oreilly_radar": "*/180 * * * *",
-    "ai_rss_venturebeat_ai": "*/120 * * * *",
-    "design_rss_alistapart": "*/360 * * * *",
-    "design_rss_arxiv_cs_hc": "*/180 * * * *",
-    "design_rss_csstricks": "*/240 * * * *",
-    "design_rss_habr_design_articles": "*/90 * * * *",
-    "design_rss_insideevs_design": "*/120 * * * *",
-    "design_rss_insideevs_ux": "*/120 * * * *",
-    "design_rss_intercom": "*/240 * * * *",
-    "design_rss_ixdf": "*/360 * * * *",
-    "design_rss_jvetrau": "*/360 * * * *",
-    "design_rss_medium_design": "*/90 * * * *",
-    "design_rss_nng": "*/360 * * * *",
-    "design_rss_prototypr": "*/360 * * * *",
-    "design_rss_smashing": "*/240 * * * *",
-    "design_rss_uxcollective": "*/180 * * * *",
-    "design_rss_uxmatters": "*/360 * * * *",
-    "design_rss_uxmovement": "*/360 * * * *",
-    "design_rss_uxweekly": "*/360 * * * *",
-    "design_tg_cx_lab": "*/180 * * * *",
-    "design_tg_designprosmotr": "*/120 * * * *",
-    "design_tg_poyasnizaux": "*/120 * * * *",
-    "design_tg_uxhorn": "*/120 * * * *",
-    "design_tg_uxnotes": "*/120 * * * *",
-    "design_tg_uxread": "*/180 * * * *",
-    "design_web_contentsquare": "*/360 * * * *",
-    "design_web_uxfeedback": "*/360 * * * *",
-    "rss_aeon": "*/360 * * * *",
-    "rss_arxiv_cs_ai": "*/120 * * * *",
-    "rss_arxiv_cs_cl": "*/120 * * * *",
-    "rss_arxiv_cs_cv": "*/120 * * * *",
-    "rss_arxiv_cs_hc": "*/120 * * * *",
-    "rss_arxiv_cs_lg": "*/120 * * * *",
-    "rss_arxiv_cs_ro": "*/120 * * * *",
-    "rss_asterisk": "*/360 * * * *",
-    "rss_benedict_evans": "*/360 * * * *",
-    "rss_bosfera": "*/120 * * * *",
-    "rss_frankmedia": "*/120 * * * *",
-    "rss_ieee_robotics": "*/180 * * * *",
-    "rss_lennys": "*/360 * * * *",
-    "rss_noema": "*/360 * * * *",
-    "rss_rbru": "*/120 * * * *",
-    "rss_robot_report": "*/180 * * * *",
-    "rss_ru_drom_export": "*/45 * * * *",
-    "rss_sifted": "*/120 * * * *",
-    "rss_smashingmagazine": "*/120 * * * *",
-    "rss_stratechery": "*/360 * * * *",
-    "rss_sysblok": "*/240 * * * *",
-    "tg_autopotoknews": "*/120 * * * *",
-    "tg_dronesrussia": "*/180 * * * *",
-    "tg_epicgrowth": "*/120 * * * *",
-    "tg_evforum": "*/120 * * * *",
-    "tg_fintexno": "*/120 * * * *",
-    "tg_ru_autostatis": "*/45 * * * *",
-    "tg_zr_ru": "*/120 * * * *",
-    "web_automotiveworld_sdv": "*/180 * * * *",
-    "web_baymard_blog": "*/180 * * * *",
-    "web_bosch_software_driven_mobility": "*/120 * * * *",
-    "web_ieee_spectrum_autonomous": "*/120 * * * *",
-    "web_mobilityhouse_newsroom": "*/120 * * * *",
-    "web_nngroup_articles": "*/180 * * * *",
-    "web_notateslaapp_updates": "*/120 * * * *",
-    "web_nvidia_autonomous_vehicles": "*/120 * * * *",
-    "web_plusworld": "*/240 * * * *",
-    "web_ru_autonews_rbc": "*/90 * * * *",
-    "web_ru_kolesa_news": "*/90 * * * *",
-    "web_smartcitiesdive_transportation": "*/180 * * * *",
-    "web_uitp_news_views": "*/240 * * * *",
-    "web_ux_journal": "*/120 * * * *",
-}
+KNOWN_LYING_CRON_BY_SOURCE_ID: dict[str, str] = {}
 
 
 class CronNotExpressible(ValueError):
@@ -526,68 +403,102 @@ def test_scheduler_still_measures_the_gap_between_two_fires() -> None:
 
 
 def test_no_source_declares_a_cron_that_means_something_else() -> None:
-    """Ни одна запись не должна врать о частоте опроса.
+    """Ни одна запись не имеет права врать о частоте опроса. Без исключений.
 
-    123 существующие записи врут (см. KNOWN_LYING_CRON_BY_SOURCE_ID — это долг,
-    зафиксированный 2026-08-03, а не разрешение). Тест краснеет во все три стороны:
-    добавили новую врущую строку — падает; починили старую, не убрав id из
-    списка, — падает; переписали расписание уже задолжавшего источника на другое
-    (тоже врущее) — тоже падает.
-
-    Третья ветка — не формальность. Долг покрывает 123 источника из 168, то есть
-    73% файла; если waiver выдан на id целиком, то для трёх четвертей sources.yml
-    поле schedule_cron перестаёт быть под контрактом вообще, и `*/120` можно
-    молча заменить на `*/45` (интервал начинает плавать от рестарта к рестарту)
-    или на `*/360` (пере-опрос вырастает с 2x до 6x).
+    Жёстко с 2026-08-03: allowlist'а нет, `cron_lie` не должен срабатывать ни на одной
+    из 168 записей. Красное здесь — это либо шаг в поле минут, который не делит 60
+    (`*/90`, `*/120`, `*/180`, `*/240`, `*/360` — все они молча означают 60 минут),
+    либо плавающий интервал (`*/45` даёт 45 ИЛИ 15 в зависимости от минуты старта
+    ingest). Интервал больше часа выражается ТОЛЬКО через поле часов.
     """
     lying: dict[str, str] = {}
-    declared: dict[str, str] = {}
     for source_id, cron in _yaml_sources():
         lie = cron_lie(cron)
         if lie is not None:
             lying[source_id] = lie
-            declared[source_id] = cron
 
-    newly_lying = {
-        sid: why for sid, why in lying.items() if sid not in KNOWN_LYING_CRON_BY_SOURCE_ID
-    }
-    assert not newly_lying, (
-        "new schedule_cron entries that do not mean what they say. "
-        "Intervals above 60 min are expressible only through the hour field "
-        "('0 */2 * * *' = 120, '0 */3 * * *' = 180, '0 */6 * * *' = 360); "
-        f"a minute step must divide 60. Offenders: {newly_lying}"
-    )
-
-    rewritten = {
-        sid: (KNOWN_LYING_CRON_BY_SOURCE_ID[sid], declared[sid])
-        for sid in sorted(declared)
-        if sid in KNOWN_LYING_CRON_BY_SOURCE_ID
-        and declared[sid] != KNOWN_LYING_CRON_BY_SOURCE_ID[sid]
-    }
-    assert not rewritten, (
-        "sources on the debt list whose schedule_cron was rewritten into a DIFFERENT lie "
-        "(recorded -> current). Being on the debt list waives the exact string recorded on "
-        "2026-08-03, nothing else: fix the entry properly, or re-record the pair here "
-        f"deliberately. Offenders: {rewritten}"
-    )
-
-    stale = sorted(sid for sid in KNOWN_LYING_CRON_BY_SOURCE_ID if sid not in lying)
-    assert not stale, (
-        "KNOWN_LYING_CRON_BY_SOURCE_ID lists ids that no longer lie (fixed or removed). "
-        f"Delete them from the debt list in this file: {stale}"
+    assert not lying, (
+        "schedule_cron, который означает не то, что в нём написано. "
+        "Интервал больше 60 мин выразим только через поле часов "
+        "('<m> */2 * * *' = 120, '<m> */3 * * *' = 180, '<m> */4 * * *' = 240, "
+        "'<m> */6 * * *' = 360); шаг в поле минут обязан делить 60. "
+        f"Нарушители: {lying}"
     )
 
 
-def test_debt_list_is_the_size_it_claims_to_be() -> None:
-    """Размер долга — измеримая величина: 123 записи из 168 на 2026-08-03.
+def test_the_debt_list_stays_empty() -> None:
+    """Ловушка на рецидив: waiver-механику нельзя вернуть, не удалив этот тест.
 
-    Пин только на сам список: добавить новый (честный) источник в sources.yml
-    можно, не трогая этот файл. Число здесь меняется вместе с таблицей выше —
-    и только вместе с ней, чтобы «почистили пять штук» было видно в диффе.
+    Долг выплачен целиком 2026-08-03. Любая запись здесь означает, что кто-то снова
+    выдал источнику индульгенцию на врущее расписание — и сделал это молча, оставив
+    test_no_source_declares_a_cron_that_means_something_else зелёным.
     """
-    assert len(KNOWN_LYING_CRON_BY_SOURCE_ID) == 123, (
-        "the debt table changed size; update this number in the same commit "
-        "so the cleanup is visible in the diff"
+    assert KNOWN_LYING_CRON_BY_SOURCE_ID == {}, (
+        "KNOWN_LYING_CRON_BY_SOURCE_ID снова не пуст. Врущий schedule_cron чинится "
+        "правкой config/sources.yml, а не строкой в allowlist: "
+        f"{sorted(KNOWN_LYING_CRON_BY_SOURCE_ID)}"
+    )
+
+
+def test_every_source_polls_at_a_deterministic_interval() -> None:
+    """Позитивная сторона того же контракта: интервал не плавает от рестарта к рестарту.
+
+    `cron_lie` ловит это же через `len(intervals) > 1`, но там оно тонет в общем
+    сообщении. Здесь отдельно и явно: 168 записей обязаны давать ровно одно значение
+    зазора, иначе частота опроса меняется каждый раз, когда перезапускают ingest.
+    """
+    floating = {
+        source_id: sorted(observable_intervals(cron))
+        for source_id, cron in _yaml_sources()
+        if len(observable_intervals(cron)) > 1
+    }
+    assert not floating, (
+        "источники, чей интервал зависит от минуты старта ingest (замер идёт по зазору "
+        f"между первыми двумя срабатываниями): {floating}"
+    )
+
+
+def test_minute_offsets_are_spread_inside_each_interval_bucket() -> None:
+    """Фазовый разнос: записи с одинаковым интервалом не должны падать на одну минуту.
+
+    До 2026-08-03 на минуту 0 приходились ВСЕ 168 источников — шаг в поле минут
+    схлопывался в [0], а честные `*/60` и `*/30` и так стартовали с нуля. Теперь у
+    каждой записи внутри своего интервального бакета собственная минута.
+
+    Оговорка, важная для чтения этого теста: сегодня минута ДЕКЛАРАТИВНА.
+    `cron_to_minutes` возвращает планировщику только интервал, а APScheduler вешает
+    IntervalTrigger со случайным стартовым разбросом и jitter (ingest/main.py) — фазу
+    задаёт он, а не строка. Тест сторожит намерение, записанное в конфиге, и станет
+    нагрузочным в тот день, когда планировщик переведут на CronTrigger.
+
+    Порог само-масштабируется: минут всего 60, поэтому при бакете больше 60 записей
+    допускается ceil(N/60) источников на минуту — но не «все на нулевую».
+    """
+    buckets: dict[tuple[int, str], list[tuple[str, int]]] = {}
+    for source_id, cron in _yaml_sources():
+        hour_field = cron.split()[1]
+        interval = min(observable_intervals(cron))
+        # Минута берётся из раскрытия, а не из текста поля: `*/30 * * * *` и
+        # `5,35 * * * *` дают один интервал, но разную фазу — 0 и 5.
+        phase = min(fire % 60 for fire in fire_minutes_of_day(cron))
+        buckets.setdefault((interval, hour_field), []).append((source_id, phase))
+
+    assert len(buckets) >= 4, f"бакетов подозрительно мало, извлекатель сломан: {sorted(buckets)}"
+
+    crowded: dict[str, dict[int, list[str]]] = {}
+    for key, members in buckets.items():
+        allowed = -(-len(members) // 60)  # ceil
+        by_minute: dict[int, list[str]] = {}
+        for source_id, minute in members:
+            by_minute.setdefault(minute, []).append(source_id)
+        over = {minute: ids for minute, ids in by_minute.items() if len(ids) > allowed}
+        if over:
+            crowded[f"{key[0]}min/{key[1]}"] = over
+
+    assert not crowded, (
+        "источники с одинаковым интервалом сидят на одной минуте — при переходе "
+        "планировщика на CronTrigger они выстрелят одновременно (все fetch телеграма "
+        f"сериализуются одним _telegram_run_lock): {crowded}"
     )
 
 

@@ -1,12 +1,61 @@
 # Starter source bundles for workspace bootstrap.
 # These entries are safe to import manually via Admin UI or API.
+#
+# ── schedule_cron: конвенция файла (приведено к ней 2026-08-03) ──────────────
+#
+# ingest/scheduler.py:cron_to_minutes НЕ разбирает cron сам: он отдаёт строку croniter,
+# берёт два первых срабатывания и возвращает зазор между ними в минутах. APScheduler
+# вешает на это число IntervalTrigger (ingest/main.py). Отсюда два следствия.
+#
+# 1. Шаг в поле МИНУТ раскрывается по диапазону 0-59, а не по времени. range(0, 60, 90)
+#    это [0], поэтому "*/90", "*/120", "*/180", "*/240", "*/360" — все до одного ровно
+#    60 минут. Источник, заявивший «раз в 6 часов», опрашивался раз в час: в шесть раз
+#    чаще написанного, без лога, метрики и ошибки. "*/45" раскрывается в [0, 45] и даёт
+#    45 ИЛИ 15 минут — что именно, решает минута настенных часов в момент старта ingest.
+# 2. Интервал больше 60 выражается ТОЛЬКО через поле часов:
+#      "<m> */2 * * *" = 120,  "<m> */3 * * *" = 180,
+#      "<m> */4 * * *" = 240,  "<m> */6 * * *" = 360.
+#    Шаг в поле минут допустим только если он делит 60 (1, 2, 3, 4, 5, 6, 10, 12, 15,
+#    20, 30, 60); всё остальное врёт. Полчаса с офсетом пишутся парой: "<m>,<m+30> * * * *".
+#
+# Правило пересчёта прежних значений: ближайший ВЫРАЗИМЫЙ интервал, при ничьей — БОЛЬШИЙ
+# (реже опрашиваем). 120 → 120, 180 → 180, 240 → 240, 360 → 360 выражаются точно;
+# 90 → 120 (ничья 60/120) и 45 → 60 (ничья 30/60) округлены вверх. Тай-брейк выбран
+# так, чтобы ни один источник не начал опрашиваться ЧАЩЕ, чем сегодня: 123 записи стали
+# реже в 2-6 раз, 45 остались с прежней частотой, ни одна не участилась.
+#
+# Минута в начале строки — разнос по фазе: внутри одного интервального бакета она у
+# каждого источника своя, чтобы 168 записей не приходились на минуту 0 (все fetch
+# телеграма сериализуются одним _telegram_run_lock, ingest/main.py).
+# Оговорка: сегодня минута ДЕКЛАРАТИВНА. cron_to_minutes возвращает только интервал,
+# а APScheduler вешает IntervalTrigger со случайным стартовым разбросом и jitter=180с
+# (ingest/main.py). Фазу она начнёт задавать, если планировщик переведут на CronTrigger;
+# до тех пор она фиксирует намерение и не даёт строке врать.
+#
+# Контракт держится тестом tests/test_cron_contract.py — там же модель croniter
+# (в admin-образе croniter не установлен, а conftest подменяет его MagicMock).
+#
+# ── extra.filters: только для structured-источников ──────────────────────────
+#
+# matches_filters живёт в StructuredSource (ingest/sources/base.py) и вызывается ровно
+# из StructuredSource.fetch. TelegramSource наследуется от AbstractSource и пишет свой
+# fetch() сам, мимо этого пути, — блок filters у telegram НИКОГДА не применяется.
+# 2026-08-03 такие блоки удалены у девяти telegram-записей (tg_ru_autoruonline,
+# tg_ru_autostatis, tg_ru_russianev, tg_ru_avtovaz_official, tg_ru_nami_russia,
+# tg_ru_yandex_auto, tg_ru_sber_auto, tg_ru_izvestia_auto, tg_ru_rbc_auto): все
+# заявляли lang_allow: [ru], шесть из них — ещё и include/exclude_keywords по авто-теме.
+# Ни один не отсекал ничего; поток у этих каналов идёт целиком и всегда шёл, отбор
+# делает только LLM ниже по трубе. Записанный, но не работающий фильтр хуже
+# отсутствующего — следующий читатель считает поток отфильтрованным.
+# Не возвращать сюда filters для telegram: tests/test_sources_config_contract.py
+# краснеет на этом жёстко, без реестра исключений.
 sources:
   - id: rss_techcrunch
     workspace_id: disruption
     source_type: rss
     name: TechCrunch
     url: https://techcrunch.com/feed/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "0 * * * *"
     extra:
       preset: techcrunch
       quality_tier: trusted
@@ -20,7 +69,7 @@ sources:
     source_type: rss
     name: WIRED AI
     url: https://www.wired.com/feed/tag/ai/latest/rss
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "8 * * * *"
     extra:
       preset: wired_ai
       quality_tier: trusted
@@ -34,7 +83,7 @@ sources:
     source_type: rss
     name: Medium Future
     url: https://medium.com/feed/tag/future
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "14 * * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -52,7 +101,7 @@ sources:
     source_type: rss
     name: Medium Design
     url: https://medium.com/feed/tag/design
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "21 * * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -70,7 +119,7 @@ sources:
     source_type: rss
     name: Medium Mobility
     url: https://medium.com/feed/tag/mobility
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "28 * * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -88,7 +137,7 @@ sources:
     source_type: rss
     name: arXiv cs.AI
     url: https://rss.arxiv.org/rss/cs.AI
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "35 */2 * * *"
     extra:
       preset: arxiv_cs_ai
       quality_tier: research
@@ -100,7 +149,7 @@ sources:
     source_type: rss
     name: arXiv cs.HC
     url: https://rss.arxiv.org/rss/cs.HC
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "42 */2 * * *"
     extra:
       preset: arxiv_cs_hc
       quality_tier: research
@@ -112,7 +161,7 @@ sources:
     source_type: rss
     name: InsideEVs All
     url: https://insideevs.com/rss/articles/all/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "49 * * * *"
     extra:
       preset: insideevs_all
       quality_tier: trusted
@@ -126,7 +175,7 @@ sources:
     source_type: rss
     name: InsideEVs Autonomous Vehicles
     url: https://insideevs.com/rss/category/autonomous-vehicles/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "56 * * * *"
     extra:
       preset: insideevs_autonomous
       quality_tier: trusted
@@ -140,7 +189,7 @@ sources:
     source_type: rss
     name: Electrek
     url: https://electrek.co/feed
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "3 * * * *"
     extra:
       preset: electrek
       quality_tier: trusted
@@ -154,7 +203,7 @@ sources:
     source_type: rss
     name: WIRED Business
     url: https://www.wired.com/feed/category/business/latest/rss
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "10 * * * *"
     extra:
       preset: wired_business
       quality_tier: trusted
@@ -168,7 +217,7 @@ sources:
     source_type: rss
     name: MIT Technology Review
     url: https://www.technologyreview.com/feed/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "17 * * * *"
     extra:
       preset: mit_tech_review
       quality_tier: research
@@ -182,7 +231,7 @@ sources:
     source_type: rss
     name: arXiv cs.LG
     url: https://rss.arxiv.org/rss/cs.LG
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "24 */2 * * *"
     extra:
       preset: arxiv_cs_lg
       quality_tier: research
@@ -194,7 +243,7 @@ sources:
     source_type: rss
     name: arXiv cs.RO
     url: https://rss.arxiv.org/rss/cs.RO
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "31 */2 * * *"
     extra:
       preset: arxiv_cs_ro
       quality_tier: research
@@ -206,7 +255,7 @@ sources:
     source_type: web
     name: Waymo Blog
     url: https://waymo.com/blog/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "38 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [autonomous, mobility, safety]
@@ -226,7 +275,7 @@ sources:
     source_type: web
     name: NVIDIA Developer Blog — DRIVE
     url: https://developer.nvidia.com/blog/tag/drive/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "45 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [autonomous, ai, chips, drive_agx]
@@ -244,7 +293,7 @@ sources:
     source_type: web
     name: Bosch Mobility — Software-defined vehicle
     url: https://www.bosch.com/stories/topics/software-driven-mobility/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "52 */2 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -268,7 +317,7 @@ sources:
     source_type: web
     name: Mobility House Newsroom
     url: https://www.mobilityhouse.com/usa_en/our-company/newsroom
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "59 */2 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -290,7 +339,7 @@ sources:
     source_type: web
     name: NNGroup Articles
     url: https://www.nngroup.com/articles/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "6 */3 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -314,7 +363,7 @@ sources:
     source_type: web
     name: UX Journal
     url: https://ux-journal.ru
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "13 */2 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -337,7 +386,7 @@ sources:
     source_type: telegram
     name: Журнал Авто.ру online
     tg_channel: "@autoruonline"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "20,50 * * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:auto_ru
@@ -346,8 +395,6 @@ sources:
       source_authority: 0.74
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
       fetch:
         lookback_hours: 72
 
@@ -356,7 +403,7 @@ sources:
     source_type: telegram
     name: АВТОСТАТ
     tg_channel: "@autostatis"
-    schedule_cron: "*/45 * * * *"
+    schedule_cron: "27 * * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:auto_ru
@@ -365,8 +412,6 @@ sources:
       source_authority: 0.76
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
       fetch:
         lookback_hours: 168
 
@@ -375,7 +420,7 @@ sources:
     source_type: rss
     name: Drom export RSS
     url: https://www.drom.ru/export/
-    schedule_cron: "*/45 * * * *"
+    schedule_cron: "34 * * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:auto_ru
@@ -391,7 +436,7 @@ sources:
     source_type: web
     name: Авторевю — Новости
     url: https://autoreview.ru/news/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "41 * * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:auto_ru
@@ -411,7 +456,7 @@ sources:
     source_type: web
     name: Autonews РБК
     url: https://www.autonews.ru/
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "48 */2 * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:auto_ru
@@ -431,7 +476,7 @@ sources:
     source_type: web
     name: Kolesa.ru — Новости
     url: https://www.kolesa.ru/news/
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "55 */2 * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:auto_ru
@@ -452,7 +497,7 @@ sources:
     source_type: rss
     name: InsideEVs Charging
     url: https://insideevs.com/rss/category/charging/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "2 * * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:ev_tesla
@@ -468,7 +513,7 @@ sources:
     source_type: rss
     name: InsideEVs Battery Tech
     url: https://insideevs.com/rss/category/battery-tech/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "9 * * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:ev_tesla
@@ -484,7 +529,7 @@ sources:
     source_type: web
     name: Not a Tesla App — Software Updates
     url: https://www.notateslaapp.com/software-updates/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "16 */2 * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -508,7 +553,7 @@ sources:
     source_type: rss
     name: TESLARATI
     url: https://www.teslarati.com/feed/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "24 * * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -529,7 +574,7 @@ sources:
     source_type: rss
     name: TechCrunch Transportation
     url: https://techcrunch.com/category/transportation/feed/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "30 * * * *"
     is_enabled: false
     extra:
       rollout_batch: batch:global_mobility
@@ -545,7 +590,7 @@ sources:
     source_type: web
     name: IEEE Spectrum — Autonomous Vehicles
     url: https://spectrum.ieee.org/tag/autonomous-vehicles
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "37 */2 * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -569,7 +614,7 @@ sources:
     source_type: web
     name: Automotive World — SDV
     url: https://www.automotiveworld.com/software-defined-vehicles/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "44 */3 * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -594,7 +639,7 @@ sources:
     source_type: web
     name: Smart Cities Dive — Transportation
     url: https://www.smartcitiesdive.com/topic/transportation/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "51 */3 * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -618,7 +663,7 @@ sources:
     source_type: web
     name: UITP — News and Views
     url: https://www.uitp.org/news-views/
-    schedule_cron: "*/240 * * * *"
+    schedule_cron: "58 */4 * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -642,7 +687,7 @@ sources:
     source_type: api
     name: Hacker News Top Stories
     url: https://hacker-news.firebaseio.com/v0/topstories.json
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "5,35 * * * *"
     extra:
       fetch:
         item_url_template: "https://hacker-news.firebaseio.com/v0/item/{id}.json"
@@ -662,7 +707,7 @@ sources:
     source_type: rss
     name: TechCrunch AI Trends
     url: https://techcrunch.com/feed/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "12 * * * *"
     extra:
       preset: techcrunch
       quality_tier: trusted
@@ -679,7 +724,7 @@ sources:
     source_type: rss
     name: WIRED AI Trends
     url: https://www.wired.com/feed/tag/ai/latest/rss
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "19 * * * *"
     extra:
       preset: wired_ai
       quality_tier: trusted
@@ -696,7 +741,7 @@ sources:
     source_type: rss
     name: MIT Technology Review AI
     url: https://www.technologyreview.com/feed/
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "26 */2 * * *"
     extra:
       preset: mit_tech_review
       quality_tier: research
@@ -712,7 +757,7 @@ sources:
     source_type: rss
     name: arXiv cs.AI Trends
     url: https://rss.arxiv.org/rss/cs.AI
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "33 */3 * * *"
     extra:
       preset: arxiv_cs_ai
       quality_tier: research
@@ -724,7 +769,7 @@ sources:
     source_type: rss
     name: arXiv cs.LG Trends
     url: https://rss.arxiv.org/rss/cs.LG
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "40 */3 * * *"
     extra:
       preset: arxiv_cs_lg
       quality_tier: research
@@ -736,7 +781,7 @@ sources:
     source_type: rss
     name: Habr AI Hub
     url: https://habr.com/ru/hubs/artificial_intelligence/
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "47 */2 * * *"
     extra:
       preset: habr_ai_hub
       quality_tier: exploratory
@@ -750,7 +795,7 @@ sources:
     source_type: api
     name: Hacker News AI Signals
     url: https://hacker-news.firebaseio.com/v0/topstories.json
-    schedule_cron: "*/45 * * * *"
+    schedule_cron: "54 * * * *"
     extra:
       quality_tier: exploratory
       expected_signal_types: [ai, devtools, inference]
@@ -776,7 +821,7 @@ sources:
     source_type: rss
     name: arXiv cs.AI Research
     url: https://rss.arxiv.org/rss/cs.AI
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "1 */3 * * *"
     extra:
       preset: arxiv_cs_ai
       quality_tier: research
@@ -788,7 +833,7 @@ sources:
     source_type: rss
     name: arXiv cs.LG Research
     url: https://rss.arxiv.org/rss/cs.LG
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "8 */3 * * *"
     extra:
       preset: arxiv_cs_lg
       quality_tier: research
@@ -800,7 +845,7 @@ sources:
     source_type: rss
     name: MIT Technology Review AI Research
     url: https://www.technologyreview.com/feed/
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "15 */2 * * *"
     extra:
       preset: mit_tech_review
       quality_tier: research
@@ -817,7 +862,7 @@ sources:
     source_type: rss
     name: TechCrunch AI Products
     url: https://techcrunch.com/feed/
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "22 * * * *"
     extra:
       preset: techcrunch
       quality_tier: trusted
@@ -834,7 +879,7 @@ sources:
     source_type: rss
     name: WIRED AI Products
     url: https://www.wired.com/feed/tag/ai/latest/rss
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "29 * * * *"
     extra:
       preset: wired_ai
       quality_tier: trusted
@@ -851,7 +896,7 @@ sources:
     source_type: rss
     name: Habr AI Products
     url: https://habr.com/ru/hubs/artificial_intelligence/
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "36 */2 * * *"
     extra:
       preset: habr_ai_hub
       quality_tier: exploratory
@@ -867,7 +912,7 @@ sources:
     source_type: api
     name: Hacker News AI Products
     url: https://hacker-news.firebaseio.com/v0/topstories.json
-    schedule_cron: "*/45 * * * *"
+    schedule_cron: "43 * * * *"
     extra:
       quality_tier: exploratory
       expected_signal_types: [ai, devtools, product]
@@ -893,7 +938,7 @@ sources:
     source_type: rss
     name: Medium Design Signals
     url: https://medium.com/feed/tag/design
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "50 */2 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -913,7 +958,7 @@ sources:
     source_type: rss
     name: arXiv cs.HC Design Signals
     url: https://rss.arxiv.org/rss/cs.HC
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "57 */3 * * *"
     extra:
       preset: arxiv_cs_hc
       quality_tier: research
@@ -925,7 +970,7 @@ sources:
     source_type: rss
     name: Habr Design Articles
     url: https://habr.com/ru/flows/design/articles/
-    schedule_cron: "*/90 * * * *"
+    schedule_cron: "4 */2 * * *"
     extra:
       preset: habr_design_articles
       quality_tier: exploratory
@@ -941,7 +986,7 @@ sources:
     source_type: rss
     name: InsideEVs Design
     url: https://insideevs.com/rss/category/design/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "12 */2 * * *"
     is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2026-02)
     extra:
       preset: insideevs_design
@@ -958,7 +1003,7 @@ sources:
     source_type: rss
     name: InsideEVs UX
     url: https://insideevs.com/rss/category/user-experience/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "18 */2 * * *"
     is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2023-02)
     extra:
       preset: insideevs_ux
@@ -976,7 +1021,7 @@ sources:
     source_type: web
     name: Baymard UX Research Blog
     url: https://baymard.com/blog
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "25 */3 * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -1000,7 +1045,7 @@ sources:
     source_type: rss
     name: Smashing Magazine
     url: https://www.smashingmagazine.com/feed/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "32 */2 * * *"
     is_enabled: false
     proxy_config:
       type: socks5
@@ -1021,17 +1066,13 @@ sources:
     source_type: telegram
     name: Russian EV
     tg_channel: "@russianev"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "9,39 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ev, used_ev, charging, auto_market]
       source_authority: 0.72
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
-        include_keywords: [электромобиль, ev, электрокар, батарея, зарядка, пробег, рынок, вторичный рынок, used ev]
-        exclude_keywords: [путешествие, маршрут выходного дня, викторина, конкурс]
       fetch:
         lookback_hours: 168
 
@@ -1041,17 +1082,13 @@ sources:
     source_type: telegram
     name: АвтоВАЗ Official
     tg_channel: "@avtovaz_official"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "16,46 * * * *"
     extra:
       quality_tier: primary
       expected_signal_types: [oem, production, regulation, market]
       source_authority: 0.8
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
-        include_keywords: [автоваз, lada, производство, конвейер, завод, модель, продажи, электромобиль, ev]
-        exclude_keywords: [конкурс, розыгрыш, мерч, поздравляем]
       fetch:
         lookback_hours: 168
 
@@ -1060,17 +1097,13 @@ sources:
     source_type: telegram
     name: НАМИ
     tg_channel: "@fgupnami"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "23,53 * * * *"
     extra:
       quality_tier: primary
       expected_signal_types: [regulation, standards, automotive, policy]
       source_authority: 0.78
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
-        include_keywords: [нами, стандарт, сертификация, беспилот, транспорт, автопром, электромобиль, regulation]
-        exclude_keywords: [викторина, конкурс, музей, история, поздравляем]
       fetch:
         lookback_hours: 168
 
@@ -1079,17 +1112,13 @@ sources:
     source_type: telegram
     name: Yandex Auto
     tg_channel: "@YandexAvto"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "0,30 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [connected_car, platforms, navigation, software]
       source_authority: 0.76
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
-        include_keywords: [авто, автомобиль, yandex auto, навигация, мультимедиа, carplay, android auto, connected car, telematics]
-        exclude_keywords: [такси скидка, путешествие, подборка музыки]
       fetch:
         lookback_hours: 168
 
@@ -1098,17 +1127,13 @@ sources:
     source_type: telegram
     name: Sber Auto
     tg_channel: "@sberbank_auto"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "7,37 * * * *"
     extra:
       quality_tier: primary
       expected_signal_types: [used_ev, auto_market, finance, mobility_services]
       source_authority: 0.82
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
-        include_keywords: [авто, автомобиль, пробег, вторичный рынок, цена, кредит, лизинг, электромобиль, рынок]
-        exclude_keywords: [маршрут выходного дня, путешествие, подборка мест, тест личности]
       fetch:
         lookback_hours: 168
 
@@ -1121,17 +1146,13 @@ sources:
     source_type: telegram
     name: Izvestia Auto
     tg_channel: "@izvestia_auto"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "14,44 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [auto_market, regulation, oem, industry]
       source_authority: 0.68
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
-        include_keywords: [авто, автомобиль, рынок, продаж, электромобиль, штраф, закон, зарядка, автопром]
-        exclude_keywords: [дтп без рынка, криминал, пробки]
       fetch:
         lookback_hours: 168
 
@@ -1140,17 +1161,13 @@ sources:
     source_type: telegram
     name: RBC Auto
     tg_channel: "@anrbc"
-    schedule_cron: "*/30 * * * *"
+    schedule_cron: "21,51 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [auto_market, business_models, regulation]
       source_authority: 0.7
       source_region: ru
       market_scope: local
-      filters:
-        lang_allow: [ru]
-        include_keywords: [авто, автомобиль, рынок, продажи, электромобиль, зарядка, regulation, автопром]
-        exclude_keywords: [пробки, путешествие, lifestyle]
       fetch:
         lookback_hours: 168
 
@@ -1160,7 +1177,7 @@ sources:
     source_type: rss
     name: arXiv cs.CL
     url: https://rss.arxiv.org/rss/cs.CL
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "28 */2 * * *"
     extra:
       preset: arxiv_cs_cl
       quality_tier: research
@@ -1172,7 +1189,7 @@ sources:
     source_type: rss
     name: arXiv cs.CL Trends
     url: https://rss.arxiv.org/rss/cs.CL
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "35 */3 * * *"
     extra:
       preset: arxiv_cs_cl
       quality_tier: research
@@ -1184,7 +1201,7 @@ sources:
     source_type: rss
     name: arXiv cs.CL Research
     url: https://rss.arxiv.org/rss/cs.CL
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "42 */3 * * *"
     extra:
       preset: arxiv_cs_cl
       quality_tier: research
@@ -1196,7 +1213,7 @@ sources:
     source_type: rss
     name: arXiv cs.CV
     url: https://rss.arxiv.org/rss/cs.CV
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "49 */2 * * *"
     extra:
       preset: arxiv_cs_cv
       quality_tier: research
@@ -1208,7 +1225,7 @@ sources:
     source_type: rss
     name: arXiv cs.CV Trends
     url: https://rss.arxiv.org/rss/cs.CV
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "56 */3 * * *"
     extra:
       preset: arxiv_cs_cv
       quality_tier: research
@@ -1222,7 +1239,7 @@ sources:
     source_type: rss
     name: Hugging Face Blog (Research)
     url: https://huggingface.co/blog/feed.xml
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "3 */3 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, llm]
@@ -1233,7 +1250,7 @@ sources:
     source_type: rss
     name: BAIR Blog
     url: https://bair.berkeley.edu/blog/feed.xml
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "10 */6 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, ml]
@@ -1244,7 +1261,7 @@ sources:
     source_type: rss
     name: arXiv stat.ML Research
     url: https://rss.arxiv.org/rss/stat.ML
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "17 */3 * * *"
     extra:
       preset: arxiv_stat_ml
       quality_tier: research
@@ -1257,7 +1274,7 @@ sources:
     source_type: rss
     name: MIT Tech Review AI
     url: https://www.technologyreview.com/topic/artificial-intelligence/feed/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "24 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, industry, trends]
@@ -1268,7 +1285,7 @@ sources:
     source_type: rss
     name: VentureBeat AI
     url: https://venturebeat.com/category/ai/feed/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "33 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ai, industry, product]
@@ -1279,7 +1296,7 @@ sources:
     source_type: rss
     name: Hugging Face Blog (Trends)
     url: https://huggingface.co/blog/feed.xml
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "38 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, llm, industry]
@@ -1291,7 +1308,7 @@ sources:
     source_type: rss
     name: Nielsen Norman Group
     url: https://www.nngroup.com/feed/rss/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "45 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [design, ux, research]
@@ -1302,7 +1319,7 @@ sources:
     source_type: rss
     name: Smashing Magazine
     url: https://www.smashingmagazine.com/feed/
-    schedule_cron: "*/240 * * * *"
+    schedule_cron: "52 */4 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1317,7 +1334,7 @@ sources:
     source_type: rss
     name: A List Apart
     url: https://alistapart.com/main/feed/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "59 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [design, web, ux]
@@ -1328,7 +1345,7 @@ sources:
     source_type: rss
     name: UX Collective
     url: https://uxdesign.cc/feed
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "7 */3 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1344,7 +1361,7 @@ sources:
     source_type: rss
     name: The Verge AI
     url: https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "14 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ai, product, media]
@@ -1355,7 +1372,7 @@ sources:
     source_type: rss
     name: Hugging Face Blog (Products)
     url: https://huggingface.co/blog/feed.xml
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "20 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, product, llm]
@@ -1368,7 +1385,7 @@ sources:
     source_type: rss
     name: Google DeepMind Blog
     url: https://deepmind.google/blog/rss.xml
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "27 */3 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, frontier]
@@ -1379,7 +1396,7 @@ sources:
     source_type: rss
     name: Google Research Blog
     url: https://research.google/blog/rss/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "34 */3 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, methods]
@@ -1390,7 +1407,7 @@ sources:
     source_type: rss
     name: Microsoft Research Blog
     url: https://www.microsoft.com/en-us/research/feed/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "41 */3 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, ml]
@@ -1401,7 +1418,7 @@ sources:
     source_type: rss
     name: Ahead of AI (Raschka)
     url: https://magazine.sebastianraschka.com/feed
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "48 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1416,7 +1433,7 @@ sources:
     source_type: rss
     name: The Gradient
     url: https://thegradient.pub/rss/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "55 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1431,7 +1448,7 @@ sources:
     source_type: rss
     name: arXiv cs.MA Research
     url: https://rss.arxiv.org/rss/cs.MA
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "2 */3 * * *"
     extra:
       preset: arxiv_cs_ma
       quality_tier: research
@@ -1443,7 +1460,7 @@ sources:
     source_type: rss
     name: arXiv cs.SE Research
     url: https://rss.arxiv.org/rss/cs.SE
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "9 */3 * * *"
     extra:
       preset: arxiv_cs_se
       quality_tier: research
@@ -1455,7 +1472,7 @@ sources:
     source_type: telegram
     name: Сиолошная
     tg_channel: "@seeallochnaya"
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "16 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, research, frontier]
@@ -1468,7 +1485,7 @@ sources:
     source_type: telegram
     name: gonzo-обзоры ML статей
     tg_channel: "@gonzo_ML"
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "25 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [research, ml, papers]
@@ -1482,7 +1499,7 @@ sources:
     source_type: rss
     name: Import AI (Jack Clark)
     url: https://importai.substack.com/feed
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "30 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1497,7 +1514,7 @@ sources:
     source_type: rss
     name: AINews (smol.ai)
     url: https://buttondown.com/ainews/rss
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "38 */2 * * *"
     is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2025-04)
     extra:
       quality_tier: standard
@@ -1509,7 +1526,7 @@ sources:
     source_type: rss
     name: O'Reilly Radar
     url: https://www.oreilly.com/radar/feed/index.xml
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "45 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, data, trends]
@@ -1521,7 +1538,7 @@ sources:
     source_type: rss
     name: OpenAI Blog
     url: https://openai.com/blog/rss.xml
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "51 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, product, frontier]
@@ -1532,7 +1549,7 @@ sources:
     source_type: rss
     name: Simon Willison Weblog
     url: https://simonwillison.net/atom/everything/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "58 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, tooling, dev]
@@ -1543,7 +1560,7 @@ sources:
     source_type: rss
     name: NVIDIA Deep Learning Blog
     url: https://blogs.nvidia.com/blog/category/deep-learning/feed/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "5 */3 * * *"
     is_enabled: false  # 2026-07-05 отключён: категория заброшена (свежайшая статья 2026-01)
     extra:
       quality_tier: standard
@@ -1555,7 +1572,7 @@ sources:
     source_type: rss
     name: DTF
     url: https://dtf.ru/rss/all
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "19 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [tech, media, product]
@@ -1566,7 +1583,7 @@ sources:
     source_type: telegram
     name: Denis Sexy IT
     tg_channel: "@denissexy"
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "20 * * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ai, product, media]
@@ -1580,7 +1597,7 @@ sources:
     source_type: rss
     name: Stratechery (Ben Thompson)
     url: https://stratechery.com/feed/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "26 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [business_models, strategy, tech]
@@ -1591,7 +1608,7 @@ sources:
     source_type: rss
     name: Benedict Evans
     url: https://www.ben-evans.com/benedictevans?format=rss
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "33 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [futures, tech, strategy]
@@ -1602,7 +1619,7 @@ sources:
     source_type: rss
     name: Lenny's Newsletter
     url: https://www.lennysnewsletter.com/feed
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "40 */6 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [product, growth, business_models]
@@ -1613,7 +1630,7 @@ sources:
     source_type: rss
     name: Rusbase (RB.RU)
     url: https://rb.ru/feeds/all/
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "54 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [startups, business_models, ru]
@@ -1624,7 +1641,7 @@ sources:
     source_type: telegram
     name: Дизраптор
     tg_channel: "@disruptors_official"
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "55 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [disruption, business_models]
@@ -1637,7 +1654,7 @@ sources:
     source_type: telegram
     name: Epic Growth
     tg_channel: "@epicgrowth"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "1 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [product, growth, business_models]
@@ -1651,7 +1668,7 @@ sources:
     source_type: rss
     name: UX Matters
     url: https://www.uxmatters.com/index.xml
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "8 */6 * * *"
     is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2024-03)
     extra:
       quality_tier: trusted
@@ -1663,7 +1680,7 @@ sources:
     source_type: rss
     name: Interaction Design Foundation
     url: https://www.interaction-design.org/rss/site_news.xml
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "15 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ux, research, design]
@@ -1674,7 +1691,7 @@ sources:
     source_type: rss
     name: UX Movement
     url: https://uxmovement.com/feed/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "22 */6 * * *"
     is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2025-03)
     extra:
       quality_tier: standard
@@ -1686,7 +1703,7 @@ sources:
     source_type: rss
     name: UX Design Weekly
     url: https://uxdesignweekly.com/feed/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "29 */6 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ux, design, roundup]
@@ -1697,7 +1714,7 @@ sources:
     source_type: rss
     name: Prototypr
     url: https://blog.prototypr.io/feed
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "36 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1712,7 +1729,7 @@ sources:
     source_type: rss
     name: CSS-Tricks
     url: https://css-tricks.com/feed/
-    schedule_cron: "*/240 * * * *"
+    schedule_cron: "43 */4 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1727,7 +1744,7 @@ sources:
     source_type: telegram
     name: UX Notes
     tg_channel: "@uxnotes"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "56 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ux, research, cx]
@@ -1740,7 +1757,7 @@ sources:
     source_type: telegram
     name: Design Prosmotr
     tg_channel: "@designprosmotr"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "57 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [design, ux, visual_culture]
@@ -1755,7 +1772,7 @@ sources:
     source_type: rss
     name: Mistral AI News
     url: https://mistral.ai/rss.xml
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "4 */3 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, llm]
@@ -1765,7 +1782,7 @@ sources:
     source_type: rss
     name: Interconnects (Nathan Lambert)
     url: https://www.interconnects.ai/feed
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "11 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1779,7 +1796,7 @@ sources:
     source_type: rss
     name: Eugene Yan
     url: https://eugeneyan.com/rss/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "18 */6 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ml, applied]
@@ -1789,7 +1806,7 @@ sources:
     source_type: rss
     name: Hamel Husain
     url: https://hamel.dev/index.xml
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "25 */6 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ml, evals]
@@ -1800,7 +1817,7 @@ sources:
     source_type: rss
     name: Latent Space
     url: https://www.latent.space/feed
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "32 */3 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1814,7 +1831,7 @@ sources:
     source_type: rss
     name: The Algorithmic Bridge
     url: https://www.thealgorithmicbridge.com/feed
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "39 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1829,7 +1846,7 @@ sources:
     source_type: rss
     name: Intercom Blog
     url: https://www.intercom.com/blog/feed/
-    schedule_cron: "*/240 * * * *"
+    schedule_cron: "46 */4 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1843,7 +1860,7 @@ sources:
     source_type: rss
     name: Дайджест продуктового дизайна (Ветров)
     url: https://jvetrau.com/feed/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "53 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [design, ux, research]
@@ -1854,7 +1871,7 @@ sources:
     source_type: rss
     name: Noema Magazine
     url: https://www.noemamag.com/feed/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "1 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1868,7 +1885,7 @@ sources:
     source_type: rss
     name: Aeon
     url: https://aeon.co/feed.rss
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "7 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [futures, society, science]
@@ -1878,7 +1895,7 @@ sources:
     source_type: rss
     name: Asterisk Magazine
     url: https://asteriskmag.substack.com/feed
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "14 */6 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1892,7 +1909,7 @@ sources:
     source_type: rss
     name: The Robot Report
     url: https://www.therobotreport.com/feed/
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "21 */3 * * *"
     proxy_config:
       type: socks5
       host: xray
@@ -1906,7 +1923,7 @@ sources:
     source_type: rss
     name: IEEE Spectrum Robotics
     url: https://spectrum.ieee.org/feeds/topic/robotics.rss
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "28 */3 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [robotics, research, automation]
@@ -1916,7 +1933,7 @@ sources:
     source_type: rss
     name: Sifted
     url: https://sifted.eu/feed
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "39 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [startups, business_models, fintech]
@@ -1926,7 +1943,7 @@ sources:
     source_type: rss
     name: Банковское обозрение
     url: https://bosfera.ru/rss.xml
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "43 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [fintech, banking, business_models]
@@ -1936,7 +1953,7 @@ sources:
     source_type: rss
     name: Frank Media
     url: https://frankmedia.ru/feed
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "0 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [fintech, banking, business_models]
@@ -1947,7 +1964,7 @@ sources:
     source_type: web
     name: Anthropic Newsroom
     url: https://www.anthropic.com/news
-    schedule_cron: "*/240 * * * *"
+    schedule_cron: "56 */4 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, frontier]
@@ -1959,7 +1976,7 @@ sources:
     source_type: web
     name: Anthropic Research
     url: https://www.anthropic.com/research
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "3 */6 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, alignment]
@@ -1971,7 +1988,7 @@ sources:
     source_type: web
     name: Meta AI Blog
     url: https://ai.meta.com/blog/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "12 */6 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, ai, ml]
@@ -1983,7 +2000,7 @@ sources:
     source_type: web
     name: Cohere Blog
     url: https://cohere.com/blog
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "17 */6 * * *"
     extra:
       quality_tier: research
       expected_signal_types: [research, llm, enterprise]
@@ -1995,7 +2012,7 @@ sources:
     source_type: web
     name: Anthropic Engineering
     url: https://www.anthropic.com/engineering
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "24 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, engineering, product]
@@ -2007,7 +2024,7 @@ sources:
     source_type: web
     name: Contentsquare Blog
     url: https://contentsquare.com/blog/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "31 */6 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [cx, analytics, ux]
@@ -2019,7 +2036,7 @@ sources:
     source_type: web
     name: UX Feedback Blog (Voice of Customer)
     url: https://blog.uxfeedback.ru/
-    schedule_cron: "*/360 * * * *"
+    schedule_cron: "38 */6 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [cx, ux, research]
@@ -2047,7 +2064,7 @@ sources:
     source_type: web
     name: PLUSworld
     url: https://plusworld.ru/
-    schedule_cron: "*/240 * * * *"
+    schedule_cron: "53 */4 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [fintech, payments, banking]
@@ -2060,7 +2077,7 @@ sources:
     source_type: telegram
     name: UX Horn
     tg_channel: "@uxhorn"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "2 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ux, design, cx]
@@ -2072,7 +2089,7 @@ sources:
     source_type: telegram
     name: Поясни за UX
     tg_channel: "@poyasnizaux"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "6 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ux, design, research]
@@ -2084,7 +2101,7 @@ sources:
     source_type: telegram
     name: Королёв про UX research
     tg_channel: "@uxread"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "13 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ux, research, cx]
@@ -2096,7 +2113,7 @@ sources:
     source_type: telegram
     name: Клиентский опыт (CX и UX)
     tg_channel: "@cx_lab"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "22 */3 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [cx, ux, service]
@@ -2108,7 +2125,7 @@ sources:
     source_type: telegram
     name: Frank Media
     tg_channel: "@frank_media"
-    schedule_cron: "*/60 * * * *"
+    schedule_cron: "31 * * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [fintech, banking, business_models]
@@ -2120,7 +2137,7 @@ sources:
     source_type: telegram
     name: Финтехно
     tg_channel: "@fintexno"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "34 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [fintech, payments, product]
@@ -2132,7 +2149,7 @@ sources:
     source_type: telegram
     name: За рулём
     tg_channel: "@zr_ru"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "44 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [auto, ev, market]
@@ -2144,7 +2161,7 @@ sources:
     source_type: telegram
     name: EV forum / Электромобили
     tg_channel: "@EVforum"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "3 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ev, charging, auto]
@@ -2156,7 +2173,7 @@ sources:
     source_type: telegram
     name: Автопоток
     tg_channel: "@autopotoknews"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "7 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [auto, market, regulation]
@@ -2168,7 +2185,7 @@ sources:
     source_type: telegram
     name: Обозреватель БПЛА
     tg_channel: "@dronesrussia"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "10 */3 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [drones, autonomous, robotics]
@@ -2182,7 +2199,7 @@ sources:
     source_type: rss
     name: Системный Блокъ
     url: https://sysblok.ru/feed/
-    schedule_cron: "*/240 * * * *"
+    schedule_cron: "9 */4 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [science, digital_humanities, ai]
@@ -2192,7 +2209,7 @@ sources:
     source_type: telegram
     name: эйай ньюз (Санакоев)
     tg_channel: "@ai_newz"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "20 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [research, ai, llm]
@@ -2204,7 +2221,7 @@ sources:
     source_type: telegram
     name: AbstractDL (Разжигаев)
     tg_channel: "@abstractDL"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "23 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [research, ml, nlp]
@@ -2216,7 +2233,7 @@ sources:
     source_type: telegram
     name: Борис опять (Цейтлин)
     tg_channel: "@boris_again"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "30 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [research, ml, ds]
@@ -2228,7 +2245,7 @@ sources:
     source_type: telegram
     name: Время Валеры (Бабушкин)
     tg_channel: "@cryptovalerii"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "37 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [research, ml, ds]
@@ -2240,7 +2257,7 @@ sources:
     source_type: telegram
     name: TechSparks (Себрант)
     tg_channel: "@techsparks"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "46 */2 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, futures, tech]
@@ -2252,7 +2269,7 @@ sources:
     source_type: telegram
     name: LLM под капотом (Абдуллин)
     tg_channel: "@llm_under_hood"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "52 */3 * * *"
     extra:
       quality_tier: trusted
       expected_signal_types: [llm, applied, dev]
@@ -2264,7 +2281,7 @@ sources:
     source_type: telegram
     name: Метаверсище и ИИще (Цыпцын)
     tg_channel: "@cgevent"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "8 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ai, generative, media]
@@ -2276,7 +2293,7 @@ sources:
     source_type: telegram
     name: addmeto (Бакунов)
     tg_channel: "@addmeto"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "11 */3 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [tech, ai, product]
@@ -2288,7 +2305,7 @@ sources:
     source_type: telegram
     name: Hi, AI — Новости технологий
     tg_channel: "@hiaimedia"
-    schedule_cron: "*/120 * * * *"
+    schedule_cron: "21 */2 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ai, product, media]
@@ -2300,7 +2317,7 @@ sources:
     source_type: telegram
     name: AI Happens (Хахунов)
     tg_channel: "@aihappens"
-    schedule_cron: "*/180 * * * *"
+    schedule_cron: "19 */3 * * *"
     extra:
       quality_tier: standard
       expected_signal_types: [ai, product, startup]
@@ -2313,13 +2330,10 @@ sources:
   # проверяет весь путь), затем остальные структурированные, затем по одному telegram-каналу
   # с паузой в сутки. Записи ниже идут в этом порядке.
   #
-  # schedule_cron: выразимы только интервалы, которые реально даёт croniter.
-  # ingest/scheduler.py:33 cron_to_minutes скармливает строку croniter и меряет зазор
-  # между первыми двумя срабатываниями. Шаг больше диапазона минут 0-59 схлопывается
-  # в [0], то есть "*/75", "*/90", "*/120", "*/180" — все до одного ровно 60 минут.
-  # Интервал >60 задаётся ТОЛЬКО через поле часов: "0 */2 * * *" = 120, "0 */3 * * *" = 180.
-  # Правило пересчёта прежних значений: ближайший выразимый, ничья — вверх
-  # (75 → 60, 90 → 120, 120 → 120, 180 → 180).
+  # schedule_cron: правило файла целиком — в шапке sources.yml. Батч auto_hmi был
+  # заведён по нему сразу (2026-08-03), остальные 157 записей приведены к нему тогда же.
+  # Коротко: интервал >60 только через поле часов ("<m> */2 * * *" = 120, "*/3" = 180,
+  # "*/4" = 240, "*/6" = 360), шаг в минутах — только делитель 60.
   # Минута в начале строки (7, 23, 41 …) — это разнос по фазе: у каждой записи батча
   # она своя, чтобы пять telegram-каналов не приходились на одну минуту (все fetch
   # телеграма сериализуются одним _telegram_run_lock, ingest/main.py:37).
