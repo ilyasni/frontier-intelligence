@@ -17,6 +17,7 @@ from shared.metrics import (
     set_openrouter_model_health,
     set_openrouter_model_usage,
 )
+from shared.openrouter_limits import clamp_quarantine_until
 from shared.redis_client import get_client
 
 logger = logging.getLogger(__name__)
@@ -206,7 +207,10 @@ async def _load_health(redis, model_id: str) -> ModelHealth:
         fail=_int("fail"),
         latency_ms=_float("latency_ms"),
         last_check=_float("last_check"),
-        in_quarantine_until=_float("in_quarantine_until"),
+        # Потолок применяем и на ЧТЕНИИ: в Redis могут лежать отравленные
+        # значения, записанные до исправления парсера (карантин до 58554 года).
+        # Без этого они провисели бы до истечения TTL ключа.
+        in_quarantine_until=clamp_quarantine_until(_float("in_quarantine_until")),
         last_status_code=_int("last_status_code"),
         last_probe_profile=str(raw.get("last_probe_profile") or ""),
     )
@@ -460,9 +464,11 @@ async def record_call_result(
     now = time.time()
     if not success:
         if status_code == 429:
+            # Даже с исправленным парсером не доверяем значению безоговорочно:
+            # потолок в сутки делает худший случай самовосстанавливающимся.
             health.in_quarantine_until = max(
                 health.in_quarantine_until,
-                max(now + 60.0, float(or_reset_at or 0.0)),
+                max(now + 60.0, clamp_quarantine_until(or_reset_at, now=now)),
             )
         elif status_code == 402:
             health.in_quarantine_until = max(

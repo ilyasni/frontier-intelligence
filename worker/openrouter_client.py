@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import time
 from typing import Any
 
 import httpx
@@ -14,6 +13,7 @@ from shared.metrics import (
     note_openrouter_vision_request,
     note_rate_limit_event,
 )
+from shared.openrouter_limits import parse_rate_limit_reset
 from worker.gigachat_client import VISION_PROMPT, _parse_vision_payload
 from worker.llm_http import DEFAULT_LLM_HTTP_TIMEOUT
 from worker.llm_types import GigaChatResponse, usage_from_openai_payload
@@ -43,22 +43,6 @@ def _extract_text_content(message_content: Any) -> str:
     return str(message_content or "")
 
 
-def _parse_reset_at(value: str | None) -> float | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        numeric = float(raw)
-    except ValueError:
-        return None
-    now = time.time()
-    if numeric > 10_000_000_000:
-        return numeric / 1000.0
-    if numeric > 1_000_000_000:
-        return numeric
-    if numeric > now + 60:
-        return numeric
-    return now + max(0.0, numeric)
 
 
 class OpenRouterVisionError(RuntimeError):
@@ -157,7 +141,7 @@ class OpenRouterVisionClient:
         if resp.status_code >= 400:
             note_openrouter_vision_request(self._service_name, "error")
             body_preview = resp.text[:300]
-            reset_at = _parse_reset_at(resp.headers.get("X-RateLimit-Reset"))
+            reset_at = parse_rate_limit_reset(resp.headers.get("X-RateLimit-Reset"))
             note_llm_request(self._service_name, "vision", "openrouter", model, "", "error")
             if resp.status_code == 429:
                 note_rate_limit_event(self._service_name, "openrouter", "vision")

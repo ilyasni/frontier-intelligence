@@ -16,6 +16,7 @@ from admin.backend.services.openrouter_picker import (
     reserve_model_slot,
 )
 from shared.config import get_settings
+from shared.openrouter_limits import parse_rate_limit_reset
 from shared.redis_client import get_client
 
 _TINY_PNG_BYTES = base64.b64decode(
@@ -89,11 +90,10 @@ async def _probe_model(client: httpx.AsyncClient, model: dict[str, Any]) -> dict
         )
         latency_ms = (time.monotonic() - started_at) * 1000.0
         if response.status_code >= 400:
-            reset_raw = response.headers.get("X-RateLimit-Reset")
-            try:
-                reset_at = float(reset_raw) if reset_raw else None
-            except (TypeError, ValueError):
-                reset_at = None
+            # Сырой float() здесь трактовал миллисекунды как секунды: 429 с
+            # X-RateLimit-Reset=1785628800000 давал карантин до 58554 года и
+            # выводил модель из ротации навсегда (инцидент 2026-08-01).
+            reset_at = parse_rate_limit_reset(response.headers.get("X-RateLimit-Reset"))
             await record_call_result(
                 model_id,
                 success=False,

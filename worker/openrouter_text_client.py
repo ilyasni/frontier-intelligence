@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from shared.config import get_settings
 from worker.openai_compat_text_client import OpenAICompatTextClient, OpenAICompatTextError
-from worker.openrouter_client import _parse_reset_at
+from shared.openrouter_limits import parse_rate_limit_reset
 
 
 class OpenRouterTextError(OpenAICompatTextError):
@@ -43,7 +43,7 @@ class OpenRouterTextClient(OpenAICompatTextClient):
         base = super()._build_error(exc, task=task, model=model)
         response = getattr(exc, "response", None)
         headers = getattr(response, "headers", None)
-        reset_at = _parse_reset_at(headers.get("X-RateLimit-Reset")) if headers else None
+        reset_at = parse_rate_limit_reset(headers.get("X-RateLimit-Reset")) if headers else None
         return OpenRouterTextError(
             str(base),
             status_code=base.status_code,
