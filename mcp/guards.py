@@ -109,7 +109,8 @@ async def assert_public_http_url(url: str) -> None:
 # Слаги workspace форвардятся как фильтр в Qdrant/PG/Neo4j. Валидируем против
 # config/workspaces.yml (единый источник bootstrap'а). Кэш модульного уровня —
 # читаем файл один раз. НЕ хардкодим список: fallback-набор используется только
-# если файл недоступен в образе (mcp-образ его сейчас не копирует — см. отчёт).
+# если файл недоступен в образе (mcp/Dockerfile делает `COPY config/ /app/config/`,
+# поэтому в штатной сборке читается файл, а fallback — страховка).
 
 # Кандидаты пути к workspaces.yml: /app/config (как bootstrap_configs) и repo-relative
 # (mcp/guards.py → ../config/workspaces.yml) для локального dev/тестов.
@@ -120,7 +121,7 @@ _WORKSPACES_CONFIG_CANDIDATES = (
 
 # Fallback только на случай отсутствия файла в образе — держим синхронно с config/workspaces.yml.
 _FALLBACK_WORKSPACE_SLUGS = frozenset(
-    {"disruption", "ai_trends", "ai_research", "ai_products_media", "design"}
+    {"disruption", "ai_trends", "ai_research", "ai_products_media", "design", "auto_hmi"}
 )
 
 _ID_LINE_RE = re.compile(r"^\s*-\s*id\s*:\s*[\"']?([A-Za-z0-9_-]+)[\"']?\s*$")
@@ -172,7 +173,7 @@ def _load_workspace_allowlist() -> frozenset[str]:
 
     logger.warning(
         "workspace_allowlist config not found in %s; using baked-in fallback %s "
-        "(mcp image does not COPY config/ — add it to mcp/Dockerfile for a config-driven list)",
+        "(mcp/Dockerfile does COPY config/ — отсутствие файла значит устаревший образ)",
         [str(p) for p in _WORKSPACES_CONFIG_CANDIDATES],
         sorted(_FALLBACK_WORKSPACE_SLUGS),
     )

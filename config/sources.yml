@@ -942,6 +942,7 @@ sources:
     name: InsideEVs Design
     url: https://insideevs.com/rss/category/design/
     schedule_cron: "*/120 * * * *"
+    is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2026-02)
     extra:
       preset: insideevs_design
       quality_tier: trusted
@@ -958,6 +959,7 @@ sources:
     name: InsideEVs UX
     url: https://insideevs.com/rss/category/user-experience/
     schedule_cron: "*/120 * * * *"
+    is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2023-02)
     extra:
       preset: insideevs_ux
       quality_tier: trusted
@@ -1301,6 +1303,10 @@ sources:
     name: Smashing Magazine
     url: https://www.smashingmagazine.com/feed/
     schedule_cron: "*/240 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [design, frontend, ux]
@@ -1323,6 +1329,10 @@ sources:
     name: UX Collective
     url: https://uxdesign.cc/feed
     schedule_cron: "*/180 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: standard
       expected_signal_types: [design, ux]
@@ -1392,6 +1402,10 @@ sources:
     name: Ahead of AI (Raschka)
     url: https://magazine.sebastianraschka.com/feed
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: research
       expected_signal_types: [research, llm, ml]
@@ -1403,6 +1417,10 @@ sources:
     name: The Gradient
     url: https://thegradient.pub/rss/
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: research
       expected_signal_types: [research, ml, essays]
@@ -1465,6 +1483,10 @@ sources:
     name: Import AI (Jack Clark)
     url: https://importai.substack.com/feed
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, trends, policy]
@@ -1476,6 +1498,7 @@ sources:
     name: AINews (smol.ai)
     url: https://buttondown.com/ainews/rss
     schedule_cron: "*/120 * * * *"
+    is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2025-04)
     extra:
       quality_tier: standard
       expected_signal_types: [ai, trends, aggregation]
@@ -1521,6 +1544,7 @@ sources:
     name: NVIDIA Deep Learning Blog
     url: https://blogs.nvidia.com/blog/category/deep-learning/feed/
     schedule_cron: "*/180 * * * *"
+    is_enabled: false  # 2026-07-05 отключён: категория заброшена (свежайшая статья 2026-01)
     extra:
       quality_tier: standard
       expected_signal_types: [ai, hardware, product]
@@ -1628,6 +1652,7 @@ sources:
     name: UX Matters
     url: https://www.uxmatters.com/index.xml
     schedule_cron: "*/360 * * * *"
+    is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2024-03)
     extra:
       quality_tier: trusted
       expected_signal_types: [ux, research, cx]
@@ -1650,6 +1675,7 @@ sources:
     name: UX Movement
     url: https://uxmovement.com/feed/
     schedule_cron: "*/360 * * * *"
+    is_enabled: false  # 2026-07-05 отключён: фид мёртв у источника (свежайшая статья 2025-03)
     extra:
       quality_tier: standard
       expected_signal_types: [ux, usability, design]
@@ -1672,6 +1698,10 @@ sources:
     name: Prototypr
     url: https://blog.prototypr.io/feed
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: standard
       expected_signal_types: [design, product, tooling]
@@ -1683,6 +1713,10 @@ sources:
     name: CSS-Tricks
     url: https://css-tricks.com/feed/
     schedule_cron: "*/240 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: standard
       expected_signal_types: [frontend, ux, web]
@@ -1732,6 +1766,10 @@ sources:
     name: Interconnects (Nathan Lambert)
     url: https://www.interconnects.ai/feed
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: research
       expected_signal_types: [research, llm, rlhf]
@@ -1763,6 +1801,10 @@ sources:
     name: Latent Space
     url: https://www.latent.space/feed
     schedule_cron: "*/180 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [ai, product, dev]
@@ -1773,6 +1815,10 @@ sources:
     name: The Algorithmic Bridge
     url: https://www.thealgorithmicbridge.com/feed
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: standard
       expected_signal_types: [ai, trends, media]
@@ -1784,6 +1830,10 @@ sources:
     name: Intercom Blog
     url: https://www.intercom.com/blog/feed/
     schedule_cron: "*/240 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [cx, product, support]
@@ -1805,6 +1855,10 @@ sources:
     name: Noema Magazine
     url: https://www.noemamag.com/feed/
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [futures, society, science]
@@ -1825,6 +1879,10 @@ sources:
     name: Asterisk Magazine
     url: https://asteriskmag.substack.com/feed
     schedule_cron: "*/360 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [futures, science, society]
@@ -1835,6 +1893,10 @@ sources:
     name: The Robot Report
     url: https://www.therobotreport.com/feed/
     schedule_cron: "*/180 * * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [robotics, automation, mobility]
@@ -1970,6 +2032,10 @@ sources:
     name: Works in Progress
     url: https://worksinprogress.co/
     schedule_cron: "0 */6 * * *"
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
     extra:
       quality_tier: trusted
       expected_signal_types: [futures, science, progress]
@@ -2241,3 +2307,221 @@ sources:
       source_authority: 0.72
       fetch:
         lookback_hours: 240
+
+  # ── batch:auto_hmi — воркспейс auto_hmi (добавлено 2026-08-03) ──
+  # Все записи выключены. Порядок включения: сначала arXiv (дешёвый и предсказуемый,
+  # проверяет весь путь), затем остальные структурированные, затем по одному telegram-каналу
+  # с паузой в сутки. Записи ниже идут в этом порядке.
+  #
+  # schedule_cron: выразимы только интервалы, которые реально даёт croniter.
+  # ingest/scheduler.py:33 cron_to_minutes скармливает строку croniter и меряет зазор
+  # между первыми двумя срабатываниями. Шаг больше диапазона минут 0-59 схлопывается
+  # в [0], то есть "*/75", "*/90", "*/120", "*/180" — все до одного ровно 60 минут.
+  # Интервал >60 задаётся ТОЛЬКО через поле часов: "0 */2 * * *" = 120, "0 */3 * * *" = 180.
+  # Правило пересчёта прежних значений: ближайший выразимый, ничья — вверх
+  # (75 → 60, 90 → 120, 120 → 120, 180 → 180).
+  # Минута в начале строки (7, 23, 41 …) — это разнос по фазе: у каждой записи батча
+  # она своя, чтобы пять telegram-каналов не приходились на одну минуту (все fetch
+  # телеграма сериализуются одним _telegram_run_lock, ingest/main.py:37).
+  # Оговорка: сейчас минута декларативна — cron_to_minutes возвращает только интервал,
+  # а APScheduler вешает IntervalTrigger со случайным стартовым разбросом и jitter=180с
+  # (ingest/main.py:182-196). Фазу она начнёт задавать, если планировщик переведут
+  # на CronTrigger; до тех пор она фиксирует намерение и не даёт строке врать.
+  - id: auto_rss_arxiv_cs_hc_automotive
+    workspace_id: auto_hmi
+    source_type: rss
+    name: arXiv cs.HC — Automotive
+    url: https://rss.arxiv.org/rss/cs.HC
+    schedule_cron: "17 */2 * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      preset: arxiv_cs_hc
+      quality_tier: research
+      expected_signal_types: [research, hci, ux, automotive]
+      source_authority: 0.9
+      filters:
+        include_keywords: [automotive, in-vehicle, in-car, driver, driving, cockpit, dashboard, adas, autonomous vehicle, takeover, teleoperation]
+
+  - id: auto_rss_techcrunch_transportation
+    workspace_id: auto_hmi
+    source_type: rss
+    name: TechCrunch Transportation
+    url: https://techcrunch.com/category/transportation/feed/
+    schedule_cron: "37 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      preset: techcrunch_transportation
+      quality_tier: trusted
+      expected_signal_types: [mobility, startups, ev, autonomous, robotaxi]
+      source_authority: 0.77
+      parse:
+        full_content: true
+
+  - id: auto_web_ieee_spectrum_autonomous
+    workspace_id: auto_hmi
+    source_type: web
+    name: IEEE Spectrum — Autonomous Vehicles
+    url: https://spectrum.ieee.org/tag/autonomous-vehicles
+    schedule_cron: "29 */2 * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:auto_hmi
+      quality_tier: trusted
+      expected_signal_types: [autonomous, robotics, research, engineering]
+      source_authority: 0.78
+      parse:
+        full_content: false
+        listing_selector: "article, .article-card, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  - id: auto_web_automotiveworld_sdv
+    workspace_id: auto_hmi
+    source_type: web
+    name: Automotive World — SDV
+    url: https://www.automotiveworld.com/software-defined-vehicles/
+    schedule_cron: "47 */3 * * *"
+    is_enabled: false
+    proxy_config:
+      type: socks5
+      host: xray
+      port: 10808
+    extra:
+      rollout_batch: batch:auto_hmi
+      quality_tier: trusted
+      expected_signal_types: [sdv, vehicle_os, adas, cybersecurity]
+      source_authority: 0.65
+      parse:
+        full_content: false
+        listing_selector: "article, .card, li"
+        link_selector: "a[href]"
+        title_selector: "h2, h3"
+        date_selector: "time"
+        article_selector: "article, main"
+
+  # 2026-08-03: копия design_rss_insideevs_ux. Фид мёртв у источника (свежайшая статья 2023-02),
+  # включать смысла нет — оставлен для полноты набора, живые альтернативы: rss_insideevs_all,
+  # rss_insideevs_autonomous (оба в disruption).
+  - id: auto_rss_insideevs_ux
+    workspace_id: auto_hmi
+    source_type: rss
+    name: InsideEVs UX
+    url: https://insideevs.com/rss/category/user-experience/
+    schedule_cron: "5 */2 * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      preset: insideevs_ux
+      quality_tier: trusted
+      expected_signal_types: [ux, hmi, in_vehicle_experience]
+      source_authority: 0.66
+      filters:
+        include_keywords: [ux, hmi, user experience, cockpit, interface, driver display]
+      parse:
+        full_content: false
+
+  # telegram: блоки filters намеренно НЕ заданы. TelegramSource наследуется от AbstractSource,
+  # matches_filters живёт в StructuredSource (ingest/sources/base.py:338) и на этом пути не
+  # вызывается — записанный фильтр был бы враньём о том, что поток отфильтрован. Отсекает только LLM.
+  - id: auto_tg_ru_atom
+    workspace_id: auto_hmi
+    source_type: telegram
+    name: АТОМ
+    tg_channel: "@atom_auto"
+    schedule_cron: "7 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      quality_tier: primary
+      expected_signal_types: [oem, ev, hmi, vehicle_software]
+      source_authority: 0.8
+      source_region: ru
+      market_scope: local
+      vision:
+        mode: skip
+      fetch:
+        lookback_hours: 72
+
+  - id: auto_tg_ru_rusautomobile
+    workspace_id: auto_hmi
+    source_type: telegram
+    name: Русский автомобиль
+    tg_channel: "@rusautomobile2"
+    schedule_cron: "23 * * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      quality_tier: exploratory
+      expected_signal_types: [auto, ru_market, car_news]
+      source_authority: 0.55
+      source_region: ru
+      market_scope: local
+      vision:
+        mode: skip
+      fetch:
+        lookback_hours: 72
+
+  - id: auto_tg_ru_avtovoz
+    workspace_id: auto_hmi
+    source_type: telegram
+    name: Автовоз
+    tg_channel: "@avto_voz"
+    schedule_cron: "11 */2 * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      quality_tier: trusted
+      expected_signal_types: [auto, ru_market, car_news, ev]
+      source_authority: 0.68
+      source_region: ru
+      market_scope: local
+      vision:
+        mode: skip
+      fetch:
+        lookback_hours: 72
+
+  - id: auto_tg_ru_atelega
+    workspace_id: auto_hmi
+    source_type: telegram
+    name: Автотелеграм
+    tg_channel: "@atelega"
+    schedule_cron: "41 */2 * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      quality_tier: trusted
+      expected_signal_types: [auto, ru_market, car_news]
+      source_authority: 0.66
+      source_region: ru
+      market_scope: local
+      vision:
+        mode: skip
+      fetch:
+        lookback_hours: 72
+
+  - id: auto_tg_ru_mashinatory
+    workspace_id: auto_hmi
+    source_type: telegram
+    name: МАШИНАТОРЫ
+    tg_channel: "@mashinatory"
+    schedule_cron: "53 */2 * * *"
+    is_enabled: false
+    extra:
+      rollout_batch: batch:auto_hmi
+      quality_tier: standard
+      expected_signal_types: [auto, ru_market, car_news, hmi]
+      source_authority: 0.6
+      source_region: ru
+      market_scope: local
+      vision:
+        mode: skip
+      fetch:
+        lookback_hours: 72
