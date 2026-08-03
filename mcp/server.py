@@ -36,6 +36,7 @@ from mcp.tools.ingest_url import router as ingest_router
 from mcp.tools.observability import router as observability_router
 from mcp.tools.threshold_proposals import router as threshold_proposals_router
 from mcp.tools.graph_health import router as graph_health_router
+from mcp.tools.editorial import router as editorial_router
 from shared.qdrant_sparse import HAS_SPARSE
 
 
@@ -61,6 +62,7 @@ app.include_router(ingest_router, prefix="/tools/ingest_url", tags=["ingest"])
 app.include_router(observability_router, prefix="/tools", tags=["observability"])
 app.include_router(threshold_proposals_router, prefix="/tools", tags=["rsi"])
 app.include_router(graph_health_router, prefix="/tools", tags=["rsi"])
+app.include_router(editorial_router, prefix="/tools", tags=["editorial"])
 
 
 @app.get("/healthz")
@@ -453,6 +455,47 @@ async def list_tools():
                         "note": {"type": "string", "description": "Optional reason"},
                     },
                     "required": ["proposal_id"],
+                },
+            },
+            {
+                "name": "export_inbox_cards",
+                "description": "Editorial loop: pull the top signals for a workspace and render them as inbox cards (one topic line, one number traceable to a DB column, an empty question slot). Returns a fresh batch_id, the cards in the exact shape record_card_feedback accepts, and markdown to append to content/inbox.md. Writes no file — the local agent does that. Also returns 'axes' — which of relevance_at_pick / own_stake_at_pick actually exist for this card kind (both are NULL for emerging/trend/missing: no relevance column in those tables) — and, when the result is empty and the source supports it (missing only), 'last_run' so 'no gaps' is distinguishable from 'the analysis job is broken'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Workspace ID"},
+                        "limit": {"type": "integer", "description": "Cards to return, 2..10 (default: 5)"},
+                        "source": {"type": "string", "description": "emerging | trend | missing (default: emerging)"},
+                        "days_back": {"type": "integer", "description": "Lookback window in days (default: 14)"},
+                    },
+                    "required": ["workspace"],
+                },
+            },
+            {
+                "name": "record_card_feedback",
+                "description": "Editorial loop: record which card of a weekly batch the author picked. One row per card, exactly one verdict=chosen per batch_id, the rest passed carrying the shared reason — the shared reason explains why the OTHERS were passed over, so it is never written to the chosen row. Omit chosen_entity_id for the half of a cross-workspace batch that holds no pick; a second chosen on the same batch_id is rejected with 409. A workspace that exists in config/workspaces.yml but was never bootstrapped into Postgres is rejected with 400 naming the bootstrap call, before anything is written. Append-only: re-posting the same batch_id is a no-op, so use a new batch_id to change a decision.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Workspace ID"},
+                        "batch_id": {"type": "string", "description": "batch_id minted by export_inbox_cards"},
+                        "cards": {"type": "array", "items": {"type": "object"}, "description": "2..10 cards as returned by export_inbox_cards (entity_kind, entity_id, title, metric_name, metric_value, relevance, own_stake, stake_quadrant, question, reason). Per-card 'reason' is optional and is the only way to say something about the chosen card itself — the batch-level reason never lands on it"},
+                        "chosen_entity_id": {"type": "string", "description": "entity_id of the picked card; must match exactly one card. Omit when this call carries the chosen-less half of a cross-workspace batch"},
+                        "reason": {"type": "string", "description": "Why the OTHERS were passed over. Stored on the passed rows only; the chosen row keeps NULL unless that card carries its own per-card reason"},
+                        "reviewed_by": {"type": "string", "description": "Who reviewed (default: author)"},
+                    },
+                    "required": ["workspace", "batch_id", "cards"],
+                },
+            },
+            {
+                "name": "list_card_feedback",
+                "description": "Editorial loop: accumulated card feedback. Title and the card number come from the stored snapshot, so rows survive the signal tables being rebuilt or wiped. Each row also carries batch_reason — its batch's shared 'why the others were passed over' — because the chosen row's own reason is NULL by design. The response includes axes_filled, the count of rows that actually have relevance_at_pick / own_stake_at_pick, so half-empty pairs do not accumulate unnoticed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Optional workspace ID filter"},
+                        "limit": {"type": "integer", "description": "Max rows to return (default: 50)"},
+                    },
                 },
             },
         ]

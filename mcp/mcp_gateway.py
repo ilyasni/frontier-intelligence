@@ -27,6 +27,38 @@ mcp = FastMCP(
 )
 
 
+def _raise_for_status_with_detail(response: httpx.Response) -> None:
+    """raise_for_status, но с текстом detail из тела ответа.
+
+    httpx собирает сообщение HTTPStatusError только из статуса и URL, тело он не читает:
+    подсказка «этот воркспейс не забутстраплен, вызови POST /api/workspaces/bootstrap»
+    до автора не доходит, он видит голое «Client error '400 Bad Request'». FastMCP
+    показывает клиенту str(exc), поэтому detail надо положить в само сообщение.
+
+    Тип исключения остаётся httpx.HTTPStatusError — то же, что бросал бы raise_for_status.
+    """
+    if not response.is_error:
+        return
+    detail: str | None = None
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        raw = payload.get("detail")
+        if isinstance(raw, str) and raw.strip():
+            detail = raw.strip()
+    if detail is None:
+        # Тело не в форме {"detail": "..."} — добавить нечего, поведение прежнее.
+        response.raise_for_status()
+        return
+    raise httpx.HTTPStatusError(
+        f"{response.status_code} {response.reason_phrase} from {response.url}: {detail}",
+        request=response.request,
+        response=response,
+    )
+
+
 @mcp.tool(
     description=(
         "Search frontier intelligence documents using hybrid vector search. "
@@ -431,6 +463,101 @@ async def get_signal_timeline(
         r = await client.post(
             f"{REST_BASE}/tools/get_signal_timeline",
             json={"entity_kind": entity_kind, "entity_id": entity_id, "workspace": workspace},
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "Editorial loop: pull top signals for a workspace as inbox cards (one topic line, "
+        "one number traceable to a DB column, empty question slot). Returns batch_id, cards "
+        "in the exact shape record_card_feedback accepts, and markdown for content/inbox.md. "
+        "Writes no file. Also returns 'axes' — which of relevance_at_pick / own_stake_at_pick "
+        "exist for this card kind (both NULL for emerging/trend/missing: those tables have no "
+        "relevance column) — and, on an empty result from a source that exposes it (missing "
+        "only), 'last_run', so 'no gaps' is distinguishable from 'the analysis job is broken'."
+    )
+)
+async def export_inbox_cards(
+    workspace: str,
+    limit: int = 5,
+    source: str = "emerging",
+    days_back: int = 14,
+) -> dict:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/export_inbox_cards",
+            json={
+                "workspace": workspace,
+                "limit": limit,
+                "source": source,
+                "days_back": days_back,
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "Editorial loop: record which card of a weekly batch the author picked. One row per "
+        "card, exactly one chosen per batch_id, the rest passed carrying the shared reason. "
+        "The shared reason explains why the OTHERS were passed over, so it is never stored on "
+        "the chosen row — to say something about the picked card, put a per-card 'reason' on "
+        "that card. Omit chosen_entity_id when this call carries the half of a cross-workspace "
+        "batch that holds no pick — a second chosen on the same batch_id is rejected with 409. "
+        "A workspace present in config/workspaces.yml but never bootstrapped into Postgres is "
+        "rejected with 400 naming the bootstrap call, before anything is written. "
+        "Append-only — re-posting the same batch_id is a no-op, use a new batch_id to "
+        "change a decision."
+    )
+)
+async def record_card_feedback(
+    workspace: str,
+    batch_id: str,
+    cards: list[dict],
+    chosen_entity_id: str | None = None,
+    reason: str | None = None,
+    reviewed_by: str = "author",
+) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/record_card_feedback",
+            json={
+                "workspace": workspace,
+                "batch_id": batch_id,
+                "cards": cards,
+                "chosen_entity_id": chosen_entity_id,
+                "reason": reason,
+                "reviewed_by": reviewed_by,
+            },
+        )
+        # Единственный инструмент, у которого 4xx-тело — инструкция к починке (400 «сначала
+        # забутстрапь воркспейс», 409 «у батча уже есть chosen, пришли новый batch_id»),
+        # а разметка пятёрки при этом набрана руками и теряется. Остальные инструменты
+        # шлюза намеренно не трогаю — это отдельный проход.
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "Editorial loop: accumulated card feedback. Title and card number come from the stored "
+        "snapshot, so rows survive the signal tables being rebuilt or wiped. Each row carries "
+        "batch_reason — its batch's shared 'why the others were passed over' — because the "
+        "chosen row's own reason is NULL by design. The response includes axes_filled: how many "
+        "rows actually have relevance_at_pick / own_stake_at_pick."
+    )
+)
+async def list_card_feedback(
+    workspace: str | None = None,
+    limit: int = 50,
+) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/list_card_feedback",
+            json={"workspace": workspace, "limit": limit},
         )
         r.raise_for_status()
         return r.json()
