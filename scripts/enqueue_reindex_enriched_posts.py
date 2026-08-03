@@ -8,6 +8,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from shared.redis_client import STREAM_MAXLEN
 from shared.reindex import STREAM_POSTS_REINDEX, build_post_reindex_event
 from shared.sqlalchemy_pool import ASYNC_ENGINE_POOL_KWARGS
 
@@ -59,7 +60,7 @@ async def enqueue_reindex_events(
                     reason="backfill:" + ",".join(kinds),
                     source="enqueue_reindex_enriched_posts",
                 ),
-                maxlen=100_000,
+                maxlen=STREAM_MAXLEN,
                 approximate=True,
             )
             queued += 1

@@ -410,7 +410,11 @@ class GigaChatClient:
         ).hexdigest()
 
         if self._redis:
-            cached = await self._redis.get(key)
+            try:
+                cached = await self._redis.get(key)
+            except Exception:
+                logger.warning("embed_cache_read_failed", exc_info=True)
+                cached = None
             if cached:
                 return json.loads(cached)
 
@@ -468,7 +472,12 @@ class GigaChatClient:
             )
 
         if self._redis:
-            await self._redis.setex(key, EMBED_CACHE_TTL, json.dumps(vector))
+            # Кэш — best-effort: отказ записи (например Redis OOM) не должен
+            # ронять уже успешно посчитанный вектор и весь запрос поиска.
+            try:
+                await self._redis.setex(key, EMBED_CACHE_TTL, json.dumps(vector))
+            except Exception:
+                logger.warning("embed_cache_write_failed", exc_info=True)
 
         return vector
 

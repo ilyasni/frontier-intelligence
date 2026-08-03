@@ -5,6 +5,19 @@ from .config import get_settings
 
 _pool: Optional[aioredis.ConnectionPool] = None
 
+# Потолок длины event-bus стримов.
+#
+# Тримминг тут был и раньше, но с потолком 100_000 — недостижимо высоким, чтобы
+# сработать: 31.07.2026 stream:posts:parsed занял ~836MB всего на 61.5k событиях
+# (~13KB на событие — в них лежит полный текст поста). У стримов нет TTL, а политика
+# maxmemory-policy=volatile-ttl вытесняет только ключи с TTL, поэтому вытеснить их
+# Redis не мог: переполнение превратилось в OOM на КАЖДОЙ записи и уронило ingest,
+# enrichment и поиск разом.
+#
+# 10k событий ≈ 136MB на самый тяжёлый стрим, ~250MB на все пять — с запасом
+# укладывается в maxmemory. Менять вместе с `--maxmemory` в docker-compose.yml.
+STREAM_MAXLEN = 10_000
+
 
 def get_pool() -> aioredis.ConnectionPool:
     global _pool
@@ -31,7 +44,7 @@ def get_client() -> aioredis.Redis:
     return aioredis.Redis(connection_pool=get_pool())
 
 
-async def xadd(stream: str, data: dict, maxlen: int = 100_000) -> str:
+async def xadd(stream: str, data: dict, maxlen: int = STREAM_MAXLEN) -> str:
     """Add message to Redis Stream."""
     client = get_client()
     payload = {k: json.dumps(v) if not isinstance(v, str) else v for k, v in data.items()}
@@ -97,7 +110,7 @@ class RedisClient:
         if self.redis:
             await self.redis.aclose()
 
-    async def xadd(self, stream: str, data: dict, maxlen: int = 100_000) -> str:
+    async def xadd(self, stream: str, data: dict, maxlen: int = STREAM_MAXLEN) -> str:
         import json
         payload = {k: json.dumps(v) if not isinstance(v, (str, int, float)) else str(v)
                    for k, v in data.items()}

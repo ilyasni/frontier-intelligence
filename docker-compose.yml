@@ -32,7 +32,13 @@ services:
   redis:
     image: redis:7-alpine
     profiles: [core]
-    command: redis-server --save 60 1 --loglevel warning --maxmemory 512mb --maxmemory-policy volatile-ttl
+    # maxmemory 2gb: 512mb не хватало — 31.07.2026 event-bus стримы упёрлись в потолок
+    # и Redis начал отвечать OOM на каждую запись, положив ingest, enrichment и поиск.
+    # Потолок длины самих стримов задаётся STREAM_MAXLEN в shared/redis_client.py —
+    # менять эти два значения согласованно.
+    # volatile-ttl оставлен намеренно: TTL есть только у кэша эмбеддингов, поэтому под
+    # давлением вытесняется именно он, а стримы (без TTL) остаются нетронутыми.
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 2gb --maxmemory-policy volatile-ttl
     volumes:
       - redis_data:/data
     healthcheck:
