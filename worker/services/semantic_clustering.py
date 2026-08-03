@@ -602,6 +602,47 @@ async def _finish_run(
     )
 
 
+async def _mark_run_failed(
+    session: AsyncSession,
+    run_id: str,
+    workspace_id: str | None,
+    exc: BaseException,
+) -> None:
+    """Записать status='error' так, чтобы это не могло замаскировать первопричину.
+
+    Если исключение пришло от БД, транзакция сессии уже в aborted-состоянии и любой
+    следующий execute() падает с InFailedSQLTransactionError. Без rollback запись
+    статуса проваливалась гарантированно: исходное исключение подменялось, `raise`
+    не выполнялся, прогон навсегда оставался в 'running'. Так отказ аналитики
+    2026-07-31..08-02 прошёл незамеченным 54 часа — 93 осиротевшие строки, ни одной
+    'error' и APScheduler, рапортующий "executed successfully".
+
+    Сбой самой этой записи наружу не пробрасывается: вызывающий код обязан сделать
+    `raise` исходного исключения, и подменять его нельзя.
+    """
+    try:
+        await session.rollback()
+        await _finish_run(
+            session,
+            run_id,
+            "error",
+            {
+                "workspace_id": workspace_id,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:2000],
+            },
+            {},
+        )
+        await session.commit()
+    except Exception:
+        logger.exception(
+            "Не удалось записать status='error' для run_id=%s workspace=%s; "
+            "первопричина залогирована выше",
+            run_id,
+            workspace_id,
+        )
+
+
 async def _existing(
     session: AsyncSession, table: str, workspace_id: str | None, age_hours: int
 ) -> list[dict[str, Any]]:
@@ -2549,9 +2590,15 @@ async def run_semantic_clustering(workspace_id: str | None = None) -> dict[str, 
             qdrant_index = await _index_trend_clusters_in_qdrant(
                 qdrant, run_id=run_id, stable=stable
             )
-        except Exception:
-            await _finish_run(session, run_id, "error", {"workspace_id": workspace_id}, {})
-            await session.commit()
+        except Exception as exc:
+            # Логируем первопричину ДО попытки записи статуса: если запись сама
+            # упадёт, исходное исключение иначе теряется безвозвратно.
+            logger.exception(
+                "run_semantic_clustering failed for workspace=%s run_id=%s",
+                workspace_id,
+                run_id,
+            )
+            await _mark_run_failed(session, run_id, workspace_id, exc)
             raise
         finally:
             await qdrant.close()
@@ -2667,9 +2714,15 @@ async def run_signal_analysis(workspace_id: str | None = None) -> dict[str, Any]
             qdrant_index = await _index_trend_clusters_in_qdrant(
                 qdrant, run_id=run_id, stable=stable
             )
-        except Exception:
-            await _finish_run(session, run_id, "error", {"workspace_id": workspace_id}, {})
-            await session.commit()
+        except Exception as exc:
+            # См. комментарий в run_semantic_clustering: первопричина логируется
+            # до любой recovery-записи.
+            logger.exception(
+                "run_signal_analysis failed for workspace=%s run_id=%s",
+                workspace_id,
+                run_id,
+            )
+            await _mark_run_failed(session, run_id, workspace_id, exc)
             raise
         finally:
             await qdrant.close()

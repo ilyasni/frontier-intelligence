@@ -547,23 +547,110 @@ groups:
           summary: "Кросс-семейный novelty-judge падает на всех кандидатах"
           description: "За 6ч все вердикты судьи — failed, успешных ноль. Похоже, обе семьи DeepSeek (wormsoft + polza) недоступны. Судья слепых зон и ранний сигнал B→A фактически выключены."
 
+      # NoNewPosts: пороги дифференцированы по объёму workspace, чтобы штатная ночная
+      # тишина низкообъёмных workspace не поднимала ложный CRITICAL.
+      #   Высокообъёмные (disruption, ai_products_media, …) — 6ч warn / 12ч crit.
+      #   Низкообъёмные (design, ai_research, ai_trends, auto_hmi) живут на 1–2 источниках
+      #   и штатно молчат ночью до ~17ч → им 24ч warn / 36ч crit.
+      # auto_hmi добавлен 2026-08-03: воркспейс стартует с 1-3 включённых источников
+      # (батч batch:auto_hmi раскатывается по одному), метрика появляется с первым же
+      # постом — на высокообъёмных порогах он ложно сработал бы в первую тихую ночь.
+      # Матчеры взаимоисключающие, поэтому одинаковое имя алерта не конфликтует
+      # (инстансы различаются лейблом workspace).
+      # LOW_VOLUME_SET: design|ai_research|ai_trends|auto_hmi — правится во всех ЧЕТЫРЁХ
+      # выражениях ниже сразу (два !~ для high_volume, два =~ для low_volume).
       - alert: FrontierNoNewPosts
-        expr: max by (workspace) (frontier_last_post_age_seconds) > 21600
+        expr: max by (workspace) (frontier_last_post_age_seconds{workspace!~"design|ai_research|ai_trends|auto_hmi"}) > 21600
         for: 15m
         labels:
           severity: warning
           service: admin
+          tier: high_volume
         annotations:
           summary: "Данные перестали поступать в {{ $labels.workspace }}"
           description: "Свежайшему посту в {{ $labels.workspace }} уже {{ $value | humanizeDuration }} (>6ч). Ingest, парсинг или запись в БД могли встать. Проверь source_runs, логи ingest/worker и Redis stream:posts:parsed."
 
       - alert: FrontierNoNewPostsCritical
-        expr: max by (workspace) (frontier_last_post_age_seconds) > 43200
+        expr: max by (workspace) (frontier_last_post_age_seconds{workspace!~"design|ai_research|ai_trends|auto_hmi"}) > 43200
+        for: 15m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+          tier: high_volume
+        annotations:
+          summary: "Полная тишина данных в {{ $labels.workspace }}"
+          description: "Свежайшему посту в {{ $labels.workspace }} уже {{ $value | humanizeDuration }} (>12ч). Пайплайн приёма данных, вероятно, полностью стоит. Немедленно проверь ingest, worker и запись в posts."
+
+      # Низкообъёмные workspace: мягкие пороги (24ч warn / 36ч crit).
+      - alert: FrontierNoNewPosts
+        expr: max by (workspace) (frontier_last_post_age_seconds{workspace=~"design|ai_research|ai_trends|auto_hmi"}) > 86400
+        for: 15m
+        labels:
+          severity: warning
+          service: admin
+          tier: low_volume
+        annotations:
+          summary: "Данные перестали поступать в {{ $labels.workspace }} (низкообъёмный)"
+          description: "Свежайшему посту в {{ $labels.workspace }} уже {{ $value | humanizeDuration }} (>24ч, порог низкообъёмного workspace). Проверь source_runs, логи ingest/worker и Redis stream:posts:parsed."
+
+      - alert: FrontierNoNewPostsCritical
+        expr: max by (workspace) (frontier_last_post_age_seconds{workspace=~"design|ai_research|ai_trends|auto_hmi"}) > 129600
+        for: 15m
+        labels:
+          severity: critical
+          service: admin
+          notify: telegram
+          tier: low_volume
+        annotations:
+          summary: "Полная тишина данных в {{ $labels.workspace }} (низкообъёмный)"
+          description: "Свежайшему посту в {{ $labels.workspace }} уже {{ $value | humanizeDuration }} (>36ч, порог низкообъёмного workspace). Пайплайн приёма данных, вероятно, стоит. Проверь ingest, worker и запись в posts."
+
+  # ── Свежесть аналитического слоя ────────────────────────────────────────────
+  # Инцидент 31.07–02.08.2026: clustering и signal-analysis падали на всех 5
+  # workspace 54 часа, а APScheduler рапортовал "executed successfully" — потому
+  # что error-хендлер пишет UPDATE cluster_runs в уже аборченной транзакции и
+  # падает сам. В cluster_runs за 3 дня: 47 строк 'running', НОЛЬ строк 'error'.
+  # Вывод: алертить по статусу джоба нельзя, он врёт. Смотрим на результат в
+  # данных — сдвинулся ли max(updated_at). Метрику пишет по cron
+  # scripts/export-analysis-freshness.sh в node_exporter textfile collector.
+  - name: frontier_analysis_freshness
+    rules:
+      # Штатно полный пересчёт идёт ночью (cron 03:35), т.е. возраст до ~24ч —
+      # норма. 48ч = пропущено два ночных прогона подряд.
+      - alert: FrontierAnalysisStale
+        expr: time() - max by (workspace, table) (frontier_analysis_last_update_timestamp_seconds) > 172800
+        for: 15m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Аналитика {{ $labels.table }} не обновлялась в {{ $labels.workspace }}"
+          description: "Последняя запись в {{ $labels.table }} для {{ $labels.workspace }} была {{ $value | humanizeDuration }} назад (>48ч). Ingest при этом может быть полностью здоров — проверять надо аналитический слой. ВАЖНО: статус джоба смотреть бесполезно, провал пишется как success. Первопричину ошибок схемы видно ТОЛЬКО в `docker logs frontier-intelligence-postgres-1`, в логах admin её нет. Перезапуск вручную: docker exec frontier-intelligence-admin-1 python -m admin.backend.manual_jobs run_semantic_clusters <workspace>"
+
+      - alert: FrontierAnalysisStaleCritical
+        expr: time() - max by (workspace, table) (frontier_analysis_last_update_timestamp_seconds) > 345600
         for: 15m
         labels:
           severity: critical
           service: admin
           notify: telegram
         annotations:
-          summary: "Полная тишина данных в {{ $labels.workspace }}"
-          description: "Свежайшему посту в {{ $labels.workspace }} уже {{ $value | humanizeDuration }} (>12ч). Пайплайн приёма данных, вероятно, полностью стоит. Немедленно проверь ingest, worker и запись в posts."
+          summary: "Аналитика {{ $labels.table }} стоит четвёртые сутки ({{ $labels.workspace }})"
+          description: "Последняя запись в {{ $labels.table }} для {{ $labels.workspace }} была {{ $value | humanizeDuration }} назад (>96ч). MCP отдаёт клиентам устаревшие кластеры и сигналы без признака устаревания. Проверь миграции БД (расхождение схемы с кодом — известная причина), OOM субпроцессов admin и логи postgres."
+
+      # Страховка от тихой смерти самого экспортёра: если cron перестанет писать
+      # .prom-файл, серия исчезнет и оба правила выше замолчат, не зафиксировав
+      # ни одного отказа. Ровно так уже умер FrontierManualSignalJobFailedRecently,
+      # который висит на пустом векторе с 10.04.2026 и не может сработать в принципе.
+      - alert: FrontierAnalysisFreshnessExporterDown
+        expr: absent(frontier_analysis_last_update_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: warning
+          service: monitoring
+          notify: telegram
+        annotations:
+          summary: "Экспортёр свежести аналитики молчит"
+          description: "Серия frontier_analysis_last_update_timestamp_seconds отсутствует >30м, значит FrontierAnalysisStale сейчас не может сработать в принципе. Проверь cron scripts/export-analysis-freshness.sh, каталог prometheus/textfile и флаг --collector.textfile.directory у node-exporter."

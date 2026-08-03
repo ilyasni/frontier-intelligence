@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -173,11 +174,30 @@ async def _run_job_subprocess(job_name: str, workspace_id: str | None) -> dict[s
             f"workspace_id={workspace_id or '__all__'}"
         ) from exc
     if process.returncode != 0:
-        err_text = (
-            stderr or stdout or b"job_subprocess_failed"
-        ).decode("utf-8", errors="replace").strip()
-        raise RuntimeError(err_text)
+        err_text = (stderr or stdout or b"").decode("utf-8", errors="replace").strip()
+        # Ребёнок, убитый сигналом (SIGKILL при memcg-OOM), не оставляет ни stdout,
+        # ни stderr — сообщение вырождалось в безликое "job_subprocess_failed",
+        # неотличимое от логической ошибки. Из-за этого OOM на workspace=disruption
+        # не замечали с апреля по август 2026. Код возврата прикладываем всегда.
+        raise RuntimeError(
+            f"{err_text or 'job_subprocess_failed: дочерний процесс не оставил вывода'} "
+            f"[{_describe_returncode(process.returncode)} job_name={job_name} "
+            f"workspace_id={workspace_id or '__all__'}]"
+        )
     return json.loads((stdout or b"{}").decode("utf-8", errors="replace"))
+
+
+def _describe_returncode(returncode: int | None) -> str:
+    """Расшифровать код возврата: отрицательный означает смерть от сигнала."""
+    if returncode is None:
+        return "exit_code=unknown"
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:
+            name = f"SIG{-returncode}"
+        return f"killed_by={name} exit_code={returncode}"
+    return f"exit_code={returncode}"
 
 
 async def _terminate_job_subprocess(
@@ -600,24 +620,46 @@ async def _run_for_active_workspaces(
         for workspace_id in workspace_ids:
             try:
                 results.append(await _run_job_subprocess(job_name, workspace_id))
-            except Exception:
+            except Exception as exc:
                 logger.exception("%s failed for workspace=%s", job_name, workspace_id)
                 results.append(
                     {
                         "status": "error",
                         "workspace_id": workspace_id,
                         "job_name": job_name,
+                        # Без текста ошибки запись в admin_manual_jobs.summary
+                        # сообщала только сам факт падения, и причину приходилось
+                        # искать в логах вручную.
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:2000],
                     }
                 )
-        logger.info(
-            "Completed %s for %d active workspaces",
-            job_name,
-            len(workspace_ids),
-        )
+        # Раньше здесь безусловно возвращался status="ok" и логировалось
+        # "Completed ... for N active workspaces" — даже когда падали ВСЕ N.
+        # Вместе с APScheduler, который логирует job как executed successfully,
+        # это давало полностью бесшумный отказ подсистемы.
+        failed = [item for item in results if item.get("status") == "error"]
+        if failed:
+            logger.error(
+                "%s: %d из %d workspace упали (%s)",
+                job_name,
+                len(failed),
+                len(workspace_ids),
+                ", ".join(str(item.get("workspace_id")) for item in failed),
+            )
+        else:
+            logger.info(
+                "Completed %s for %d active workspaces",
+                job_name,
+                len(workspace_ids),
+            )
         return {
-            "status": "ok",
+            # Любой упавший workspace => "error": статус читают метрики и алерты,
+            # им нужен факт «что-то сломалось», детализация — в failed_count/results.
+            "status": "error" if failed else "ok",
             "job_name": job_name,
             "workspace_count": len(workspace_ids),
+            "failed_count": len(failed),
             "results": results,
         }
 

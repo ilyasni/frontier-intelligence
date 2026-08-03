@@ -111,10 +111,16 @@ def test_run_for_active_workspaces_isolates_workspace_failure(monkeypatch) -> No
 
     result = asyncio.run(_run())
 
-    assert result["status"] == "ok"
+    # Изоляция сохраняется: beta отработал. Но агрегированный статус обязан быть
+    # "error" — раньше здесь возвращалось "ok" даже когда падали все workspace,
+    # из-за чего отказ аналитики 2026-07-31..08-02 прошёл незамеченным 54 часа.
+    assert result["status"] == "error"
+    assert result["failed_count"] == 1
     assert result["workspace_count"] == 2
     assert result["results"][0]["status"] == "error"
     assert result["results"][0]["workspace_id"] == "alpha"
+    assert result["results"][0]["error_type"] == "RuntimeError"
+    assert "subprocess exploded" in result["results"][0]["error"]
     assert result["results"][1]["status"] == "ok"
 
 
@@ -189,6 +195,44 @@ def test_run_job_subprocess_raises_on_nonzero_exit(monkeypatch) -> None:
     asyncio.run(_run())
 
     assert "boom traceback" in error_message["msg"]
+
+
+def test_describe_returncode_distinguishes_signal_from_exit_code() -> None:
+    """OOM-kill обязан быть отличим от логической ошибки.
+
+    Убитый SIGKILL субпроцесс не оставляет вывода, и раньше сообщение вырождалось
+    в безликое "job_subprocess_failed" — из-за этого OOM на workspace=disruption
+    не замечали с апреля по август 2026.
+    """
+    assert scheduler_module._describe_returncode(1) == "exit_code=1"
+    assert scheduler_module._describe_returncode(None) == "exit_code=unknown"
+
+    killed = scheduler_module._describe_returncode(-9)
+    assert "SIGKILL" in killed
+    assert "exit_code=-9" in killed
+
+
+def test_run_job_subprocess_reports_returncode_when_child_left_no_output(monkeypatch) -> None:
+    """Ребёнок, убитый сигналом, не пишет ни stdout, ни stderr."""
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc(b"", b"", -9)
+
+    monkeypatch.setattr(scheduler_module.asyncio, "create_subprocess_exec", _fake_exec)
+
+    captured = {}
+
+    async def _run():
+        try:
+            await scheduler_module._run_job_subprocess("run_signal_analysis", "disruption")
+        except RuntimeError as exc:
+            captured["msg"] = str(exc)
+
+    asyncio.run(_run())
+
+    assert "SIGKILL" in captured["msg"]
+    assert "run_signal_analysis" in captured["msg"]
+    assert "disruption" in captured["msg"]
 
 
 def test_job_subprocess_timeout_env_override(monkeypatch) -> None:

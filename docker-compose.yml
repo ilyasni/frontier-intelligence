@@ -618,13 +618,16 @@ services:
     # через `python -m admin.backend.manual_jobs`. Два CPU-heavy clustering-джоба делят
     # _cluster_lock и не пересекаются, остальное I/O-bound (LLM/Neo4j) — но без cgroup-лимита
     # неожиданный оверлап мог бы задушить co-located mcp/postgres/neo4j на том же хосте.
-    # Лимиты консервативные, в одном стиле с worker (memory: 2g). Хост — 3 ядра / 22Gi,
-    # поэтому cpus=1.5 (половина хоста): квота ограничивает суммарное потребление вне
-    # зависимости от числа BLAS/numpy-потоков в субпроцессе и оставляет ≥1.5 ядра стеку.
+    # Хост — 3 ядра / 22Gi, поэтому cpus=1.5 (половина хоста): квота ограничивает суммарное
+    # потребление вне зависимости от числа BLAS/numpy-потоков в субпроцессе и оставляет
+    # ≥1.5 ядра стеку.
+    # memory: 4g (у worker 2g) — signal_analysis для workspace=disruption материализует
+    # ~23k строк emerging_signals и стабильно ловил memcg-OOM на 2g: cgroup oom_kill рос
+    # каждые 8ч при RestartCount=0 и health 200, т.е. падение было полностью бесшумным.
     deploy:
       resources:
         limits:
-          memory: 2g
+          memory: 4g
           cpus: "1.5"
     depends_on:
       postgres:
@@ -746,10 +749,17 @@ services:
       - --path.procfs=/host/proc
       - --path.sysfs=/host/sys
       - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/lib/containerd/.+)($|/)
+      # Textfile-коллектор: метрики, которые некому экспортировать из приложения.
+      # Пишет scripts/export-analysis-freshness.sh по cron — см. FrontierAnalysisStale.
+      # Нужен потому, что провал clustering/signal-analysis логируется как успех
+      # (error-хендлер падает в аборченной транзакции), и алертить надо по результату
+      # в данных, а не по статусу джоба.
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
     volumes:
       - /:/host:ro,rslave
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
+      - ./prometheus/textfile:/var/lib/node_exporter/textfile:ro
     logging: *docker-json-logging
     restart: unless-stopped
     networks: [frontier-net]
