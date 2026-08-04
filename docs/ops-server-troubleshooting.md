@@ -16,7 +16,8 @@
 cd /opt/frontier-intelligence
 export DOCKER_BUILDKIT=0
 export COMPOSE_DOCKER_CLI_BUILD=0
-export COMPOSE_PROFILES=core,ingest,worker,crawl,paddleocr,mcp,admin
+. ./scripts/compose-profiles.sh          # единственное место, где объявлены наборы
+export COMPOSE_PROFILES="$FRONTIER_PROFILES_BUILD"
 ```
 
 Дальше либо скрипт:
@@ -98,7 +99,8 @@ bash scripts/server-deploy-rebuild.sh
 Вручную (эквивалент):
 
 ```bash
-export COMPOSE_PROFILES=core,worker,mcp,crawl,paddleocr
+. ./scripts/compose-profiles.sh          # единственное место, где объявлены наборы
+export COMPOSE_PROFILES="$FRONTIER_PROFILES_BUILD"
 bash scripts/server-prepare-base-images.sh worker mcp crawl4ai paddleocr
 docker compose -f docker-compose.yml build --pull worker mcp crawl4ai paddleocr
 docker compose -f docker-compose.yml up -d --force-recreate --wait worker mcp crawl4ai paddleocr

@@ -38,23 +38,35 @@ up-admin:
 	COMPOSE_PROFILES=$(ADMIN_PROFILES) $(COMPOSE) up -d
 
 # Проверить, что все объявленные здесь наборы валидны, ничего не запуская.
+# Пустой набор даёт rc=0 и ноль сервисов, поэтому проверять только код возврата
+# нельзя: при запуске make не из корня проекта $(shell . ./scripts/...) вернёт
+# пустоту, и страж напечатал бы OK на пустоте. Считаем сервисы, как это делает
+# frontier_assert_profiles в самом compose-profiles.sh.
 check-profiles:
-	@. ./$(PROFILES_FILE); \
+	@fail=0; \
 	for s in "$(CORE_PROFILES)" "$(INGEST_PROFILES)" "$(WORKER_PROFILES)" \
 	         "$(MCP_PROFILES)" "$(ADMIN_PROFILES)" "$(MONITOR_PROFILES)" \
 	         "$(ALL_PROFILES)" "$(BUILD_PROFILES)"; do \
-	  if COMPOSE_PROFILES="$$s" $(COMPOSE) config --services >/dev/null 2>&1; then \
-	    echo "  OK       $$s"; \
+	  n=$$(COMPOSE_PROFILES="$$s" $(COMPOSE) config --services 2>/dev/null | grep -c .); \
+	  if [ -z "$$s" ]; then \
+	    echo "  ПУСТО    (переменная не раскрылась — make запущен не из корня?)"; fail=1; \
+	  elif [ "$$n" -gt 0 ]; then \
+	    echo "  OK  $$n  $$s"; \
 	  else \
-	    echo "  СЛОМАН   $$s"; exit 1; \
+	    echo "  СЛОМАН   $$s"; fail=1; \
 	  fi; \
-	done
+	done; \
+	exit $$fail
 
 up-monitor:
 	COMPOSE_PROFILES=$(MONITOR_PROFILES) $(COMPOSE) up -d
 
+# Свой инлайновый набор здесь был невалиден — без xray и paddleocr, то есть
+# `make down` падал на `crawl4ai depends on undefined service "xray"`. Причём
+# check-profiles этого не ловил: он перебирает переменные, а литерал внутри
+# цели в цикл не входил. Страж рапортовал 8/8 OK при сломанной соседней цели.
 down:
-	$(COMPOSE) --profile core --profile ingest --profile worker --profile mcp --profile admin --profile crawl --profile searxng --profile monitor down
+	COMPOSE_PROFILES=$(ALL_PROFILES) $(COMPOSE) down
 
 ps:
 	$(COMPOSE) ps
@@ -68,8 +80,10 @@ logs-%:
 restart-%:
 	$(COMPOSE) restart $*
 
+# CORE_PROFILES теперь голое имя профиля, а не флаг `--profile core`, поэтому
+# без префикса COMPOSE_PROFILES= разворачивалось в `docker compose core up -d`.
 init:
-	$(COMPOSE) $(CORE_PROFILES) up -d
+	COMPOSE_PROFILES=$(CORE_PROFILES) $(COMPOSE) up -d
 	@echo "Waiting for services to be healthy..."
 	@sleep 10
 	docker compose exec -T postgres psql -U frontier -d frontier -c "SELECT 1" > /dev/null 2>&1 || (echo "Waiting for postgres..." && sleep 10)

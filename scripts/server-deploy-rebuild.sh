@@ -10,7 +10,10 @@ cd /opt/frontier-intelligence
 # Прежний локальный набор "core,worker,mcp,crawl,paddleocr" был НЕВАЛИДЕН и ронял
 # скрипт ещё до сборки: `service "crawl4ai" depends on undefined service "xray"`.
 # Ошибка возникает на разборе проекта, поэтому падала вся команда целиком.
-. "$(dirname "$0")/compose-profiles.sh"
+# Путь относительно корня (cd сделан выше), а не через dirname "$0": при запуске
+# конвейером `tr -d '\r' < файл | ssh 'bash -s'` $0 равен "bash", dirname даёт ".",
+# и под set -euo pipefail скрипт обрывался бы молча.
+. ./scripts/compose-profiles.sh
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-$FRONTIER_PROFILES_BUILD}"
 
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"

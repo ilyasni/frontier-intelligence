@@ -71,8 +71,11 @@ LOCAL_DAYS="$(ls -d "$BACKUP_ROOT"/20*-*-* 2>/dev/null | wc -l | tr -d ' ')"
 S3_BYTES=0
 S3_TS=0
 if [ -r "$CACHE" ]; then
-  S3_TS="$(awk 'NR==1{print $1+0}' "$CACHE")"
-  S3_BYTES="$(awk 'NR==1{print $2+0}' "$CACHE")"
+  # printf "%d", а не "$2+0": арифметика в awk идёт через double и печатается
+  # форматом %.6g, из-за чего 10366531632 превращалось в 1.03665e+10 и теряло
+  # младшие разряды — экспортируемое значение переставало быть измеренным.
+  S3_TS="$(awk 'NR==1{printf "%d", $1}' "$CACHE")"
+  S3_BYTES="$(awk 'NR==1{printf "%d", $2}' "$CACHE")"
 fi
 if [ $((NOW - S3_TS)) -ge "$S3_POLL_MIN_INTERVAL" ]; then
   WORKER_IMG="$(docker inspect --format '{{.Config.Image}}' frontier-intelligence-worker-1 2>/dev/null)"

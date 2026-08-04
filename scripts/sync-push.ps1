@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Push локального кода на удалённый сервер frontier-intelligence через rsync/WSL.

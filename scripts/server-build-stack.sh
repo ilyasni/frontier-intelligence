@@ -8,7 +8,12 @@ export COMPOSE_DOCKER_CLI_BUILD=0
 # Набор профилей — из единственного места (scripts/compose-profiles.sh), а не копией здесь.
 # Этот скрипт был эталоном, но эталон, существующий как одна из пяти копий, эталоном
 # быть перестаёт: остальные четыре от него разъехались, три оказались невалидны.
-. "$(dirname "$0")/compose-profiles.sh"
+#
+# Путь ОТНОСИТЕЛЬНО корня (мы уже сделали cd выше), а не через dirname "$0".
+# При запуске конвейером `tr -d '\r' < файл | ssh 'bash -s'` — документированный
+# обход CRLF — $0 равен "bash", dirname даёт ".", файла рядом нет, и под
+# set -euo pipefail скрипт молча обрывался бы ещё до сборки.
+. ./scripts/compose-profiles.sh
 export COMPOSE_PROFILES="${COMPOSE_PROFILES:-$FRONTIER_PROFILES_BUILD}"
 export FRONTIER_ENABLE_OVERLAY_FALLBACK="${FRONTIER_ENABLE_OVERLAY_FALLBACK:-1}"
 frontier_assert_profiles || exit 1

@@ -49,28 +49,49 @@ emit() {
     echo '# TYPE frontier_clustering_coverage_ratio gauge'
     echo '# HELP frontier_clustering_eligible_posts Подходящих постов в окне кластеризации.'
     echo '# TYPE frontier_clustering_eligible_posts gauge'
+    echo '# HELP frontier_clustering_window_days Окно выборки: max(semantic_cluster_window_days, trend_cluster_window_days).'
+    echo '# TYPE frontier_clustering_window_days gauge'
+    echo '# HELP frontier_clustering_max_posts Потолок выборки semantic_cluster_max_posts у воркспейса.'
+    echo '# TYPE frontier_clustering_max_posts gauge'
 
+    # Потолок и окно экспортируются рядом с покрытием намеренно. Покрытие —
+    # ПИЛА: знаменатель (подходящие посты окна) растёт непрерывно, числитель
+    # прыгает раз в сутки после ночного прогона, поэтому внутри суток серия
+    # всегда убывает. Строить на ней алерт «покрытие падает» нельзя — он
+    # срабатывает на здоровом процессе (проверено 04.08.2026: правило встало
+    # в pending через 15 минут после появления метрики). Настоящий инвариант
+    # проверяется этими двумя числами: если суточный приток больше потолка,
+    # выборка «N самых свежих» физически не может охватить всё.
     docker exec "$PG_CONTAINER" psql -U "${POSTGRES_USER:-frontier}" -d "${POSTGRES_DB:-frontier}" \
         -At -F'|' -c "
-            SELECT w.id,
+            WITH cfg AS (
+              SELECT w.id,
+                     GREATEST(
+                       COALESCE((w.extra->'cluster_analysis'->>'semantic_cluster_window_days')::int, 7),
+                       COALESCE((w.extra->'cluster_analysis'->>'trend_cluster_window_days')::int, 30)
+                     ) AS window_days,
+                     COALESCE((w.extra->'cluster_analysis'->>'semantic_cluster_max_posts')::int, 400)
+                       AS max_posts
+                FROM workspaces w WHERE w.is_active
+            )
+            SELECT c.id, c.window_days, c.max_posts,
                    count(p.id),
                    count(p.id) FILTER (WHERE COALESCE(p.semantic_cluster_id,'') <> '')
-              FROM workspaces w
+              FROM cfg c
               LEFT JOIN posts p
-                ON p.workspace_id = w.id
+                ON p.workspace_id = c.id
                AND p.published_at IS NOT NULL
                AND COALESCE(p.relevance_score,0) >= 0.6
-               AND p.published_at > now() - make_interval(days => GREATEST(
-                     COALESCE((w.extra->'cluster_analysis'->>'semantic_cluster_window_days')::int, 7),
-                     COALESCE((w.extra->'cluster_analysis'->>'trend_cluster_window_days')::int, 30)))
+               AND p.published_at > now() - make_interval(days => c.window_days)
                AND EXISTS (SELECT 1 FROM indexing_status i
                             WHERE i.post_id = p.id AND i.embedding_status = 'done')
-             WHERE w.is_active
-             GROUP BY w.id
-        " </dev/null | while IFS='|' read -r ws eligible clustered; do
+             GROUP BY c.id, c.window_days, c.max_posts
+        " </dev/null | while IFS='|' read -r ws window_days max_posts eligible clustered; do
         if [ -z "${ws:-}" ] || [ "${eligible:-0}" = "0" ]; then
             continue
         fi
+        printf 'frontier_clustering_window_days{workspace="%s"} %s\n' "$ws" "$window_days"
+        printf 'frontier_clustering_max_posts{workspace="%s"} %s\n' "$ws" "$max_posts"
         printf 'frontier_clustering_eligible_posts{workspace="%s"} %s\n' "$ws" "$eligible"
         printf 'frontier_clustering_coverage_ratio{workspace="%s"} %s\n' \
             "$ws" "$(awk -v c="$clustered" -v e="$eligible" 'BEGIN{printf "%.4f", c/e}')"

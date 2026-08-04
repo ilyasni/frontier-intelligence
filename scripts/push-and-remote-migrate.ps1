@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     rsync push (WSL) + SSH: SQL-миграции в Postgres-контейнере и restart worker/ingest/crawl4ai/admin.

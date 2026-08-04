@@ -1,4 +1,4 @@
-# Применить storage/postgres/migrations/*.sql по порядку (нужен psql в PATH).
+﻿# Применить storage/postgres/migrations/*.sql по порядку (нужен psql в PATH).
 # Пример: $env:DATABASE_URL = "postgresql://user:pass@localhost:5432/frontier"; .\scripts\apply-postgres-migrations.ps1
 
 param(

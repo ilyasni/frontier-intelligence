@@ -35,18 +35,45 @@ printf '===== FRONTIER ALERT TRIAGE BUNDLE =====\n'
 printf 'generated_at_utc: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 printf 'host: %s\n' "$(hostname)"
 
-section "now_firing (prometheus /api/v1/alerts, state=firing/pending)"
-$CURL "${PROM}/api/v1/alerts" 2>/dev/null || echo '<prometheus unreachable>'
+# FrontierWatchdog отфильтрован из всех трёх секций. Он firing ВСЕГДА по
+# построению (expr: vector(1)) — это dead man's switch, за его отсутствием
+# следит scripts/alert-watchdog.sh, а доставка заглушена в blackhole. Без
+# фильтра он попадал бы в каждый дайджест, и разбирающий агент диагностировал
+# бы синтетический алерт как проблему — каждый день, бесконечно.
+WATCHDOG_ALERT="FrontierWatchdog"
+
+section "now_firing (prometheus /api/v1/alerts, state=firing/pending; FrontierWatchdog исключён)"
+$CURL "${PROM}/api/v1/alerts" 2>/dev/null \
+  | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('<unparseable>'); raise SystemExit
+a = d.get('data', {}).get('alerts', [])
+kept = [x for x in a if x.get('labels', {}).get('alertname') != '${WATCHDOG_ALERT}']
+print(json.dumps({'filtered_out_watchdog': len(a) - len(kept), 'alerts': kept},
+                 ensure_ascii=False, indent=2))
+" 2>/dev/null || echo '<prometheus unreachable>'
 printf '\n'
 
 section "fired_last_24h (alertnames that were firing at any point in the last 24h)"
 $CURL -G "${PROM}/api/v1/query" \
-  --data-urlencode 'query=max by (alertname,severity,service,workspace) (max_over_time(ALERTS{alertstate="firing"}[24h]))' \
+  --data-urlencode 'query=max by (alertname,severity,service,workspace) (max_over_time(ALERTS{alertstate="firing",alertname!="FrontierWatchdog"}[24h]))' \
   2>/dev/null || echo '<prometheus unreachable>'
 printf '\n'
 
-section "alertmanager_active (/api/v2/alerts)"
-$CURL "${AM}/api/v2/alerts" 2>/dev/null || echo '<alertmanager unreachable>'
+section "alertmanager_active (/api/v2/alerts; FrontierWatchdog исключён)"
+$CURL "${AM}/api/v2/alerts" 2>/dev/null \
+  | python3 -c "
+import sys, json
+try:
+    a = json.load(sys.stdin)
+except Exception:
+    print('<unparseable>'); raise SystemExit
+kept = [x for x in a if x.get('labels', {}).get('alertname') != '${WATCHDOG_ALERT}']
+print(json.dumps(kept, ensure_ascii=False, indent=2))
+" 2>/dev/null || echo '<alertmanager unreachable>'
 printf '\n'
 
 section "containers (docker compose ps)"
