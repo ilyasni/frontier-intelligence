@@ -686,10 +686,20 @@ groups:
   # Молчание системы мониторинга было неотличимо от отсутствия проблем.
   - name: frontier_watchdog
     rules:
+      # `for: 0s` и severity из допустимого набора — не формальность, а требование
+      # контракта репозитория (tests/test_alerts_workspace_coverage.py): правило без
+      # `for` стреляет с одного скрейпа, а severity вне {critical,info,warning} не
+      # матчится ни одним маршрутом alertmanager и уходит в никуда. Изначально здесь
+      # стояли отсутствующий `for` и severity: none — тест это поймал.
+      #
+      # На доставку severity тут не влияет: глушит МАРШРУТ по alertname, стоящий в
+      # alertmanager.yml первым, а не отсутствие severity. `for: 0s` задан явно —
+      # watchdog обязан быть firing немедленно и всегда, в этом весь его смысл.
       - alert: FrontierWatchdog
         expr: vector(1)
+        for: 0s
         labels:
-          severity: none
+          severity: info
           service: monitoring
           notify: watchdog
         annotations:
@@ -833,9 +843,14 @@ groups:
       # а не потолок). Порог 0.3 выбран ниже текущих 44% у disruption сознательно —
       # он не должен срабатывать, пока идёт штатное восстановление после подъёма
       # потолка, иначе повторится та же беда, что и с правилом выше.
+      # `for: 2h`, а не сутки. Долгий дебаунс тут ничего не добавляет: если прогон
+      # сломался, покрытие сползает медленно (знаменатель растёт, числитель стоит),
+      # и порог 0.3 пересекается через дни — лишние сутки ожидания только оттягивают
+      # сообщение. Заодно укладывается в границы контракта из
+      # tests/test_alerts_workspace_coverage.py.
       - alert: FrontierClusteringCoverageCritical
         expr: frontier_clustering_coverage_ratio < 0.3
-        for: 24h
+        for: 2h
         labels:
           severity: warning
           service: worker

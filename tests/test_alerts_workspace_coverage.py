@@ -101,6 +101,21 @@ KNOWN_SEVERITIES: frozenset[str] = frozenset({"info", "warning", "critical"})
 MIN_FOR_SECONDS = 60
 MAX_FOR_SECONDS = 2 * 3600
 
+# Точечные исключения из границ `for`. Именно точечные, а не сдвиг общей границы:
+# подняв потолок ради одного правила, мы разрешили бы бесполезный дебаунс всем
+# остальным, и проверка перестала бы ловить то, ради чего написана.
+# Каждая строка здесь — ослабление, поэтому обязана нести причину.
+FOR_BOUND_EXEMPTIONS: dict[str, str] = {
+    "FrontierWatchdog": (
+        "dead man's switch: expr = vector(1), правило firing всегда и по построению. "
+        "Дребезжать нечему — выражение константно и от данных не зависит, а любой "
+        "ненулевой `for` задержал бы появление алерта после рестарта Prometheus, "
+        "то есть создал бы окно, в котором внешний наблюдатель "
+        "(scripts/alert-watchdog.sh) счёл бы контур сломанным. Доставка глушится "
+        "маршрутом по alertname в alertmanager.yml, а не значением `for`."
+    ),
+}
+
 # Единственное место, где объявляется объёмный tier workspace.
 # Добавили workspace в config/workspaces.yml — обязаны добавить строку сюда И слаг
 # в выражения FrontierNoNewPosts/...Critical. Иначе тесты ниже краснеют.
@@ -551,14 +566,35 @@ def test_every_rule_for_duration_is_usable() -> None:
             problems.append(
                 f"{rule.where}: `for: {rule.for_raw!r}` is not a Prometheus duration"
             )
-        elif not (MIN_FOR_SECONDS <= seconds <= MAX_FOR_SECONDS):
+            continue
+        # Разбираемость требуется от всех, включая исключения: `for: пять минут`
+        # — ошибка в любом случае. Освобождение касается только границ.
+        if rule.name in FOR_BOUND_EXEMPTIONS:
+            continue
+        if not (MIN_FOR_SECONDS <= seconds <= MAX_FOR_SECONDS):
             problems.append(
                 f"{rule.where}: `for: {rule.for_raw}` = {seconds}s is outside "
                 f"[{MIN_FOR_SECONDS}s, {MAX_FOR_SECONDS}s]. Below the floor the alert "
                 "flaps on single scrapes; above the ceiling it silently cannot fire. "
-                "If the debounce is deliberate, move the bound in this file."
+                "If the debounce is deliberate, either move the bound in this file "
+                "or add a named exemption with a reason to FOR_BOUND_EXEMPTIONS."
             )
     assert not problems, "\n  ".join(["unusable `for` durations:", *problems])
+
+
+@pytest.mark.unit
+def test_for_bound_exemptions_are_not_stale() -> None:
+    """Исключение, пережившее своё правило, — мёртвая строка, разрешающая то, чего нет.
+
+    Ровно тот класс мусора, который этот файл и стережёт в других местах: запись
+    присутствует, выглядит осмысленной, не значит ничего.
+    """
+    names = {rule.name for rule in _alert_rules()}
+    stale = sorted(set(FOR_BOUND_EXEMPTIONS) - names)
+    assert not stale, (
+        f"FOR_BOUND_EXEMPTIONS ссылается на несуществующие правила: {stale}. "
+        "Правило переименовали или удалили — убери и освобождение."
+    )
 
 
 # ── 1. Полнота: каждый workspace обслуживается каждым семейством ─────────────
