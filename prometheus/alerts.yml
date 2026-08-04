@@ -711,3 +711,76 @@ groups:
         annotations:
           summary: "Наблюдатель контура алертинга молчит"
           description: "scripts/alert-watchdog.sh не отчитывался больше часа (или серия отсутствует). Значит внешняя проверка доставки сейчас не работает, и падение контура алертинга снова станет незаметным. Проверь cron на хосте и хвост backups/watchdog.log."
+
+  # Бэкапы. До 04.08.2026 среди 56 правил не было НИ ОДНОГО про backup или S3:
+  # ночной прогон мог падать сколько угодно, единственным следом оставалась
+  # строка в backups/cron.log, которую никто не читает.
+  - name: frontier_backup
+    rules:
+      - alert: FrontierBackupStale
+        expr: absent(frontier_backup_last_success_timestamp_seconds)
+          or (time() - frontier_backup_last_success_timestamp_seconds) > 129600
+        for: 30m
+        labels:
+          severity: critical
+          service: backup
+          notify: telegram
+        annotations:
+          summary: "Успешного бэкапа не было больше полутора суток"
+          description: "frontier_backup_last_success_timestamp_seconds старше 36ч (или серии нет вовсе). Крон стоит на 03:30 ежедневно, значит пропущен минимум один прогон. Смотри хвост backups/backup.log: чаще всего это переполнение квоты S3 либо недоступность эндпоинта. Проверить целостность того, что есть: bash scripts/restore-stack.sh verify"
+
+      # Порог в 36ч выбран так, чтобы одна пропущенная ночь не будила зря,
+      # а две подряд — будили. RTO восстановления БД измерен учением: 84с на 580 МБ.
+      - alert: FrontierBackupRunFailing
+        expr: frontier_backup_last_run_timestamp_seconds
+          - frontier_backup_last_success_timestamp_seconds > 86400
+        for: 30m
+        labels:
+          severity: warning
+          service: backup
+          notify: telegram
+        annotations:
+          summary: "Бэкап запускается, но завершается с ошибками"
+          description: "Последний СТАРТ новее последнего УСПЕХА больше чем на сутки: прогон идёт и падает на каком-то шаге. Именно этот случай самый тихий — файлы в каталоге есть, а часть из них не доехала. Смотри строки '!!! FAILED' в backups/backup.log."
+
+      - alert: FrontierS3QuotaHigh
+        expr: frontier_s3_quota_bytes > 0
+          and frontier_s3_bucket_bytes / frontier_s3_quota_bytes > 0.85
+        for: 1h
+        labels:
+          severity: warning
+          service: backup
+          notify: telegram
+        annotations:
+          summary: "Бакет заполнен более чем на 85%"
+          description: "Занято {{ $value | humanizePercentage }} квоты. 02.08.2026 бакет уже упирался в потолок, и из-за этого не доезжал самый важный файл. Разбор наполнения: docker run --rm --env-file .env <worker-образ> python /scripts/s3_bucket_usage.py"
+
+      # scalar(sum(...)) — не косметика. sum() сбрасывает ВСЕ метки, а левая часть
+      # сохраняет instance/job, поэтому сравнение двух векторов не находит ни одной
+      # пары рядов и молча возвращает пустоту: правило не сработало бы никогда,
+      # притом что условие истинно. Поймано при проверке выражения на живых данных
+      # (свободно 1.81 GiB против 3.56 GiB на один бэкап) — ровно тот класс
+      # молчаливого отказа, ради которого всё это и делается.
+      - alert: FrontierS3QuotaCritical
+        expr: frontier_s3_quota_bytes > 0
+          and (frontier_s3_quota_bytes - frontier_s3_bucket_bytes)
+              < scalar(sum(frontier_backup_artifact_bytes))
+        for: 1h
+        labels:
+          severity: critical
+          service: backup
+          notify: telegram
+        annotations:
+          summary: "В бакете меньше места, чем весит один суточный бэкап"
+          description: "Свободного места в квоте не хватит на следующий ночной прогон — он упадёт на выгрузке. Это не прогноз, а арифметика по текущим размерам артефактов. Освободить: scripts/s3_prune_dead_snapshots.py и lifecycle-политика (scripts/s3_lifecycle_apply.py)."
+
+      - alert: FrontierBackupMetricsExporterDown
+        expr: absent(frontier_backup_last_run_timestamp_seconds)
+        for: 2h
+        labels:
+          severity: warning
+          service: monitoring
+          notify: telegram
+        annotations:
+          summary: "Экспортёр метрик бэкапа молчит"
+          description: "Серии frontier_backup_* отсутствуют больше 2ч, значит все правила группы frontier_backup сейчас не могут сработать в принципе. Проверь cron scripts/export-backup-metrics.sh и каталог prometheus/textfile."

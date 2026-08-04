@@ -48,6 +48,18 @@ if docker exec frontier-intelligence-postgres-1 sh -lc \
       'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$DEST/postgres.dump" 2>>"$LOG" \
    && [ -s "$DEST/postgres.dump" ]; then
   echo "postgres.dump: $(du -h "$DEST/postgres.dump" | cut -f1)"
+  # Проверка читаемости архива. Непустой файл ничего не доказывает: оборванный
+  # pg_dump оставляет ровно такой же непустой файл, и до 04.08.2026 такой дамп
+  # уехал бы в S3 как успешный. pg_restore --list разбирает оглавление целиком,
+  # то есть ловит обрыв и порчу, и при этом ничего не восстанавливает.
+  PG_OBJECTS="$(docker exec -i frontier-intelligence-postgres-1 \
+      pg_restore --list /dev/stdin < "$DEST/postgres.dump" 2>>"$LOG" \
+      | grep -cE '^[0-9]+;')"
+  if [ "${PG_OBJECTS:-0}" -gt 0 ]; then
+    echo "postgres.dump: оглавление читается, объектов $PG_OBJECTS"
+  else
+    mark_fail "postgres dump verify (pg_restore --list не дал объектов)"
+  fi
 else
   mark_fail "postgres pg_dump"
   rm -f "$DEST/postgres.dump"
