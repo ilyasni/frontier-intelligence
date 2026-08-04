@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# РЎРјРѕРє-РїСЂРѕРІРµСЂРєРё РЅР° С…РѕСЃС‚Рµ СЃ Docker (Р·Р°РїСѓСЃРє: bash scripts/server_checks.sh).
+# Смок-проверки на хосте с Docker (запуск: bash scripts/server_checks.sh).
 set -euo pipefail
 
 echo "=== PaddleOCR /healthz ==="
 curl -sfS --max-time 10 "http://127.0.0.1:${PADDLEOCR_PORT:-8008}/healthz"
 echo ""
 
-echo "=== PaddleOCR /readyz (503 РґРѕ Р·Р°РіСЂСѓР·РєРё РІРµСЃРѕРІ вЂ” РЅРѕСЂРјР°; С‚Р°Р№РјР°СѓС‚ вЂ” РЅРµС‚) ==="
+echo "=== PaddleOCR /readyz (503 до загрузки весов — норма; таймаут — нет) ==="
 curl -sS --max-time 15 -w "\nHTTP %{http_code}\n" "http://127.0.0.1:${PADDLEOCR_PORT:-8008}/readyz" || true
 echo ""
 
@@ -22,7 +22,7 @@ if [[ -s /tmp/fi_ocr_resp.json ]]; then
   head -c 500 /tmp/fi_ocr_resp.json
   echo ""
 elif [[ "${code:-000}" == "000" ]]; then
-  echo "(РїСѓСЃС‚РѕР№ РѕС‚РІРµС‚: С‚Р°Р№РјР°СѓС‚ РёР»Рё СЃРµС‚СЊ РґРѕ paddleocr)"
+  echo "(пустой ответ: таймаут или сеть до paddleocr)"
 fi
 echo ""
 
@@ -55,9 +55,9 @@ else
     echo "$out"
   elif [[ -n "${NET:-}" ]]; then
     out=$(docker run --rm --network "$NET" redis:7-alpine redis-cli -h redis XLEN stream:posts:parsed 2>&1) || true
-    echo "$out (ephemeral redis-cli вЂ” РѕР±С…РѕРґ AppArmor РЅР° docker exec)"
+    echo "$out (ephemeral redis-cli — обход AppArmor на docker exec)"
   else
-    echo "РќРµ РЅР°Р№РґРµРЅР° СЃРµС‚СЊ frontier-net Рё exec redis РЅРµ СЃСЂР°Р±РѕС‚Р°Р»"
+    echo "Не найдена сеть frontier-net и exec redis не сработал"
   fi
 fi
 

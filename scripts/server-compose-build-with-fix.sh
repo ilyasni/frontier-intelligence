@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# РЎР±РѕСЂРєР° СЃРµСЂРІРёСЃР° СЃ РѕР±С…РѕРґРѕРј С‚РёРїРёС‡РЅС‹С… СЃР±РѕРµРІ BuildKit+AppArmor РЅР° Linux.
-# РџРѕ СѓРјРѕР»С‡Р°РЅРёСЋ: DOCKER_BUILDKIT=0 (classic builder), С‚РѕР»СЊРєРѕ docker-compose.yml.
-# Р•СЃР»Рё Р·Р°РґР°С‚СЊ USE_COMPOSE_BUILD_PRIVILEGED=1 вЂ” РґРѕР±Р°РІРёС‚СЃСЏ docker-compose.build-host-fix.yml
-# (РЅСѓР¶РµРЅ РґРµРјРѕРЅ BuildKit СЃ СЂР°Р·СЂРµС€С‘РЅРЅС‹Рј security.insecure; РёРЅР°С‡Рµ Р±СѓРґРµС‚ РѕС€РёР±РєР° entitlement).
+# Сборка сервиса с обходом типичных сбоев BuildKit+AppArmor на Linux.
+# По умолчанию: DOCKER_BUILDKIT=0 (classic builder), только docker-compose.yml.
+# Если задать USE_COMPOSE_BUILD_PRIVILEGED=1 — добавится docker-compose.build-host-fix.yml
+# (нужен демон BuildKit с разрешённым security.insecure; иначе будет ошибка entitlement).
 #
-# РџСЂРёРјРµСЂС‹:
+# Примеры:
 #   bash scripts/server-compose-build-with-fix.sh ingest
 #   bash scripts/server-compose-build-with-fix.sh ingest --up
 set -euo pipefail

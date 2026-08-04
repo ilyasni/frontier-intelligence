@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# РЎР±РѕСЂРєР° РѕР±СЂР°Р·Р° paddleocr РЅР° СЃРµСЂРІРµСЂРµ (СѓСЃС‚РѕР№С‡РёРІРѕ Рє РѕР±СЂС‹РІСѓ SSH: Р·Р°РїСѓСЃРєР°Р№ РЅР° СЃРµСЂРІРµСЂРµ РёР»Рё С‡РµСЂРµР· nohup)
+# Сборка образа paddleocr на сервере (устойчиво к обрыву SSH: запускай на сервере или через nohup)
 set -euo pipefail
 cd /opt/frontier-intelligence
 : "${PIP_INDEX_URL:=https://mirrors.aliyun.com/pypi/simple/}"

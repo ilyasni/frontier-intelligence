@@ -5,8 +5,13 @@ cd /opt/frontier-intelligence
 
 export DOCKER_BUILDKIT=0
 export COMPOSE_DOCKER_CLI_BUILD=0
-export COMPOSE_PROFILES="${COMPOSE_PROFILES:-core,ingest,xray,worker,crawl,paddleocr,mcp,admin}"
+# Набор профилей — из единственного места (scripts/compose-profiles.sh), а не копией здесь.
+# Этот скрипт был эталоном, но эталон, существующий как одна из пяти копий, эталоном
+# быть перестаёт: остальные четыре от него разъехались, три оказались невалидны.
+. "$(dirname "$0")/compose-profiles.sh"
+export COMPOSE_PROFILES="${COMPOSE_PROFILES:-$FRONTIER_PROFILES_BUILD}"
 export FRONTIER_ENABLE_OVERLAY_FALLBACK="${FRONTIER_ENABLE_OVERLAY_FALLBACK:-1}"
+frontier_assert_profiles || exit 1
 eval "$(bash scripts/server-ensure-python-base-image.sh)"
 
 DEFAULT_SERVICES=(gpt2giga-proxy worker crawl4ai ingest admin mcp paddleocr)

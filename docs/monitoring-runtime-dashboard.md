@@ -36,8 +36,15 @@ Provisioned Grafana dashboard for runtime resilience signals.
 
 ```bash
 cd /opt/frontier-intelligence
-docker compose --profile monitor up -d --force-recreate grafana
+COMPOSE_PROFILES=monitor docker compose up -d --force-recreate grafana
 ```
+
+> До 04.08.2026 эта команда падала: `alertmanager` объявлял `depends_on: admin`,
+> а профиль `admin` в набор не входил — `service "alertmanager" depends on undefined
+> service "admin": invalid compose project`. Зависимость снята (alertmanager существует,
+> чтобы сообщать о падении `admin`, и не должен ждать его старта), поэтому профиль
+> `monitor` теперь самодостаточен. Наборы профилей объявлены в
+> `scripts/compose-profiles.sh`; проверить все разом — `make check-profiles`.
 
 Grafana provisions the dashboard and datasource on startup from `/etc/grafana/provisioning`.
 

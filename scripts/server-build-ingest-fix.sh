@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# РЎР±РѕСЂРєР° ingest РЅР° С…РѕСЃС‚Р°С… СЃ AppArmor/runc РїСЂРё BuildKit (РѕС€РёР±РєР° profile РЅР° RUN pip).
-# РќР° РјРЅРѕРіРёС… СЃРµСЂРІРµСЂР°С… РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ legacy builder вЂ” Р±РµР· privileged Рё Р±РµР· entitlement.
+# Сборка ingest на хостах с AppArmor/runc при BuildKit (ошибка profile на RUN pip).
+# На многих серверах достаточно legacy builder — без privileged и без entitlement.
 set -euo pipefail
 cd /opt/frontier-intelligence
 export DOCKER_BUILDKIT=0

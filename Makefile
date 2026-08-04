@@ -1,30 +1,57 @@
-.PHONY: up-core up-all up-ingest up-worker up-mcp up-admin down logs init shell ps restart
+.PHONY: up-core up-all up-ingest up-worker up-mcp up-admin up-monitor check-profiles down logs init shell ps restart
 
 COMPOSE=docker compose
-CORE_PROFILES=--profile core
-ALL_PROFILES=--profile core --profile ingest --profile worker --profile mcp --profile admin
-MONITOR_PROFILES=--profile monitor
+
+# Наборы профилей читаются из scripts/compose-profiles.sh — единственного места,
+# где они объявлены. Раньше Makefile хранил свою копию, и она разъехалась:
+# ALL_PROFILES без xray падал на `service "ingest" depends on undefined service "xray"`.
+# Ошибка возникает при разборе проекта, то есть `make up-all` не поднимал НИЧЕГО.
+PROFILES_FILE=scripts/compose-profiles.sh
+ALL_PROFILES=$(shell . ./$(PROFILES_FILE) >/dev/null 2>&1; echo $$FRONTIER_PROFILES_FULL)
+BUILD_PROFILES=$(shell . ./$(PROFILES_FILE) >/dev/null 2>&1; echo $$FRONTIER_PROFILES_BUILD)
+
+# Точечные цели: worker, mcp и admin сами по себе depends_on: xray не объявляют,
+# но admin — объявляет, поэтому у него набор шире, чем core+admin.
+CORE_PROFILES=core
+INGEST_PROFILES=core,ingest,xray
+WORKER_PROFILES=core,worker
+MCP_PROFILES=core,mcp
+ADMIN_PROFILES=core,admin,xray
+MONITOR_PROFILES=monitor
 
 up-core:
-	$(COMPOSE) $(CORE_PROFILES) up -d
+	COMPOSE_PROFILES=$(CORE_PROFILES) $(COMPOSE) up -d
 
 up-all:
-	$(COMPOSE) $(ALL_PROFILES) up -d
+	COMPOSE_PROFILES=$(ALL_PROFILES) $(COMPOSE) up -d
 
 up-ingest:
-	$(COMPOSE) $(CORE_PROFILES) --profile ingest up -d
+	COMPOSE_PROFILES=$(INGEST_PROFILES) $(COMPOSE) up -d
 
 up-worker:
-	$(COMPOSE) $(CORE_PROFILES) --profile worker up -d
+	COMPOSE_PROFILES=$(WORKER_PROFILES) $(COMPOSE) up -d
 
 up-mcp:
-	$(COMPOSE) $(CORE_PROFILES) --profile mcp up -d
+	COMPOSE_PROFILES=$(MCP_PROFILES) $(COMPOSE) up -d
 
 up-admin:
-	$(COMPOSE) $(CORE_PROFILES) --profile admin up -d
+	COMPOSE_PROFILES=$(ADMIN_PROFILES) $(COMPOSE) up -d
+
+# Проверить, что все объявленные здесь наборы валидны, ничего не запуская.
+check-profiles:
+	@. ./$(PROFILES_FILE); \
+	for s in "$(CORE_PROFILES)" "$(INGEST_PROFILES)" "$(WORKER_PROFILES)" \
+	         "$(MCP_PROFILES)" "$(ADMIN_PROFILES)" "$(MONITOR_PROFILES)" \
+	         "$(ALL_PROFILES)" "$(BUILD_PROFILES)"; do \
+	  if COMPOSE_PROFILES="$$s" $(COMPOSE) config --services >/dev/null 2>&1; then \
+	    echo "  OK       $$s"; \
+	  else \
+	    echo "  СЛОМАН   $$s"; exit 1; \
+	  fi; \
+	done
 
 up-monitor:
-	$(COMPOSE) $(MONITOR_PROFILES) up -d
+	COMPOSE_PROFILES=$(MONITOR_PROFILES) $(COMPOSE) up -d
 
 down:
 	$(COMPOSE) --profile core --profile ingest --profile worker --profile mcp --profile admin --profile crawl --profile searxng --profile monitor down

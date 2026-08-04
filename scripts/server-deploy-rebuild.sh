@@ -1,37 +1,42 @@
 #!/usr/bin/env bash
-# РџРѕСЃР»Рµ rsync: РїРµСЂРµСЃР±РѕСЂРєР° РѕР±СЂР°Р·РѕРІ Рё РїРµСЂРµР·Р°РїСѓСЃРє worker, mcp, crawl4ai, paddleocr.
-# Р”РІРµ С„Р°Р·С‹: СЃРЅР°С‡Р°Р»Р° worker+crawl4ai (Р±С‹СЃС‚СЂС‹Р№ РїР°Р№РїР»Р°Р№РЅ), РїРѕС‚РѕРј mcp+paddleocr (С‚СЏР¶С‘Р»С‹Р№ pip).
-# РРЅР°С‡Рµ РѕРґРёРЅ РѕР±С‰РёР№ `docker compose build` Р¶РґС‘С‚ СЃР°РјС‹Р№ РјРµРґР»РµРЅРЅС‹Р№ СЃРµСЂРІРёСЃ (PyPI / Paddle).
-# РЎРј. docs/ops-server-troubleshooting.md.
+# После rsync: пересборка образов и перезапуск worker, mcp, crawl4ai, paddleocr.
+# Две фазы: сначала worker+crawl4ai (быстрый пайплайн), потом mcp+paddleocr (тяжёлый pip).
+# Иначе один общий `docker compose build` ждёт самый медленный сервис (PyPI / Paddle).
+# См. docs/ops-server-troubleshooting.md.
 set -euo pipefail
 cd /opt/frontier-intelligence
 
+# Набор профилей берётся из единственного места, а не переписывается здесь заново.
+# Прежний локальный набор "core,worker,mcp,crawl,paddleocr" был НЕВАЛИДЕН и ронял
+# скрипт ещё до сборки: `service "crawl4ai" depends on undefined service "xray"`.
+# Ошибка возникает на разборе проекта, поэтому падала вся команда целиком.
+. "$(dirname "$0")/compose-profiles.sh"
+export COMPOSE_PROFILES="${COMPOSE_PROFILES:-$FRONTIER_PROFILES_BUILD}"
+
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
-export COMPOSE_PROFILES="${COMPOSE_PROFILES:-core,worker,mcp,crawl,paddleocr}"
+
+# Проверяем набор ДО первой сборки: иначе невалидность обнаружится через несколько
+# минут ожидания pip, когда откатываться дороже.
+frontier_assert_profiles || exit 1
+
 eval "$(bash scripts/server-ensure-python-base-image.sh)"
 
 echo "COMPOSE_PROFILES=$COMPOSE_PROFILES"
 echo "PYTHON_BASE_IMAGE=$PYTHON_BASE_IMAGE"
 
+# Инлайновые --profile сняты намеренно: они дублировали набор третьим местом и
+# точно так же не включали xray. COMPOSE_PROFILES действует на всю команду.
 echo "=== Phase 1: worker crawl4ai (build + up) ==="
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
-docker compose -f docker-compose.yml \
-  --profile core --profile worker --profile crawl \
-  build worker crawl4ai
+docker compose -f docker-compose.yml build worker crawl4ai
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
-docker compose -f docker-compose.yml \
-  --profile core --profile worker --profile crawl \
-  up -d --force-recreate worker crawl4ai
+docker compose -f docker-compose.yml up -d --force-recreate worker crawl4ai
 
 echo "=== Phase 2: mcp paddleocr (build + up) ==="
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
-docker compose -f docker-compose.yml \
-  --profile core --profile mcp --profile paddleocr \
-  build mcp paddleocr
+docker compose -f docker-compose.yml build mcp paddleocr
 DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
-docker compose -f docker-compose.yml \
-  --profile core --profile mcp --profile paddleocr \
-  up -d --force-recreate mcp paddleocr
+docker compose -f docker-compose.yml up -d --force-recreate mcp paddleocr
 
-echo "OK. РЎРјРѕРє: bash scripts/server_checks.sh"
+echo "OK. Смок: bash scripts/server_checks.sh"

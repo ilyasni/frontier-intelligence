@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# РџСЂРѕРіСЂРµРІ fastembed/BM25 cache РґР»СЏ worker Рё mcp РІ shared volume.
+# Прогрев fastembed/BM25 cache для worker и mcp в shared volume.
 set -euo pipefail
 
 cd /opt/frontier-intelligence

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# РЎР±РѕСЂРєР° РѕР±СЂР°Р·Р° mcp РЅР° СЃРµСЂРІРµСЂРµ С‡РµСЂРµР· classic builder Рё РѕРїС†РёРѕРЅР°Р»СЊРЅС‹Р№ mirror PyPI.
+# Сборка образа mcp на сервере через classic builder и опциональный mirror PyPI.
 set -euo pipefail
 cd /opt/frontier-intelligence
 

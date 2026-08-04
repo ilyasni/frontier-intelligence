@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# РџСЂРёРјРµРЅРёС‚СЊ РІСЃРµ .sql РёР· storage/postgres/migrations РїРѕ РїРѕСЂСЏРґРєСѓ (СЃРµСЂРІРµСЂ / Linux).
-# РўСЂРµР±СѓРµС‚СЃСЏ psql Рё РїРµСЂРµРјРµРЅРЅР°СЏ DATABASE_URL (postgresql://..., Р±РµР· +asyncpg).
+# Применить все .sql из storage/postgres/migrations по порядку (сервер / Linux).
+# Требуется psql и переменная DATABASE_URL (postgresql://..., без +asyncpg).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MIGRATIONS="$ROOT/storage/postgres/migrations"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  echo "ERROR: Р·Р°РґР°Р№С‚Рµ DATABASE_URL (postgresql://user:pass@host:5432/db)" >&2
+  echo "ERROR: задайте DATABASE_URL (postgresql://user:pass@host:5432/db)" >&2
   exit 1
 fi
 
-# asyncpg DSN РЅРµ РїРѕРґС…РѕРґРёС‚ РґР»СЏ psql
+# asyncpg DSN не подходит для psql
 PSQL_URL="${DATABASE_URL//+asyncpg/}"
 
 shopt -s nullglob

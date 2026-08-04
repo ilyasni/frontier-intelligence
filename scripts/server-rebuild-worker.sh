@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# РџСЂРё РѕС€РёР±РєРµ "no such service: worke" вЂ” РІ С„Р°Р№Р»Рµ CRLF; sed -i 's/\r$//' вЂ¦/server-rebuild-worker.sh
+# При ошибке "no such service: worke" — в файле CRLF; sed -i 's/\r$//' …/server-rebuild-worker.sh
 set -euo pipefail
 cd /opt/frontier-intelligence
 export DOCKER_BUILDKIT=0

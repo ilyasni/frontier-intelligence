@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# РџСЂРѕРІРµСЂРєР°/РїСЂРѕРіСЂРµРІ PaddleOCR С‡РµСЂРµР· /readyz Рё СЏРІРЅС‹Р№ preload РІ РєРѕРЅС‚РµР№РЅРµСЂРµ.
+# Проверка/прогрев PaddleOCR через /readyz и явный preload в контейнере.
 set -euo pipefail
 
 cd /opt/frontier-intelligence

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Р—Р°РїСѓСЃРєР°С‚СЊ РќРђ РЎР•Р Р’Р•Р Р• РёР· РєРѕСЂРЅСЏ СЂРµРїРѕР·РёС‚РѕСЂРёСЏ: bash scripts/server-apply-sql-migrations.sh
-# РџСЂРёРјРµРЅСЏРµС‚ storage/postgres/migrations/*.sql. РЎРЅР°С‡Р°Р»Р° docker compose exec; РїСЂРё СЃР±РѕРµ (AppArmor Рё С‚.Рї.)
-# вЂ” psql РёР· РѕС‚РґРµР»СЊРЅРѕРіРѕ РєРѕРЅС‚РµР№РЅРµСЂР° СЃ --network container:<postgres>.
+# Запускать НА СЕРВЕРЕ из корня репозитория: bash scripts/server-apply-sql-migrations.sh
+# Применяет storage/postgres/migrations/*.sql. Сначала docker compose exec; при сбое (AppArmor и т.п.)
+# — psql из отдельного контейнера с --network container:<postgres>.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
