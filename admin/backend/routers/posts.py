@@ -37,7 +37,7 @@ async def list_posts(
     async with AsyncSession(engine) as session:
         result = await session.execute(
             text(
-                f"""
+                rf"""
                 SELECT
                     p.id,
                     p.workspace_id,

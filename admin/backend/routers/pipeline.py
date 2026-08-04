@@ -25,6 +25,7 @@ from admin.backend.services.pipeline_jobs import (
 from admin.backend.services.trend_alerts import run_urgent_trend_alerts
 from shared.config import get_settings
 from shared.linked_urls import extract_urls_from_plain_text, finalize_linked_urls
+from shared.redis_client import STREAM_MAXLEN
 from shared.redis_streams import collect_redis_stream_snapshot
 
 router = APIRouter()
@@ -96,7 +97,7 @@ async def pipeline_stats(workspace_id: str = None):
         }
 
         # Recent posts
-        result2 = await session.execute(text(f"""
+        result2 = await session.execute(text(rf"""
             SELECT
                 p.id, p.source_id, p.workspace_id,
                 LEFT(
@@ -200,7 +201,11 @@ async def _queue_post_reprocess(post_id: str) -> dict:
     _gid = p.get("grouped_id")
     event["grouped_id"] = str(_gid) if _gid is not None else ""
     client = aioredis.from_url(settings.redis_url, decode_responses=True)
-    await client.xadd("stream:posts:parsed", event)
+    # Сырой aioredis в обход RedisClient — потолок задаём явно, иначе стрим растёт
+    # без ограничения и упирается в maxmemory (см. STREAM_MAXLEN).
+    await client.xadd(
+        "stream:posts:parsed", event, maxlen=STREAM_MAXLEN, approximate=True
+    )
     await client.aclose()
 
     return {"status": "ok", "post_id": post_id}
