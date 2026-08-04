@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Pull кода с удалённого сервера frontier-intelligence на локальный Windows.
@@ -68,10 +68,12 @@ $rsyncArgs = @("-avz")
 if ($WslSshExe) {
     $rsyncArgs += @("-e", $WslSshExe)
 }
+# --delete намеренно НЕ используется: локальные .cursor/, AGENTS.md, CLAUDE.md, .vscode/ не трогаем.
+# Запятая после последнего элемента + комментарий вместо элемента = ParserError
+# «Missing expression after ','», из-за которого скрипт не запускался вовсе.
 $rsyncArgs += @(
     "--exclude-from=$WslExcludeFile",
-    "--no-perms",
-    # --delete намеренно НЕ используется: локальные .cursor/, AGENTS.md, CLAUDE.md, .vscode/ не трогаем
+    "--no-perms"
 )
 
 if ($DryRun) {
