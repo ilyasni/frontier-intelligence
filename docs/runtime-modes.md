@@ -1,5 +1,11 @@
 # Runtime Modes
 
+<!-- audit-status:2026-08-04 -->
+> **🟡 ЧАСТИЧНО УСТАРЕЛО · сверено 2026-08-04.**
+> Основа верна, но часть утверждений разошлась с рабочим стеком. Сверяйтесь с разбором, прежде чем опираться на числа и команды.
+> Конкретных расхождений найдено: **6** — перечислены в разборе.
+> Разбор: [AUDIT-2026-08-04.md](./AUDIT-2026-08-04.md).
+
 These modes are non-secret deployment overlays. They do not replace the real
 server `.env`; they only override routing/tuning flags for Docker Compose.
 

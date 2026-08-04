@@ -1,4 +1,9 @@
 # Frontier Intelligence — Landing Copy v3
+<!-- audit-status:2026-08-04 -->
+> **📐 ЗАМЫСЕЛ, НЕ РЕАЛИЗОВАНО · сверено 2026-08-04.**
+> Замысел, а не описание системы: на дату сверки не реализован. Не читать как отчёт о готовом.
+> Разбор: [AUDIT-2026-08-04.md](../AUDIT-2026-08-04.md).
+
 **Concept: Personal Intelligence Harness**
 *Repositioning from data tool → AI colleague calibrated to your role*
 

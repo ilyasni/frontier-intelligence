@@ -1,5 +1,11 @@
 # Security and Git Preflight
 
+<!-- audit-status:2026-08-04 -->
+> **📌 ИСТОРИЧЕСКИЙ СНИМОК · сверено 2026-08-04.**
+> Датированный снимок/решение своего момента. Ценен как история — описанием сегодняшнего состояния не является.
+> Конкретных расхождений найдено: **3** — перечислены в разборе.
+> Разбор: [AUDIT-2026-08-04.md](./AUDIT-2026-08-04.md).
+
 Last audit: 2026-04-18.
 
 Goal: prepare the repository for the first git init/publish without leaking server-only secrets or runtime data.

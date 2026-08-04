@@ -1,5 +1,12 @@
 # Frontier Intelligence — Landing Page Concept
 
+<!-- audit-status:2026-08-04 -->
+> **📐 ЗАМЫСЕЛ, НЕ РЕАЛИЗОВАНО · сверено 2026-08-04.**
+> Замысел, а не описание системы: на дату сверки не реализован. Не читать как отчёт о готовом.
+> Перекрыт: **landing-page-concept-v2.md (hero — landing-hero-v3.md)**. Предыдущие версии оставлены намеренно — расхождение между ними и есть содержание (коммит `f8d7bbf`).
+> Конкретных расхождений найдено: **4** — перечислены в разборе.
+> Разбор: [AUDIT-2026-08-04.md](../AUDIT-2026-08-04.md).
+
 > Full-copy landing page concept for global English-speaking market.
 > All copy is final-draft quality, not placeholder text.
 

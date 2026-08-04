@@ -1,5 +1,10 @@
 # Changelog 2026-03-28
 
+<!-- audit-status:2026-08-04 -->
+> **📌 ИСТОРИЧЕСКИЙ СНИМОК · сверено 2026-08-04.**
+> Датированный снимок/решение своего момента. Ценен как история — описанием сегодняшнего состояния не является.
+> Разбор: [AUDIT-2026-08-04.md](./AUDIT-2026-08-04.md).
+
 ## Connector rollout
 
 Frontier Intelligence ingest was expanded from Telegram-only production use to a normalized multi-connector model.
