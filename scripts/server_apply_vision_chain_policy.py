@@ -7,13 +7,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 import time
 from typing import Any
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from scripts.admin_api_auth import basic_auth_header  # noqa: E402
 
 ROOT = Path("/opt/frontier-intelligence")
 ENV_PATH = ROOT / ".env"
@@ -62,7 +67,10 @@ def main() -> None:
     if not giga_vis:
         giga_vis = str(env.get("GIGACHAT_MODEL_PRO") or "GigaChat-2-Pro").strip() or "GigaChat-2-Pro"
 
-    req_get = urllib.request.Request(POLICY_URL, method="GET")
+    # Админка закрыта авторизацией: без заголовка первый же GET отдаёт 401.
+    auth_headers = basic_auth_header()
+
+    req_get = urllib.request.Request(POLICY_URL, method="GET", headers=auth_headers)
     with urllib.request.urlopen(req_get, timeout=60) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
 
@@ -135,7 +143,7 @@ def main() -> None:
     req_post = urllib.request.Request(
         POLICY_URL,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **auth_headers},
         method="POST",
     )
     try:
@@ -157,7 +165,7 @@ def main() -> None:
     req_sim = urllib.request.Request(
         sim_url,
         data=sim_body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **auth_headers},
         method="POST",
     )
     with urllib.request.urlopen(req_sim, timeout=60) as resp:

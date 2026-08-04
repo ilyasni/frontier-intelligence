@@ -38,20 +38,54 @@ SearXNG requires `server.secret_key` in `settings.yml`; the upstream docs also m
 
 ## Server Exposure Snapshot
 
-As of 2026-04-17, these services were running and published on all interfaces by Docker Compose:
+Updated **2026-08-04**. The previous snapshot (2026-04-17) listed every service in one
+flat row as "published on all interfaces". That stopped being true after two separate
+changes to the auth posture, and the document said nothing about either — which is the
+part that mattered: this is the one place the attack surface gets judged from, and it
+showed symmetry where there is none. The obligation to update it after a posture change
+is stated at the bottom of this file; it was not honoured twice.
 
-- `admin:8101`
-- `mcp:8100`
-- `mcp-gateway:8102`
-- `gpt2giga-proxy:8090`
-- `grafana:3000`
-- `prometheus:9090`
-- `alertmanager:9093`
-- `qdrant:6333`
-- `neo4j:7474/7687`
-- `paddleocr:8008`
+Reality now — three interfaces, not one:
 
-This is acceptable only inside a trusted LAN/VPN or behind host firewall rules. Do not expose these ports directly to the internet without VPN or authenticated reverse proxy.
+**Published on `0.0.0.0` (the whole `192.168.31.0/24` segment can reach them):**
+
+| Service | Auth | Note |
+|---|---|---|
+| `admin:8101` | HTTP Basic **or** cookie session | `/api/health`, `/api/auth/login` and the Alertmanager webhook are public by design; the webhook carries its own Basic credential. Plain HTTP — the session cookie is `httponly` + `samesite=lax` and **not** `secure`, because there is no TLS termination in the stack (Caddy was deliberately excluded) |
+| `grafana:3000` | own login | not on default credentials (`admin:admin` → 401) |
+| `mcp-gateway:8102` | **none at all** | see the residual-risk note below |
+
+**Bound to `127.0.0.1` (reachable only through an SSH tunnel):**
+`mcp:8100`, `prometheus:9090`, `alertmanager:9093`, `qdrant:6333`, `neo4j:7474/7687`,
+`paddleocr:8008`, `gpt2giga-proxy:8090`.
+
+`mcp:8100` moved to loopback on 2026-08-03 (branch `security/mcp-rest-loopback-only`,
+commit `d90d5cd`) for one stated reason: it has no authentication of any kind.
+
+**Residual risk, accepted knowingly — `mcp-gateway:8102`.** The gateway carries the same
+absence of authentication as the REST port that was closed for it, and since 2026-08-04
+it also exposes the RSI approval loop: `approve_entity_merge` (merges two concepts in the
+Neo4j graph and does not split them back automatically), `approve_threshold_change`
+(rewrites a detector threshold), `reject_entity_merge`, `mark_relevance_audit`, plus
+`record_card_feedback` and `ingest_url`. Anything on the LAN segment can read the whole
+knowledge base and invoke those writes without a credential. `ingest_url` is guarded
+against SSRF by `assert_public_http_url`; nothing else is guarded.
+
+The owner reviewed this twice on 2026-08-04 — the second time with the full list of write
+tools in hand — and decided to leave it as is: the host sits on a local network with no
+untrusted parties. **Do not reopen this without a change to the network contour** (a port
+forwarded outward, or access to this network from untrusted devices). The reasoning is
+recorded in [AUDIT-2026-08-04.md, section 8](./AUDIT-2026-08-04.md#8-принятые-решения).
+
+**No host firewall.** `ufw status` → `inactive`, `iptables -S` → `-P INPUT ACCEPT`. The
+open ports above are open to the segment with nothing in front of them. Accepted on the
+same grounds and by the same decision.
+
+Verify the snapshot rather than trusting it — the command below is the source of truth:
+
+```bash
+ssh frontier-intelligence "docker ps --format '{{.Names}}\t{{.Ports}}' | sort"
+```
 
 ## Server-Only Files
 

@@ -218,16 +218,40 @@ groups:
           summary: "OpenRouter catalog snapshot is unavailable"
           description: "Admin could not fetch a usable OpenRouter free-model catalog for more than 15 minutes. Picker quality and model awareness are degraded."
 
-      - alert: FrontierOpenRouterModelQuarantineBurst
-        expr: sum by (service) (frontier_openrouter_model_quarantine{service="admin"}) >= 3
+      # 2026-08-04: заменило FrontierOpenRouterModelQuarantineBurst, которое стреляло
+      # на ФАКТ карантина: `sum(frontier_openrouter_model_quarantine{service="admin"}) >= 3`.
+      #
+      # Измерение за 7 суток показало, что этот факт наступает каждые сутки и вреда
+      # не означает. У 14 из 16 бесплатных моделей `in_quarantine_until` равен РОВНО
+      # ближайшей полуночи UTC, а `last_error` и `consecutive_errors` пусты — то есть
+      # это исчерпание суточной квоты бесплатного тарифа, которое снимается само.
+      # Правило было firing 6 суток из 7 по 3-11 часов и слало warning в Telegram,
+      # а picker за то же окно не пропустил НИ ОДНОГО запроса по причине карантина
+      # (единственная наблюдавшаяся причина пропуска — openrouter_fail_safe_catalog_missing,
+      # см. отдельный пункт реестра). Отношение карантина к вреду за неделю: 0 из 6.
+      #
+      # Алерт, который кричит каждый день на норме, обучает не смотреть на алерты —
+      # это зеркало «молчаливого отказа», против которого написана половина этого файла.
+      # Поэтому теперь условие привязано к вреду: широкий карантин И picker из-за него
+      # реально отказывает. Штатное ночное исчерпание квоты молчит.
+      #
+      # Карантин как таковой из наблюдаемости не пропал: gauge
+      # frontier_openrouter_model_quarantine остаётся и виден на дашборде RSI —
+      # он диагностический, а не будящий.
+      - alert: FrontierOpenRouterFreePoolUnusable
+        expr: |
+          sum by (service) (
+            increase(frontier_openrouter_picker_skip_total{reason=~"all_quarantined|no_capable_model|guard_quarantine"}[30m])
+          ) >= 3
+          and on (service)
+          sum by (service) (frontier_openrouter_model_quarantine) >= 3
         for: 10m
         labels:
           severity: warning
-          service: admin
           notify: telegram
         annotations:
-          summary: "Multiple OpenRouter free models are quarantined"
-          description: "{{ $labels.service }} currently sees {{ $value }} quarantined OpenRouter models for more than 10 minutes. Free-pool resilience is shrinking and spillover risk is rising."
+          summary: "OpenRouter free pool is quarantined AND the picker is failing because of it"
+          description: "{{ $labels.service }}: picker skipped {{ $value }} requests in 30 minutes with a quarantine-related reason while three or more free models are quarantined. Unlike plain quarantine (which happens nightly when the free daily quota resets and is harmless), this means requests are actually being denied — expect spillover to paid providers."
 
       - alert: FrontierOpenRouterPickerSkipBurst
         expr: sum by (service, task_family, reason) (increase(frontier_openrouter_picker_skip_total{service="worker",reason=~"guard_.*|near_cap|all_quarantined|no_capable_model"}[15m])) >= 5
@@ -634,8 +658,18 @@ groups:
     rules:
       # Штатно полный пересчёт идёт ночью (cron 03:35), т.е. возраст до ~24ч —
       # норма. 48ч = пропущено два ночных прогона подряд.
+      #
+      # 2026-08-04: экспортёр расширен с двух таблиц до пяти, и селектор по `table`
+      # появился здесь НЕ для сужения, а чтобы не смешать разные по смыслу молчания.
+      # Для emerging_signals / semantic_clusters / missing_signals тишина означает
+      # поломку слоя и будит дежурного. Для trend_clusters она означает, что кандидаты
+      # не прошли структурные ворота (>=2 кластера, >=3 документа, >=2 источника) —
+      # это не отказ, а свойство низкопоточных воркспейсов, и решение по нему за
+      # владельцем (развилка 29 в AUDIT-2026-08-04). Поэтому у trend_clusters
+      # отдельное правило ниже, info и без notify. Для card_feedback правила нет
+      # вовсе: ноль строк там ожидаем.
       - alert: FrontierAnalysisStale
-        expr: time() - max by (workspace, table) (frontier_analysis_last_update_timestamp_seconds) > 172800
+        expr: time() - max by (workspace, table) (frontier_analysis_last_update_timestamp_seconds{table=~"emerging_signals|semantic_clusters|missing_signals"}) > 172800
         for: 15m
         labels:
           severity: warning
@@ -646,7 +680,7 @@ groups:
           description: "Последняя запись в {{ $labels.table }} для {{ $labels.workspace }} была {{ $value | humanizeDuration }} назад (>48ч). Ingest при этом может быть полностью здоров — проверять надо аналитический слой. ВАЖНО: статус джоба смотреть бесполезно, провал пишется как success. Первопричину ошибок схемы видно ТОЛЬКО в `docker logs frontier-intelligence-postgres-1`, в логах admin её нет. Перезапуск вручную: docker exec frontier-intelligence-admin-1 python -m admin.backend.manual_jobs run_semantic_clusters <workspace>"
 
       - alert: FrontierAnalysisStaleCritical
-        expr: time() - max by (workspace, table) (frontier_analysis_last_update_timestamp_seconds) > 345600
+        expr: time() - max by (workspace, table) (frontier_analysis_last_update_timestamp_seconds{table=~"emerging_signals|semantic_clusters|missing_signals"}) > 345600
         for: 15m
         labels:
           severity: critical
@@ -670,6 +704,67 @@ groups:
         annotations:
           summary: "Экспортёр свежести аналитики молчит"
           description: "Серия frontier_analysis_last_update_timestamp_seconds отсутствует >30м, значит FrontierAnalysisStale сейчас не может сработать в принципе. Проверь cron scripts/export-analysis-freshness.sh, каталог prometheus/textfile и флаг --collector.textfile.directory у node-exporter."
+
+      # Трендовая тишина. Отдельно от правил выше и намеренно тише их.
+      #
+      # На 04.08.2026 у `design` последний тренд датирован 14.07 (21 день), у
+      # `ai_products_media` — 02.08. Всё это время метрика свежести по этим
+      # воркспейсам показывала 2-3 часа, потому что считалась по другим таблицам:
+      # emerging-слой у них живой, а до стабильного тренда кандидаты не доходят.
+      #
+      # Это не отказ, а следствие структурных ворот при 94-97% синглтонов, поэтому
+      # правило существует для видимости, а не для побудки. Как только развилка 29
+      # (снижать ли минимумы для низкопоточных воркспейсов) будет решена, оно либо
+      # начинает будить, либо уходит вместе с признанием, что стабильных трендов
+      # там не должно быть.
+      #
+      # `notify: never` ОБЯЗАТЕЛЕН, и это не то же самое, что «не ставить notify».
+      # Проверено `amtool config routes test` на рабочем конфиге: в blackhole уходит
+      # ровно два маршрута — alertname="FrontierWatchdog" и notify="never", а всё
+      # остальное подхватывает catch-all `telegram-admin`. Правило с severity=info
+      # и без метки notify уходило в Telegram и повторялось каждые 6 часов
+      # (repeat_interval) — то есть ровно то ежедневное нытьё на известном состоянии,
+      # от которого этим же заходом избавлялись в карантинном алерте OpenRouter.
+      # Первая редакция этого правила была написана именно так и поймана проверкой
+      # маршрутизации, а не чтением.
+      #
+      # Порог 7 суток, а не 48 часов: у низкопоточного воркспейса неделя без нового
+      # стабильного тренда — в пределах наблюдавшейся нормы.
+      - alert: FrontierTrendClustersStale
+        expr: time() - max by (workspace) (frontier_analysis_last_update_timestamp_seconds{table="trend_clusters"}) > 604800
+        for: 1h
+        labels:
+          severity: info
+          service: admin
+          notify: never
+        annotations:
+          summary: "Стабильные тренды не появлялись в {{ $labels.workspace }} больше недели"
+          description: "Последний стабильный тренд в {{ $labels.workspace }} записан {{ $value | humanizeDuration }} назад (>7д). Emerging-слой при этом может быть полностью живым: кандидаты не проходят структурные ворота (>=2 semantic clusters, >=3 документа, >=2 источника). Это ожидаемо для низкопоточных воркспейсов и ждёт решения владельца — развилка 29 в docs/AUDIT-2026-08-04.md. Намеренно notify=never: правило для видимости в списке алертов и на дашборде, не для побудки."
+
+      # Сигнал живости ежедневной петли разбора алертов (docs/runbooks/alert-triage-daily.md).
+      #
+      # 03.08 и 04.08.2026 петля упала два дня подряд: задача Task Scheduler отдала
+      # LastTaskResult 3221225786 (0xC000013A, STATUS_CONTROL_C_EXIT), в .claude/alert-triage.log
+      # два маркера `start` подряд без парного `exit=`, дайджестов за эти дни нет.
+      # Не сработало НИЧТО: у петли не было ни одного сигнала о собственной смерти.
+      # Это тот же класс, что FrontierAnalysisStale, только про инструмент, а не про данные.
+      #
+      # Наблюдатель намеренно НЕ внутри петли: свежесть считается по времени записи
+      # последнего дайджеста на сервере, поэтому умирающая сторона не обязана
+      # сообщать о собственной смерти. Порог 26ч, а не 24: петля ходит раз в сутки
+      # в 09:15, и в здоровом режиме возраст дайджеста доходит почти до 24ч перед
+      # очередным прогоном. Порог 24ч давал бы ложное срабатывание каждую ночь —
+      # ровно та болезнь, от которой этим же заходом лечили карантинный алерт.
+      - alert: FrontierAlertTriageStale
+        expr: absent(frontier_alert_triage_last_digest_timestamp_seconds) or (time() - frontier_alert_triage_last_digest_timestamp_seconds) > 93600
+        for: 30m
+        labels:
+          severity: warning
+          service: monitoring
+          notify: telegram
+        annotations:
+          summary: "Ежедневный разбор алертов не отдал дайджест (>26ч)"
+          description: "Свежий дайджест в docs/ops/alert-digests/ не появлялся дольше 26 часов, значит петля /alert-triage не отработала. Смотри Get-ScheduledTaskInfo FrontierAlertTriage на рабочей машине и хвост .claude/alert-triage.log: маркер `start` без парного `exit=` означает, что процесс убили (0xC000013A — консольный сигнал, проверь настройки задачи и закрытие сессии)."
 
   # Dead man's switch. Правило firing ВСЕГДА, по построению — доставлять его
   # некуда и незачем, в alertmanager.yml оно уходит в blackhole первым же

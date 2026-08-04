@@ -21,6 +21,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from scripts.admin_api_auth import basic_auth_header
 from shared.config import get_settings
 from shared.sqlalchemy_pool import ASYNC_ENGINE_POOL_KWARGS
 
@@ -91,7 +92,11 @@ async def main() -> None:
 
     base = args.admin_base.rstrip("/")
     timeout = httpx.Timeout(120.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # Админка закрыта авторизацией: без заголовка каждый POST вернул бы 401.
+    # Отсутствие пароля — исключение на первом шаге, а не 401 на каждом посте.
+    headers = basic_auth_header()
+    failed = 0
+    async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         for i, pid in enumerate(ids):
             url = f"{base}/api/pipeline/reprocess/{pid}"
             try:
@@ -99,9 +104,15 @@ async def main() -> None:
                 r.raise_for_status()
                 log.info("reprocess ok", post_id=pid[:16], index=i + 1, total=len(ids))
             except httpx.HTTPError as exc:
+                failed += 1
                 log.error("reprocess failed", post_id=pid[:16], error=str(exc))
             if args.delay_ms > 0 and i < len(ids) - 1:
                 await asyncio.sleep(args.delay_ms / 1000.0)
+
+    # Прежде цикл проглатывал любое число отказов и завершался нулём: вызывающая
+    # сторона (человек или cron) видела успех при нуле переобработанных постов.
+    if failed:
+        raise SystemExit(f"reprocess failed for {failed} of {len(ids)} posts")
 
 
 if __name__ == "__main__":

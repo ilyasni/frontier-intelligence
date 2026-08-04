@@ -23,21 +23,90 @@ mkdir -p "$OUT_DIR"
 emit() {
     echo '# HELP frontier_analysis_last_update_timestamp_seconds Unix time of the most recent analysis-layer row write.'
     echo '# TYPE frontier_analysis_last_update_timestamp_seconds gauge'
+    echo '# HELP frontier_analysis_rows_total Rows in the analysis-layer table for this workspace.'
+    echo '# TYPE frontier_analysis_rows_total gauge'
 
+    # Пять таблиц, а не две. Прежняя редакция смотрела только на emerging_signals
+    # и semantic_clusters, поэтому 21 день без единого тренда у `design` и 10 дней
+    # у `ai_products_media` прошли молча: метрика по этим воркспейсам всё это время
+    # показывала свежесть 2-3 часа — по ДРУГИМ таблицам.
+    #
+    # Выборка идёт от списка воркспейсов (CROSS JOIN), а не от GROUP BY по самой
+    # таблице. Разница принципиальная: воркспейс, у которого строк НЕТ вовсе
+    # (auto_hmi в trend_clusters, любой в card_feedback), при GROUP BY просто не
+    # попадал в результат — серии не возникало, а `max by (table)` по несуществующей
+    # серии не считается, и алерт не мог сработать никогда. Отсутствие данных обязано
+    # выражаться нулём, а не отсутствием ряда.
+    #
+    # Отсюда и вторая метрика. Свежесть отвечает на вопрос «слой шевелится?», но у
+    # пустой таблицы timestamp взять физически неоткуда — max(NULL) не существует.
+    # frontier_analysis_rows_total — единственный способ отличить «таблица пуста»
+    # от «экспортёр не дошёл до этой таблицы». Ноль по card_feedback ОЖИДАЕМ
+    # (редакторская петля не запускалась ни разу, гейт калибровки недостижим, пока
+    # свёрнута ось own_stake) и алерта на него намеренно нет — это наблюдаемость,
+    # а не тревога.
     docker exec "$PG_CONTAINER" psql -U "${POSTGRES_USER:-frontier}" -d "${POSTGRES_DB:-frontier}" \
         -At -F'|' -c "
-            SELECT 'emerging_signals', workspace_id, extract(epoch from max(updated_at))::bigint
-              FROM emerging_signals GROUP BY workspace_id
-            UNION ALL
-            SELECT 'semantic_clusters', workspace_id, extract(epoch from max(updated_at))::bigint
-              FROM semantic_clusters GROUP BY workspace_id
-        " </dev/null | while IFS='|' read -r tbl ws ts; do
-        if [ -z "${ts:-}" ]; then
+            WITH ws AS (SELECT id FROM workspaces WHERE is_active),
+            agg AS (
+                SELECT 'emerging_signals' AS tbl, workspace_id, count(*) AS n,
+                       max(updated_at) AS ts FROM emerging_signals GROUP BY workspace_id
+                UNION ALL
+                SELECT 'semantic_clusters', workspace_id, count(*),
+                       max(updated_at) FROM semantic_clusters GROUP BY workspace_id
+                UNION ALL
+                SELECT 'trend_clusters', workspace_id, count(*),
+                       max(updated_at) FROM trend_clusters GROUP BY workspace_id
+                UNION ALL
+                SELECT 'missing_signals', workspace_id, count(*),
+                       max(updated_at) FROM missing_signals GROUP BY workspace_id
+                UNION ALL
+                SELECT 'card_feedback', workspace_id, count(*),
+                       max(created_at) FROM card_feedback GROUP BY workspace_id
+            ),
+            tables AS (
+                SELECT * FROM (VALUES
+                    ('emerging_signals'),('semantic_clusters'),('trend_clusters'),
+                    ('missing_signals'),('card_feedback')
+                ) AS t(tbl)
+            )
+            SELECT t.tbl, ws.id, COALESCE(a.n, 0),
+                   COALESCE(extract(epoch from a.ts)::bigint::text, '')
+              FROM tables t
+             CROSS JOIN ws
+              LEFT JOIN agg a ON a.tbl = t.tbl AND a.workspace_id = ws.id
+             ORDER BY t.tbl, ws.id
+        " </dev/null | while IFS='|' read -r tbl ws rows ts; do
+        if [ -z "${tbl:-}" ] || [ -z "${ws:-}" ]; then
             continue
         fi
-        printf 'frontier_analysis_last_update_timestamp_seconds{table="%s",workspace="%s"} %s\n' \
-            "$tbl" "$ws" "$ts"
+        # Счётчик строк печатается ВСЕГДА и первым — он и есть отличие «пусто»
+        # от «не измеряли». Пустой ts пропускается только для метрики свежести.
+        printf 'frontier_analysis_rows_total{table="%s",workspace="%s"} %s\n' \
+            "$tbl" "$ws" "${rows:-0}"
+        if [ -n "${ts:-}" ]; then
+            printf 'frontier_analysis_last_update_timestamp_seconds{table="%s",workspace="%s"} %s\n' \
+                "$tbl" "$ws" "$ts"
+        fi
     done
+
+    # Свежесть ежедневной петли разбора алертов (docs/runbooks/alert-triage-daily.md).
+    #
+    # Считается по времени записи последнего дайджеста НА СЕРВЕРЕ, а не изнутри самой
+    # петли: 03.08 и 04.08.2026 она умерла два дня подряд (0xC000013A, два `start`
+    # без парного `exit=`), и никакого сигнала не было именно потому, что сообщать
+    # о своей смерти было некому. Наблюдатель обязан жить снаружи наблюдаемого.
+    #
+    # mtime, а не дата из имени файла: имя несёт дату дня, то есть полночь, и возраст
+    # «свежего» дайджеста стартовал бы с 9 часов — порог пришлось бы задирать. Каталог
+    # исключён из rsync (.rsync-exclude), поэтому синхронизация mtime не сдвигает.
+    echo '# HELP frontier_alert_triage_last_digest_timestamp_seconds Unix time of the newest alert-triage digest on the server.'
+    echo '# TYPE frontier_alert_triage_last_digest_timestamp_seconds gauge'
+    newest_digest=$(find "$PROJECT_DIR/docs/ops/alert-digests" -maxdepth 1 -type f -name '*.md' \
+        -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+    if [ -n "${newest_digest:-}" ]; then
+        printf 'frontier_alert_triage_last_digest_timestamp_seconds %s\n' "$newest_digest"
+    fi
 
     # Покрытие кластеризации: какая доля ПОДХОДЯЩИХ постов в окне вообще попала
     # в семантический кластер. Свежести мало — она отвечает на вопрос «слой
