@@ -130,14 +130,19 @@ async def init_qdrant(settings, *, force_versioned_targets: bool = False):
         if force_versioned_targets or settings.qdrant_trends_collection_alias
         else settings.qdrant_trends_collection
     )
-    # Корпус автора (ТЗ B): всегда версионированное имя, алиаса нет — базовое имя
-    # не создаётся вообще. Пустое значение подменяется явно: с пустой базой
-    # qdrant_collection_name_for_embedding подставит "frontier_docs" и личный корпус
-    # уедет в общий индекс.
-    own_corpus_collection = qdrant_collection_name_for_embedding(
-        str(settings.qdrant_own_corpus_collection or "").strip() or "own_corpus",
-        settings.gigachat_embeddings_model,
-    )
+    # Корпус автора здесь БОЛЬШЕ НЕ СОЗДАЁТСЯ (снято 2026-08-04).
+    #
+    # Раньше init_storage заводил own_corpus безусловно — до и независимо от решения
+    # пользоваться осью own_stake, так что коллекция появлялась на каждом развёртывании
+    # сама. Это неверно по двум причинам. Первая: личный корпус автора решено вынести
+    # в отдельный сервис со своей базой, и Frontier не должен заводить хранилище под
+    # чужой сервис. Вторая: пустая коллекция всё равно попадала в перечисление
+    # `GET /collections`, которым ходит ночной бэкап, — то есть безусловное создание
+    # расширяло радиус поражения ради функции, которая выключена (OWN_STAKE_ENABLED).
+    #
+    # Потребители оси (mcp/tools/search_frontier.py) от этого не ломаются: они читают
+    # коллекцию только при включённом флаге и переживают её отсутствие как degraded.
+    # Если ось будут поднимать заново — создавать коллекцию должен тот, кто её пишет.
 
     async def ensure_alias_binding(alias_name: str, collection_name: str) -> None:
         if not alias_name:
@@ -197,14 +202,6 @@ async def init_qdrant(settings, *, force_versioned_targets: bool = False):
         ("doc_count", PayloadSchemaType.INTEGER),
         ("source_count", PayloadSchemaType.INTEGER),
     ]
-    # Без workspace_id: корпус автора не участвует в поиске по воркспейсам,
-    # payload-фильтр к нему не применяется.
-    own_corpus_payload_indexes = [
-        ("doc_kind", PayloadSchemaType.KEYWORD),
-        ("path", PayloadSchemaType.KEYWORD),
-        ("indexed_at", PayloadSchemaType.DATETIME),
-    ]
-
     if docs_collection not in existing:
         await client.create_collection(
             collection_name=docs_collection,
@@ -241,24 +238,6 @@ async def init_qdrant(settings, *, force_versioned_targets: bool = False):
         print(f"     {trends_collection}: already exists")
     await ensure_payload_indexes(trends_collection, trend_payload_indexes)
     await ensure_alias_binding(settings.qdrant_trends_collection_alias, trends_collection)
-
-    # Корпус автора: dense-only, sparse не нужен (запрашивается вектором, не текстом),
-    # алиас не создаётся.
-    if own_corpus_collection not in existing:
-        await client.create_collection(
-            collection_name=own_corpus_collection,
-            vectors_config={
-                "dense": VectorParams(
-                    size=settings.embed_dim,
-                    distance=Distance.COSINE,
-                    hnsw_config=HnswConfigDiff(m=16, ef_construct=100),
-                )
-            },
-        )
-        print(f"     {own_corpus_collection}: created")
-    else:
-        print(f"     {own_corpus_collection}: already exists")
-    await ensure_payload_indexes(own_corpus_collection, own_corpus_payload_indexes)
 
     await client.close()
 
