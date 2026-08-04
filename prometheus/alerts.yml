@@ -670,3 +670,44 @@ groups:
         annotations:
           summary: "Экспортёр свежести аналитики молчит"
           description: "Серия frontier_analysis_last_update_timestamp_seconds отсутствует >30м, значит FrontierAnalysisStale сейчас не может сработать в принципе. Проверь cron scripts/export-analysis-freshness.sh, каталог prometheus/textfile и флаг --collector.textfile.directory у node-exporter."
+
+  # Dead man's switch. Правило firing ВСЕГДА, по построению — доставлять его
+  # некуда и незачем, в alertmanager.yml оно уходит в blackhole первым же
+  # маршрутом. Ценность у него ровно обратная: его ОТСУТСТВИЕ есть признак
+  # того, что связка Prometheus -> правила -> Alertmanager развалилась.
+  #
+  # Читает его снаружи scripts/alert-watchdog.sh по cron: он опрашивает
+  # /api/v2/alerts, и если FrontierWatchdog пропал или протух, шлёт сообщение
+  # в Telegram напрямую через socks5 — путём, который не разделяет с этой
+  # связкой ни одного звена.
+  #
+  # Нужно потому, что до 04.08.2026 вся доставка шла единственным вебхуком
+  # в admin: за 7 дней 135 провалов из 296, и все в окно, когда admin лежал.
+  # Молчание системы мониторинга было неотличимо от отсутствия проблем.
+  - name: frontier_watchdog
+    rules:
+      - alert: FrontierWatchdog
+        expr: vector(1)
+        labels:
+          severity: none
+          service: monitoring
+          notify: watchdog
+        annotations:
+          summary: "Контур алертинга жив"
+          description: "Синтетический алерт, firing постоянно. Проверяется снаружи: scripts/alert-watchdog.sh следит, что он присутствует в Alertmanager и не протух. Если ты видишь это сообщение в Telegram — сломана маршрутизация: правило должно глушиться в blackhole."
+
+      # Обратная сторона: watchdog следит за контуром, а это правило — за watchdog.
+      # Ловит случай, когда контур цел, а сам наблюдатель умер (cron снят, docker
+      # недоступен, скрипт падает). Идёт штатным путём — если сломано и то и другое,
+      # сработает первый, а не этот.
+      - alert: FrontierWatchdogStale
+        expr: absent(frontier_watchdog_last_run_timestamp_seconds)
+          or (time() - frontier_watchdog_last_run_timestamp_seconds) > 3600
+        for: 15m
+        labels:
+          severity: warning
+          service: monitoring
+          notify: telegram
+        annotations:
+          summary: "Наблюдатель контура алертинга молчит"
+          description: "scripts/alert-watchdog.sh не отчитывался больше часа (или серия отсутствует). Значит внешняя проверка доставки сейчас не работает, и падение контура алертинга снова станет незаметным. Проверь cron на хосте и хвост backups/watchdog.log."

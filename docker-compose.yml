@@ -828,21 +828,40 @@ services:
       - /bin/sh
       - -lc
       - |
-        sed "s#__ALERTMANAGER_WEBHOOK_TOKEN__#$${ALERTMANAGER_WEBHOOK_TOKEN}#g" \
+        # Плейсхолдеры подставляются здесь, а не хранятся в репозитории.
+        # Все три значения sed-безопасны по составу символов: токен вебхука —
+        # base64 без /+=, токен бота — алфавит с двоеточием, chat_id — цифры.
+        # URL прокси сюда НЕ подставляется: в нём учётные данные, и '&' в пароле
+        # молча испортил бы замену. Он уезжает в HTTPS_PROXY, см. environment.
+        sed -e "s#__ALERTMANAGER_WEBHOOK_TOKEN__#$${ALERTMANAGER_WEBHOOK_TOKEN}#g" \
+            -e "s#__TELEGRAM_BOT_TOKEN__#$${TELEGRAM_BOT_TOKEN}#g" \
+            -e "s#__ALERT_TELEGRAM_CHAT_NUMERIC_ID__#$${ALERT_TELEGRAM_CHAT_NUMERIC_ID}#g" \
           /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
         exec /bin/alertmanager \
           --config.file=/tmp/alertmanager.yml \
           --storage.path=/alertmanager
     environment:
       ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-}
+      # Прямой путь доставки в Telegram, минуя admin (receiver telegram-direct).
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Числовой id канала: Alertmanager принимает chat_id только как int64.
+      # В ALERT_TELEGRAM_CHAT_ID лежит @имя — оно годится для Bot API в admin,
+      # но не для этого конфига. Получить числовой: getChat?chat_id=@имя.
+      ALERT_TELEGRAM_CHAT_NUMERIC_ID: ${ALERT_TELEGRAM_CHAT_NUMERIC_ID:-}
+      # Прямого egress к api.telegram.org с хоста нет — только socks5.
+      # Читается через http_config.proxy_from_environment у telegram-direct.
+      HTTPS_PROXY: ${TELEGRAM_ALERT_PROXY_URL:-}
+      # Внутрисетевые адреса мимо прокси: вебхук в admin и собственный API.
+      NO_PROXY: admin,prometheus,localhost,127.0.0.1
     command:
     volumes:
       - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
     ports:
       - "127.0.0.1:9093:9093"
-    depends_on:
-      - admin
+    # depends_on намеренно снят: alertmanager существует, чтобы сообщать о
+    # падении admin, и не должен ждать его старта. Порядок запуска здесь
+    # ничего не гарантирует — вебхук ретраится сам.
     logging: *docker-json-logging
     restart: unless-stopped
     networks: [frontier-net]

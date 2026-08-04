@@ -64,10 +64,23 @@ def _assert_alertmanager_token(request: Request) -> None:
     settings = get_settings()
     expected = settings.alertmanager_webhook_token.strip()
     if not expected:
-        return
+        # Раньше здесь стоял `return`, то есть при пустой переменной единственный
+        # контроль доступа к этому эндпоинту молча выключался, а эндпоинт продолжал
+        # принимать и рассылать в Telegram что угодно. Отказ громче тихого допуска:
+        # ошибку конфигурации видно в логах Alertmanager как провал доставки.
+        logger.error(
+            "ALERTMANAGER_WEBHOOK_TOKEN пуст — вебхук отклоняется. "
+            "Сгенерировать: scripts/server-ensure-alertmanager-token.sh"
+        )
+        raise HTTPException(
+            status_code=503, detail="alertmanager_webhook_token_not_configured"
+        )
     basic_password = _parse_basic_auth_password(
         request.headers.get("authorization", "").strip()
     )
+    # query_params остаётся ради совместимости со старым конфигом, но Alertmanager
+    # с 04.08.2026 шлёт токен через Basic-auth: uvicorn логирует полный путь запроса,
+    # и токен в query string ложился открытым текстом в docker-логи admin.
     provided = basic_password or (
         request.headers.get("x-alertmanager-token")
         or request.query_params.get("token")
