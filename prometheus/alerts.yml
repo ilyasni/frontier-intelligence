@@ -784,3 +784,39 @@ groups:
         annotations:
           summary: "Экспортёр метрик бэкапа молчит"
           description: "Серии frontier_backup_* отсутствуют больше 2ч, значит все правила группы frontier_backup сейчас не могут сработать в принципе. Проверь cron scripts/export-backup-metrics.sh и каталог prometheus/textfile."
+
+  # Покрытие кластеризации. Свежесть отвечает на вопрос «слой шевелится?», но не
+  # на «сколько корпуса он видит». 04.08.2026 у disruption свежесть была в норме
+  # (прогон каждую ночь), а кластеризация видела 40% окна: выборка берёт N самых
+  # свежих постов, а поток вдвое больше N. Потолок был дефолтным, потому что
+  # единственному крупному воркспейсу его так и не настроили.
+  - name: frontier_clustering_coverage
+    rules:
+      # Ловим РЕГРЕССИЮ, а не низкое значение: воркспейс, чей поток перерос свой
+      # потолок, показывает падающее покрытие. Абсолютный порог здесь не годится —
+      # disruption сейчас 44% и РАСТЁТ (окно скользящее, backlog выкатывается за
+      # 30 суток), и правило по порогу выло бы месяц подряд на здоровом процессе.
+      - alert: FrontierClusteringCoverageFalling
+        expr: frontier_clustering_coverage_ratio < 0.9
+          and deriv(frontier_clustering_coverage_ratio[2d]) < 0
+        for: 6h
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Покрытие кластеризации падает у {{ $labels.workspace }}"
+          description: "Доля подходящих постов окна, попавших в семантический кластер, снижается ({{ $value | humanizePercentage }}). Обычная причина — суточный поток перерос semantic_cluster_max_posts у этого воркспейса: выборка берёт N самых свежих постов, остальное не кластеризуется никогда. Потолок задаётся в config/workspaces.yml, extra.cluster_analysis. Сверить поток: frontier_clustering_eligible_posts / длину окна."
+
+      # Страховочный абсолютный порог на случай, когда покрытие рухнуло разом
+      # (сломался прогон, а не потолок) и производная не успела это отразить.
+      - alert: FrontierClusteringCoverageCritical
+        expr: frontier_clustering_coverage_ratio < 0.3
+        for: 24h
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Кластеризация видит менее 30% окна у {{ $labels.workspace }}"
+          description: "Покрытие {{ $value | humanizePercentage }} держится сутки. Трендовый и emerging-слой строятся на этой выборке, значит клиентам MCP отдаётся картина по трети корпуса. Проверь cluster_runs на ошибки и semantic_cluster_max_posts у воркспейса."
