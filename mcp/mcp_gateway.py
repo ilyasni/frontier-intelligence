@@ -563,5 +563,214 @@ async def list_card_feedback(
         return r.json()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Контур RSI: чтение предложений и человеческий гейт.
+#
+# Эти десять инструментов существовали в REST (mcp/tools/graph_health.py и
+# mcp/tools/threshold_proposals.py, подключены роутерами в mcp/server.py) и НЕ
+# были выведены сюда. А единственный MCP-клиент ходит через шлюз, поэтому
+# «одобрить» было физически не из чего: на 04.08.2026 в entity_merge_proposals
+# висело 86 строк со статусом pending с 07.07, последнее одобрение — 05.07;
+# у всех 26 911 строк relevance_decisions поле audit_status осталось NULL за всю
+# историю. Контур самоулучшения был построен целиком и не мог сделать ни одного
+# оборота из-за отсутствия обёрток.
+#
+# ВНИМАНИЕ. Четыре из десяти — ПИШУЩИЕ, и они серьёзнее всего, что было в шлюзе
+# раньше (запись отзыва о карточке, постановка URL в очередь краула):
+#   approve_entity_merge      — сливает два концепта в графе Neo4j;
+#   reject_entity_merge       — закрывает предложение;
+#   approve_threshold_change  — меняет порог детектора в workspaces.extra;
+#   mark_relevance_audit      — пишет человеческий вердикт в relevance_decisions.
+# Шлюз опубликован на 0.0.0.0:8102 без аутентификации — решение владельца от
+# 04.08.2026 (хост в локальной сети). Условие пересмотра, записанное там же
+# («новый пишущий инструмент серьёзнее записи отзыва»), этой правкой наступило.
+# См. docs/AUDIT-2026-08-04.md, раздел «Принятые решения».
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@mcp.tool(
+    description=(
+        "RSI: concept-graph health — orphan ratio, duplicate clusters, density, plus the "
+        "duplicate groups themselves for audit. Read-only; merging is a separate operator job."
+    )
+)
+async def get_graph_health(workspace: str, duplicates_limit: int = 25) -> dict:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/get_graph_health",
+            json={"workspace": workspace, "duplicates_limit": duplicates_limit},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "RSI loop D+: semantic concept-merge proposals awaiting a human verdict "
+        "(acronym vs expansion and similar). Defaults to pending."
+    )
+)
+async def list_entity_merge_proposals(
+    workspace: str | None = None,
+    status: str = "pending",
+    limit: int = 50,
+) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/list_entity_merge_proposals",
+            json={"workspace": workspace, "status": status, "limit": limit},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "RSI loop D+: APPROVE a concept merge. This MUTATES the Neo4j graph — the two "
+        "concepts are merged into canonical + alias and cannot be split back automatically."
+    )
+)
+async def approve_entity_merge(proposal_id: str, reviewed_by: str = "operator") -> dict:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/approve_entity_merge",
+            json={"proposal_id": proposal_id, "reviewed_by": reviewed_by},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(description="RSI loop D+: reject a concept-merge proposal. The graph is left untouched.")
+async def reject_entity_merge(
+    proposal_id: str,
+    reviewed_by: str = "operator",
+    note: str | None = None,
+) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/reject_entity_merge",
+            json={"proposal_id": proposal_id, "reviewed_by": reviewed_by, "note": note},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "RSI: threshold-change proposals for the weak-signal detector, awaiting a human "
+        "verdict. Defaults to pending."
+    )
+)
+async def list_threshold_proposals(
+    workspace: str | None = None,
+    status: str = "pending",
+    limit: int = 50,
+) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/list_threshold_proposals",
+            json={"workspace": workspace, "status": status, "limit": limit},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "RSI loop B: weak candidates that a judge from a different model family considered "
+        "novel — blind spots of the primary detector that were caught."
+    )
+)
+async def list_underrated_signals(
+    workspace: str | None = None,
+    days_back: int = 30,
+    limit: int = 30,
+) -> dict:
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/list_underrated_signals",
+            json={"workspace": workspace, "days_back": days_back, "limit": limit},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "RSI loop C: sample of rejected posts for manual audit, ordered by score — the ones "
+        "closest to the threshold are the likeliest mistakes."
+    )
+)
+async def list_relevance_audit_sample(
+    workspace: str | None = None,
+    days_back: int = 30,
+    limit: int = 20,
+) -> dict:
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/list_relevance_audit_sample",
+            json={"workspace": workspace, "days_back": days_back, "limit": limit},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "RSI loop C: record a human verdict on a rejected post. WRITES to relevance_decisions. "
+        "verdict must be 'false_negative' (rejected in error) or 'correct_reject'."
+    )
+)
+async def mark_relevance_audit(
+    post_id: str,
+    verdict: str,
+    reviewed_by: str = "operator",
+    note: str | None = None,
+) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/mark_relevance_audit",
+            json={
+                "post_id": post_id,
+                "verdict": verdict,
+                "reviewed_by": reviewed_by,
+                "note": note,
+            },
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(
+    description=(
+        "RSI: APPROVE a threshold change. This WRITES the new value into "
+        "workspaces.extra->cluster_analysis and changes detector behaviour from the next run."
+    )
+)
+async def approve_threshold_change(proposal_id: str, reviewed_by: str = "operator") -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/approve_threshold_change",
+            json={"proposal_id": proposal_id, "reviewed_by": reviewed_by},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
+@mcp.tool(description="RSI: reject a threshold-change proposal. Thresholds are left untouched.")
+async def reject_threshold_change(
+    proposal_id: str,
+    reviewed_by: str = "operator",
+    note: str | None = None,
+) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(
+            f"{REST_BASE}/tools/reject_threshold_change",
+            json={"proposal_id": proposal_id, "reviewed_by": reviewed_by, "note": note},
+        )
+        _raise_for_status_with_detail(r)
+        return r.json()
+
+
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")

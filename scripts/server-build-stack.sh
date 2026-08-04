@@ -19,7 +19,13 @@ export FRONTIER_ENABLE_OVERLAY_FALLBACK="${FRONTIER_ENABLE_OVERLAY_FALLBACK:-1}"
 frontier_assert_profiles || exit 1
 eval "$(bash scripts/server-ensure-python-base-image.sh)"
 
-DEFAULT_SERVICES=(gpt2giga-proxy worker crawl4ai ingest admin mcp paddleocr)
+# mcp-gateway добавлен 04.08.2026. Его здесь не было, хотя у него отдельный
+# образ из mcp/Dockerfile.gateway и в нём тот же запечённый код shared/ и mcp/.
+# Из-за пропуска штатная сборка его никогда не обновляла: аудит нашёл у шлюза
+# устаревший shared/config.py (не было own_stake_*, searxng_*, а polza-модели
+# остались прежними), и первая же попытка вывести туда контур RSI собрала образ
+# mcp, а шлюз остался с 22 инструментами из 32.
+DEFAULT_SERVICES=(gpt2giga-proxy worker crawl4ai ingest admin mcp mcp-gateway paddleocr)
 
 if [[ $# -gt 0 ]]; then
   SERVICES=("$@")
