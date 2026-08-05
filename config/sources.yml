@@ -1022,7 +1022,7 @@ sources:
     name: Baymard UX Research Blog
     url: https://baymard.com/blog
     schedule_cron: "25 */3 * * *"
-    is_enabled: false
+    is_enabled: true
     proxy_config:
       type: socks5
       host: xray
@@ -1039,6 +1039,16 @@ sources:
         title_selector: "h2, h3"
         date_selector: "time"
         article_selector: "article, main"
+
+    # ОСТАЁТСЯ ВЫКЛЮЧЕННЫМ НАМЕРЕННО (проверено 2026-08-05): это тот же фид,
+
+  # что у включённого design_rss_smashing, и тот же воркспейс design.
+
+  # Включение удвоит поток и счёт LLM, не добавив ни одного нового материала.
+
+  # Прежде чем включать — убедись, что design_rss_smashing выключен или
+
+  # что фиды разошлись.
 
   - id: rss_smashingmagazine
     workspace_id: design
@@ -2368,7 +2378,7 @@ sources:
     name: TechCrunch Transportation
     url: https://techcrunch.com/category/transportation/feed/
     schedule_cron: "37 * * * *"
-    is_enabled: false
+    is_enabled: true
     extra:
       rollout_batch: batch:auto_hmi
       preset: techcrunch_transportation
@@ -2384,7 +2394,7 @@ sources:
     name: IEEE Spectrum — Autonomous Vehicles
     url: https://spectrum.ieee.org/tag/autonomous-vehicles
     schedule_cron: "29 */2 * * *"
-    is_enabled: false
+    is_enabled: true
     proxy_config:
       type: socks5
       host: xray
@@ -2408,7 +2418,7 @@ sources:
     name: Automotive World — SDV
     url: https://www.automotiveworld.com/software-defined-vehicles/
     schedule_cron: "47 */3 * * *"
-    is_enabled: false
+    is_enabled: true
     proxy_config:
       type: socks5
       host: xray
@@ -2435,7 +2445,7 @@ sources:
     name: InsideEVs UX
     url: https://insideevs.com/rss/category/user-experience/
     schedule_cron: "5 */2 * * *"
-    is_enabled: false
+    is_enabled: true
     extra:
       rollout_batch: batch:auto_hmi
       preset: insideevs_ux
