@@ -28,6 +28,51 @@ _BLOCKED_HOSTS = frozenset(
 # «Голые» URL в тексте
 _URL_IN_TEXT = re.compile(r"https?://[^\s\]\)\"'<>]+", re.IGNORECASE)
 
+# Хвосты, которые прилипают к URL, выдранному из прозы, и делают краул
+# гарантированно бесполезным. Замер 2026-08-05: среди реально отказавших
+# ссылок нашлись `github.com/CPS-research-group/ink_bwts.`,
+# `github.com/Xia12121/LoCA}{here}.` — это URL из абстрактов arXiv вместе
+# с точкой конца предложения и остатками TeX-разметки. Каждая такая ссылка
+# даёт 404 и в метрике неотличима от настоящей мёртвой ссылки.
+#
+# Скобки чистятся ТОЛЬКО непарные: в адресах Wikipedia круглые скобки
+# значащие (`.../Foo_(bar)`), и обрезать их вслепую значит сломать рабочие
+# ссылки ради починки битых.
+_TRAILING_JUNK = ".,;:!?'\"«»…"
+_TRAILING_BRACKETS = {")": "(", "]": "[", "}": "{"}
+
+# Символы, недопустимые в URL по RFC 3986. Их появление означает, что регулярка
+# захватила соседний текст, а не адрес, — поэтому обрезаем ПО ПЕРВОМУ такому
+# символу, а не с конца. Иначе `LoCA}{here}.` не вычистить: снятие хвоста
+# по одному символу останавливается на букве `e` внутри `{here}`.
+_ILLEGAL_IN_URL = '{}|\\^`" <>'
+
+
+def strip_url_tail(url: str) -> str:
+    """Снять с URL прилипший текст: пунктуацию, непарные скобки, TeX-остатки."""
+    value = (url or "").strip()
+
+    # Сначала обрезаем по первому недопустимому символу — он гарантированно
+    # означает конец адреса и начало окружающей прозы или разметки.
+    for index, char in enumerate(value):
+        if char in _ILLEGAL_IN_URL:
+            value = value[:index]
+            break
+
+    # Затем снимаем хвостовую пунктуацию и скобки, оставшиеся незакрытыми.
+    # Парные скобки не трогаем: в адресах Wikipedia они значащие.
+    while value:
+        last = value[-1]
+        if last in _TRAILING_JUNK:
+            value = value[:-1]
+            continue
+        opening = _TRAILING_BRACKETS.get(last)
+        if opening and value.count(opening) < value.count(last):
+            value = value[:-1]
+            continue
+        break
+    return value
+
 
 def _host_blocked(url: str) -> bool:
     try:
@@ -45,7 +90,7 @@ def finalize_linked_urls(urls: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for raw in urls:
-        u = (raw or "").strip()
+        u = strip_url_tail(raw)
         if not u or not u.startswith(("http://", "https://")):
             continue
         if _host_blocked(u):

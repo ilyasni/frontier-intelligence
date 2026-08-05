@@ -18,6 +18,12 @@ from shared.metrics import (
     note_crawl_session_recreate,
     note_rate_limit_event,
 )
+from shared.crawl_routing import (
+    DEAD_ROUTE_SET,
+    DEAD_ROUTE_TTL,
+    host_of,
+    is_browser_host,
+)
 from shared.s3 import make_s3_client
 
 
@@ -25,10 +31,17 @@ def _http_reason(status: int, *, browser: bool = False) -> str:
     """Код ответа → метка `reason` с ограниченной кардинальностью.
 
     Поимённо выделены только те коды, по которым принимают разные решения:
-    403 означает «источник нас не пускает» (типично для Cloudflare и Medium
-    и лечится прокси), 404 — «ссылка мертва» и лечиться не может, 5xx — «сервер
-    лежит» и стоит ретрая. Всё прочее сливается в один хвост, иначе метка
-    приняла бы вид произвольного числа и разнесла кардинальность.
+    404 — «ссылка мертва», лечиться не может; 5xx — «сервер лежит», стоит
+    ретрая. Всё прочее сливается в один хвост, иначе метка приняла бы вид
+    произвольного числа и разнесла кардинальность.
+
+    Про 403 отдельно, потому что первое прочтение было неверным. Замер
+    2026-08-05: `medium.com` отдаёт 403 от Cloudflare и напрямую, и через
+    прокси, и при любом наборе заголовков — при том, что Substack за тем же
+    Cloudflare через тот же прокси отвечает 200. Значит 403 здесь — бот-защита
+    конкретного сайта, а НЕ следствие нашего адреса выхода, и прокси его
+    не лечит. Для браузерного пути 403 к тому же синтезируется нами самими
+    при виде страницы-заглушки «Just a moment».
     """
     prefix = "browser_http" if browser else "http"
     if status in (401, 403, 404, 410, 429):
@@ -44,7 +57,7 @@ MAX_CONCURRENT = 3
 RATE_LIMIT_PER_HOST = 10   # requests/min
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 USER_AGENT = "FrontierIntelligence/1.0 (RSS/Web enrichment)"
-MEDIUM_HOSTS = {"medium.com", "www.medium.com"}
+# Маршрутизация вынесена в shared/crawl_routing.py — см. пояснение там.
 
 
 def _make_s3(settings) -> tuple[Optional[Any], Optional[str]]:
@@ -101,8 +114,37 @@ class EnrichmentEngine:
     def _host(self, url: str) -> str:
         return urlparse(url).netloc.lower()
 
-    def _should_use_browser(self, url: str) -> bool:
-        return self._host(url) in MEDIUM_HOSTS
+    async def _should_use_browser(self, url: str) -> bool:
+        """Идти ли к хосту браузером.
+
+        Браузер здесь — не «движок для сложных страниц», а единственный путь
+        С ПРОКСИ: обычная aiohttp-сессия ходит напрямую, и к части хостов
+        прямой выход мёртв на TLS-рукопожатии. Поэтому маршрут выбирается
+        не по типу контента, а по достижимости.
+        """
+        if is_browser_host(url):
+            return True
+        try:
+            return bool(await self._redis.sismember(DEAD_ROUTE_SET, host_of(url)))
+        except Exception:
+            return False
+
+    async def _mark_direct_route_dead(self, url: str) -> None:
+        """Запомнить, что к этому хосту прямой путь не работает.
+
+        Множество живёт в Redis с TTL: блокировки и маршруты меняются, и
+        вечная пометка превратила бы разовый сбой в постоянный обход через
+        браузер, который дороже. TTL делает решение самоотменяющимся.
+        """
+        host = host_of(url)
+        if not host:
+            return
+        try:
+            await self._redis.sadd(DEAD_ROUTE_SET, host)
+            await self._redis.expire(DEAD_ROUTE_SET, DEAD_ROUTE_TTL)
+            log.info("Direct route marked dead", host=host)
+        except Exception as exc:
+            log.warning("Failed to mark dead route", host=host, error=str(exc))
 
     async def _cache_get(self, key: str) -> Optional[dict]:
         try:
@@ -295,7 +337,7 @@ class EnrichmentEngine:
                 etag_value = None
                 lm_value = None
 
-                if self._should_use_browser(url):
+                if await self._should_use_browser(url):
                     status, content_bytes = await self._browser_fetch(url)
                     if status != 200:
                         log.info("Browser HTTP error", url=url, status=status)
@@ -379,10 +421,18 @@ class EnrichmentEngine:
                 return result
 
             except asyncio.TimeoutError:
+                # Помечаем хост, чтобы СЛЕДУЮЩИЙ краул к нему пошёл браузерным
+                # путём — у браузера есть прокси, а у этой сессии нет. До
+                # 2026-08-05 неуспех был тупиком: хост, чей прямой выход мёртв
+                # на TLS-рукопожатии, отваливался по таймауту каждый раз заново
+                # (399 таймаутов в сутки). Замер на реально отказавших ссылках:
+                # 7 из 30 оживают сменой маршрута.
+                await self._mark_direct_route_dead(url)
                 log.warning("Timeout", url=url)
                 note_crawl_outcome("timeout")
                 return None
             except aiohttp.ClientError as exc:
+                await self._mark_direct_route_dead(url)
                 log.warning("HTTP client error", url=url, error=str(exc))
                 note_crawl_outcome("client_error")
                 return None
