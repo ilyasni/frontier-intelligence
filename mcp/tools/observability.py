@@ -105,17 +105,83 @@ class SignalTimelineRequest(BaseModel):
     workspace: str | None = None
 
 
+# ── Провенанс: «не измерено» ≠ «полностью синдицировано» ─────────────────────
+#
+# Колонки провенанса добавлены миграцией 20260714_provenance_dedup.sql с
+# `DEFAULT 0.0`, а считаться начали только 02.08.2026. Замер 05.08.2026:
+# trend_clusters 48 измеренных из 404, emerging_signals 7368 из 34039,
+# semantic_clusters 5721 из 51427. Остальные строки отдавались клиенту как
+# `independence_score = 0.0` — то есть «источники полностью зависимы, материал
+# сплошная перепечатка». Это ровно противоположно истине «мы не считали».
+#
+# У двух воркспейсов, ai_trends и design, ВСЕ trend_clusters были неизмеренными,
+# то есть клиент получал 100% фальшивых нулей.
+#
+# Правка стоит в _fetch_rows/_fetch_one, а не в тринадцати местах отдачи.
+# Реестр насчитал семь — это только те, где имя колонки набрано буквально;
+# ещё шесть путей отдают строку целиком через `SELECT *` (get_cluster_details,
+# get_signal_timeline). Правка «по семи местам» оставила бы их отдавать
+# сырой ноль, а новая ручка с `SELECT *` завтра добавила бы четырнадцатое.
+_PROVENANCE_NUMERIC: tuple[str, ...] = (
+    "deduped_source_count",
+    "distinct_voices",
+    "echo_ratio",
+    "arrival_dispersion",
+    "independence_score",
+)
+
+
+def _provenance_measured(row: dict) -> bool:
+    """Провенанс реально считался, а не остался DEFAULT-нулём миграции.
+
+    Предикат ТРОЙНОЙ, а не по одному столбцу. Эмпирически сейчас три признака
+    совпадают побитово (строк с расхождением ноль во всех трёх таблицах в обе
+    стороны), но механизм расхождения существует:
+    `semantic_clustering._provenance_fields` клампит deduped через
+    `min(metrics.deduped_source_count, raw_source_count)`, и при отсутствии
+    ключа `source_count` в БД ляжет `deduped=0` при живом `independence_score`.
+    Опираться на один столбец значит поставить маркер на случайность.
+
+    Ноль у измеренной строки недостижим: `shared.provenance.independence_metrics`
+    возвращает нули единственной веткой — при ПУСТОМ наборе постов (provenance.py:311).
+    """
+    return (
+        (row.get("deduped_source_count") or 0) > 0
+        or (row.get("distinct_voices") or 0) > 0
+        or (row.get("independence_score") or 0.0) > 0.0
+    )
+
+
+def _mark_provenance(row: dict) -> dict:
+    """Неизмеренный провенанс → null плюс явный флаг `provenance_measured`.
+
+    Строки без провенансных колонок (posts, sources, missing_signals) проходят
+    насквозь байт в байт: ни одного ключа не добавляется, ни один не меняется.
+    """
+    if not any(field in row for field in _PROVENANCE_NUMERIC):
+        return row
+    measured = _provenance_measured(row)
+    row["provenance_measured"] = measured
+    if not measured:
+        for field in _PROVENANCE_NUMERIC:
+            if field in row:
+                row[field] = None
+        if "distinct_originators" in row:
+            row["distinct_originators"] = None
+    return row
+
+
 async def _fetch_rows(sql: str, params: dict) -> list[dict]:
     async with AsyncSession(get_engine()) as session:
         result = await session.execute(text(sql), params)
-        return [dict(row) for row in result.mappings().all()]
+        return [_mark_provenance(dict(row)) for row in result.mappings().all()]
 
 
 async def _fetch_one(sql: str, params: dict) -> dict | None:
     async with AsyncSession(get_engine()) as session:
         result = await session.execute(text(sql), params)
         row = result.mappings().first()
-        return dict(row) if row else None
+        return _mark_provenance(dict(row)) if row else None
 
 
 def _normalize_signal_stages(stages: list[str] | None, default: tuple[str, ...]) -> list[str]:
