@@ -26,7 +26,8 @@ from worker.integrations.neo4j_client import Neo4jFrontierClient
 logger = logging.getLogger(__name__)
 
 STREAM_IN = "stream:posts:parsed"
-STREAM_OUT = "stream:posts:enriched"
+# stream:posts:enriched намеренно больше не объявляется: продюсер снят 2026-08-05
+# (пункт 9 реестра), подписчиков у стрима не было ни одного за всю историю.
 STREAM_CRAWL = "stream:posts:crawl"
 STREAM_VISION = "stream:posts:vision"
 GROUP = "enrichment_workers"
@@ -941,14 +942,22 @@ class EnrichmentTask:
                 except Exception as exc:
                     logger.warning("Failed to publish crawl event for %s: %s", post_id[:8], exc)
 
-            await self.redis.xadd(STREAM_OUT, {
-                "post_id": post_id,
-                "workspace_id": event.workspace_id,
-                "source_id": event.source_id,
-                "category": rel["category"],
-                "relevance_score": str(rel["score"]),
-                "concept_count": str(len(concepts)),
-            })
+            # Публикация в stream:posts:enriched снята 2026-08-05 (пункт 9 реестра).
+            #
+            # У стрима не было НИ ОДНОЙ consumer-группы за всю его историю:
+            # entries-added 47 313 при длине 10 004, то есть 37 309 событий
+            # вытеснены триммингом непрочитанными. Это была чистая работа впустую
+            # на каждом обогащённом посте, и увидеть её было нечем — при отсутствии
+            # групп lag и pending равны нулю, отставать нечему.
+            #
+            # Группу заводить НЕ стали: группа без потребителя перестанет терять
+            # данные и начнёт копить pending, то есть проблема сменит форму
+            # и станет шумом в алертах. Точка fan-out убрана из контракта;
+            # понадобится downstream-потребитель — вернуть вместе с ним.
+            #
+            # Детектор из захода 8 (frontier_redis_stream_groups) поймал этот
+            # стрим на первом же скрейпе и обязан погаснуть после раската —
+            # это проверка не только уборки, но и самого детектора.
             await self.redis.xack(STREAM_IN, GROUP, msg_id)
             logger.info("Enriched %s score=%.2f cat=%s concepts=%d tags=%d",
                 post_id[:8], rel["score"], rel["category"], len(concepts), len(tags))

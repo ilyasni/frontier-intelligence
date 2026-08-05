@@ -287,6 +287,35 @@ async def test_update_indexing_status_actually_counts_the_stage() -> None:
     )
 
 
+def test_enrichment_no_longer_publishes_to_the_orphan_stream() -> None:
+    """Пункт 9: продюсер снят, и вернуть его нельзя незаметно.
+
+    У `stream:posts:enriched` не было ни одной consumer-группы за всю историю:
+    entries-added 47 313 при длине 10 004, то есть 37 309 событий вытеснены
+    триммингом непрочитанными. Ни lag, ни pending этого не показывали — групп
+    нет, отставать нечему.
+
+    Проверка статическая, по исходнику: подняться до реального `process_event`
+    здесь дороже, чем оно стоит, а вернуть строку `xadd(STREAM_OUT, ...)` можно
+    только вписав имя стрима обратно.
+    """
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "worker" / "tasks" / "enrichment_task.py"
+    ).read_text(encoding="utf-8")
+    code_lines = [
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    ]
+    offenders = [line.strip() for line in code_lines if "stream:posts:enriched" in line]
+    assert not offenders, (
+        f"enrichment снова пишет в осиротевший стрим: {offenders}. Если появился "
+        "downstream-потребитель, возвращай продюсера ВМЕСТЕ с ним и заводи "
+        "consumer-группу — иначе события снова будут вытесняться непрочитанными, "
+        "а группа без потребителя лишь сменит потерю на растущий pending."
+    )
+
+
 async def test_emit_to_stream_actually_counts_published_and_failed() -> None:
     """Вход конвейера считается на реальном пути ingest."""
     from ingest.sources.base import AbstractSource
