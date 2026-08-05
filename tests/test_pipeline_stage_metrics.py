@@ -204,6 +204,87 @@ def test_orphan_stream_is_visible_as_zero_groups() -> None:
     )
 
 
+def test_vanished_labels_do_not_survive_the_next_snapshot() -> None:
+    """Метрика наблюдения за мусором сама копила мусор.
+
+    Гейджи с динамическим набором меток не очищались, поэтому исчезнувший
+    консьюмер или удалённый стрим оставались в реестре навсегда со своим
+    последним значением. Проверено на живом стеке 2026-08-05: после удаления
+    97 призрачных консьюмеров `count(frontier_redis_stream_consumer_idle_seconds)`
+    по-прежнему отдавал 107 серий, а снесённый `stream:posts:enriched`
+    продолжал показывать `groups = 0`. Уборка состоялась — метрика не узнала.
+    """
+    first = {
+        "streams": [
+            {
+                "stream": "stream:posts:crawl",
+                "group": "crawl4ai_workers",
+                "lag": 0,
+                "pending": 0,
+                "oldest_pending_age_seconds": 0,
+                "consumers": [
+                    {"name": "ghost-1", "pending": 0, "idle_seconds": 9999},
+                    {"name": "alive-1", "pending": 0, "idle_seconds": 1},
+                ],
+            }
+        ],
+        "dlq": [],
+        "health": [
+            {"stream": "stream:posts:enriched", "length": 10, "entries_added": 47635,
+             "groups": 0, "gaps": []}
+        ],
+    }
+    metrics.set_redis_stream_metrics("admin", first)
+    ghost_labels = {
+        "service": "admin",
+        "stream": "stream:posts:crawl",
+        "group": "crawl4ai_workers",
+        "consumer": "ghost-1",
+    }
+    assert REGISTRY.get_sample_value(
+        "frontier_redis_stream_consumer_idle_seconds", ghost_labels
+    ) == 9999.0
+
+    # Призрак удалён, стрим снесён — следующий снапшот их не содержит.
+    second = {
+        "streams": [
+            {
+                "stream": "stream:posts:crawl",
+                "group": "crawl4ai_workers",
+                "lag": 0,
+                "pending": 0,
+                "oldest_pending_age_seconds": 0,
+                "consumers": [{"name": "alive-1", "pending": 0, "idle_seconds": 2}],
+            }
+        ],
+        "dlq": [],
+        "health": [],
+    }
+    metrics.set_redis_stream_metrics("admin", second)
+
+    assert (
+        REGISTRY.get_sample_value(
+            "frontier_redis_stream_consumer_idle_seconds", ghost_labels
+        )
+        is None
+    ), "серия удалённого консьюмера пережила снапшот, в котором его уже нет"
+    assert (
+        REGISTRY.get_sample_value(
+            "frontier_redis_stream_groups",
+            {"service": "admin", "stream": "stream:posts:enriched"},
+        )
+        is None
+    ), "серия снесённого стрима пережила снапшот, в котором его уже нет"
+    # Живой консьюмер обязан остаться и обновиться, а не исчезнуть вместе с мусором.
+    assert (
+        REGISTRY.get_sample_value(
+            "frontier_redis_stream_consumer_idle_seconds",
+            {**ghost_labels, "consumer": "alive-1"},
+        )
+        == 2.0
+    )
+
+
 def test_delivery_gap_is_published_per_group() -> None:
     snapshot = {
         "streams": [],

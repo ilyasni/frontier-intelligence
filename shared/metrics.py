@@ -1004,6 +1004,34 @@ def set_admin_manual_job_metrics(
 def set_redis_stream_metrics(service: str, snapshot: dict) -> None:
     if REDIS_STREAM_LAG is None:
         return
+
+    # Гейджи с ДИНАМИЧЕСКИМ набором меток обязаны очищаться перед заполнением,
+    # иначе исчезнувшая метка остаётся в реестре навсегда со своим последним
+    # значением. Проверено 2026-08-05: после удаления 97 призрачных консьюмеров
+    # `count(frontier_redis_stream_consumer_idle_seconds)` по-прежнему показывал
+    # 107 серий, а удалённый `stream:posts:enriched` продолжал отдавать
+    # `groups = 0` — уборка состоялась, метрика об этом не узнала.
+    #
+    # То есть метрика, заведённая ради наблюдения за мусором, сама копила мусор
+    # и показывала его как живой. Тот же приём уже применён в
+    # set_admin_manual_job_metrics — здесь его просто не сделали.
+    #
+    # Чистятся только те семейства, чьи метки приходят из снапшота. Счётчики
+    # (Counter) не трогаем: у них сброс означал бы потерю монотонности.
+    for _dynamic in (
+        REDIS_STREAM_LAG,
+        REDIS_STREAM_PENDING,
+        REDIS_STREAM_OLDEST_PENDING_AGE_SECONDS,
+        REDIS_STREAM_CONSUMER_PENDING,
+        REDIS_STREAM_CONSUMER_IDLE_SECONDS,
+        REDIS_DLQ_LENGTH,
+        REDIS_STREAM_GROUPS,
+        REDIS_STREAM_ENTRIES_ADDED,
+        REDIS_STREAM_DELIVERY_GAP,
+    ):
+        if _dynamic is not None:
+            _dynamic.clear()
+
     for stream_item in snapshot.get("streams", []):
         stream = str(stream_item.get("stream") or "")
         group = str(stream_item.get("group") or "")
