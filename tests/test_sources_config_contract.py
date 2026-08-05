@@ -102,17 +102,51 @@ TELEGRAM_DEAD_FILTERS_LEDGER: frozenset[str] = frozenset()
 # Правило на будущее: включение источника — это ДВА действия, PATCH .../toggle и правка
 # YAML. Одного PATCH недостаточно, он живёт только до следующего bootstrap.
 AUTO_BATCH_EXPECTED_ENABLED: dict[str, bool] = {
-    # включён первым в раскате auto_hmi; в БД тоже true
+    # ── auto_hmi, волна 1 (05.08.2026) ──────────────────────────────────────
     "auto_rss_arxiv_cs_hc_automotive": True,
-    "auto_rss_techcrunch_transportation": False,
-    "auto_rss_insideevs_ux": False,
-    "auto_web_ieee_spectrum_autonomous": False,
-    "auto_web_automotiveworld_sdv": False,
+    "auto_rss_techcrunch_transportation": True,
+    "auto_rss_insideevs_ux": True,
+    "auto_web_ieee_spectrum_autonomous": True,
+    "auto_web_automotiveworld_sdv": True,
+    # Telegram придержан: у этих пяти НЕТ блока filters, и весь поток канала
+    # уходил бы в LLM целиком. Включать только вместе с фильтрами.
     "auto_tg_ru_atom": False,
     "auto_tg_ru_rusautomobile": False,
     "auto_tg_ru_avtovoz": False,
     "auto_tg_ru_atelega": False,
     "auto_tg_ru_mashinatory": False,
+}
+
+# Остальные пять батчей (задача 48). Реестр расширен 05.08.2026: до этого он
+# покрывал только `auto_*`, то есть дрейф YAML↔БД по пяти батчам из шести
+# не ловился вовсе.
+#
+# Волна 2 (05.08.2026) включила десять источников на disruption. Придержанное
+# перечислено с причиной — «выключен» без причины через месяц неотличим от
+# «забыли включить».
+OTHER_BATCH_EXPECTED_ENABLED: dict[str, bool] = {
+    # batch:auto_ru
+    "rss_ru_drom_export": True,
+    "web_ru_autonews_rbc": True,
+    "web_ru_autoreview_news": True,
+    "web_ru_kolesa_news": True,
+    "tg_ru_autoruonline": False,   # нет filters — весь канал уйдёт в LLM
+    "tg_ru_autostatis": False,     # нет filters
+    # batch:ev_tesla
+    "rss_insideevs_battery_tech": True,
+    "rss_insideevs_charging": True,
+    "rss_teslarati": True,
+    "web_notateslaapp_updates": True,
+    # batch:global_mobility — ВСЕ ТРИ дублируют фиды, включённые в auto_hmi
+    # волной 1. Включение означало бы забирать те же материалы дважды и дважды
+    # платить за обогащение; при этом воркспейсы разные, так что это решение,
+    # а не ошибка, — и его надо принимать осознанно, а не батчем.
+    "rss_techcrunch_transportation": False,
+    "web_automotiveworld_sdv": False,
+    "web_ieee_spectrum_autonomous": False,
+    # batch:smart_city
+    "web_smartcitiesdive_transportation": True,
+    "web_uitp_news_views": True,
 }
 
 # `bool(src.get("is_enabled", True))` — bootstrap_configs.py: отсутствие ключа = включён.
@@ -332,6 +366,7 @@ def test_extractors_are_not_vacuous() -> None:
 
     assert _sources_with_filters(), "ни одного источника с блоком filters — извлекатель сломан"
     assert len(AUTO_BATCH_EXPECTED_ENABLED) == 10
+    assert len(OTHER_BATCH_EXPECTED_ENABLED) == 15
 
 
 # ── (c) Уникальность id ──────────────────────────────────────────────────────
@@ -634,14 +669,19 @@ def test_auto_batch_enabled_flags_match_the_recorded_state() -> None:
         Включение источника — два действия: PATCH /toggle и правка YAML. Тест ловит
         случай, когда сделали только первое, — до ближайшего bootstrap.
     """
+    expected_all = {**AUTO_BATCH_EXPECTED_ENABLED, **OTHER_BATCH_EXPECTED_ENABLED}
     actual = {
         _source_id(src): _is_enabled(src)
         for src in _sources()
-        if _source_id(src) in AUTO_BATCH_EXPECTED_ENABLED
+        if _source_id(src) in expected_all
     }
     drift = {
         source_id: {"в файле": actual.get(source_id), "ожидалось": expected}
-        for source_id, expected in AUTO_BATCH_EXPECTED_ENABLED.items()
+        for source_id, expected in expected_all.items()
         if actual.get(source_id) != expected
     }
-    assert not drift, f"is_enabled батча auto_* разошёлся с зафиксированным состоянием: {drift}"
+    assert not drift, (
+        "is_enabled батчей раската разошёлся с зафиксированным состоянием: "
+        f"{drift}. Либо флаг перевернули случайно, либо осознанно — во втором "
+        "случае правь реестр вместе с YAML и пиши причину."
+    )

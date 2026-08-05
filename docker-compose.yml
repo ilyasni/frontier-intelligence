@@ -699,6 +699,17 @@ services:
       ADMIN_OPENROUTER_KEY_REFRESH_CRON: ${ADMIN_OPENROUTER_KEY_REFRESH_CRON:-*/5 * * * *}
       ADMIN_OPENROUTER_HEALTH_REFRESH_CRON: ${ADMIN_OPENROUTER_HEALTH_REFRESH_CRON:-*/5 * * * *}
       ADMIN_OPENROUTER_RECONCILE_CRON: ${ADMIN_OPENROUTER_RECONCILE_CRON:-* * * * *}
+      # Ночная кластеризация вынесена из окна бэкапа (тот стартует в 03:30
+      # и держит три ядра вместе с выгрузкой в S3). Замер 2026-08-05:
+      # disruption занимал 552с из 900, стартуя в 03:35 — то есть внутри окна.
+      ADMIN_SEMANTIC_CLUSTER_CRON: ${ADMIN_SEMANTIC_CLUSTER_CRON:-0 5 * * *}
+      # Потолок на дочерний процесс джоба. Дефолт 900с был выбран при
+      # длительности 37с; после подъёма потолка выборки disruption до 2000
+      # прогон занимает 552с, а рост квадратичен по матрице попарных
+      # косинусов — раскат источников на disruption вывел бы его за 900.
+      # Превышение НЕ деградирует: SIGTERM, через 5с SIGKILL, и воркспейс
+      # остаётся без кластеризации до следующих суток, молча.
+      ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC: ${ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC:-1800}
       ADMIN_TREND_ALERT_CRON: ${ADMIN_TREND_ALERT_CRON:-25 * * * *}
       TREND_ALERTS_ENABLED: ${TREND_ALERTS_ENABLED:-true}
       TREND_ALERT_WINDOW_HOURS: ${TREND_ALERT_WINDOW_HOURS:-48}
