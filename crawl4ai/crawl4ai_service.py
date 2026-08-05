@@ -15,12 +15,17 @@ from shared.db_stale_retry import run_twice_on_stale_pool
 from shared.redis_client import RedisClient
 from shared.reindex import STREAM_POSTS_REINDEX, build_post_reindex_event
 from shared.sqlalchemy_pool import ASYNC_ENGINE_POOL_KWARGS
+from shared.stream_consumers import cleanup_dead_consumers, consumer_name
 
 log = structlog.get_logger()
 
 STREAM_IN = "stream:posts:crawl"
 GROUP = "crawl4ai_workers"
-CONSUMER = f"crawl4ai-{uuid.uuid4().hex[:8]}"
+# Имя консьюмера стабильно между пересозданиями контейнера (пункт 53 реестра).
+# Прежняя форма `f"{service}-{uuid4().hex[:8]}"` давала новое имя на КАЖДЫЙ старт
+# процесса, и каждая мёртвая запись оставалась в группе навсегда: у crawl4ai
+# 84 рестарта за 45 суток дали ровно 85 записей.
+CONSUMER = consumer_name("crawl4ai")
 CLAIM_IDLE_MS = 120_000   # 2 min — crawl tasks can take longer
 
 
@@ -145,8 +150,19 @@ class Crawl4AIService:
     async def run_loop(self):
         await self.setup()
         log.info("Starting crawl loop", consumer=CONSUMER)
+        # Здесь уборки не было вовсе — и именно этот потребитель накопил
+        # 85 призрачных записей: 84 рестарта за 45 суток плюс текущий процесс.
+        # Стабильное имя консьюмера чинит корень, уборка разгребает то, что
+        # осталось от прежних имён.
+        cleanup_interval_sec = 3600
+        next_cleanup = 0.0
         while True:
             try:
+                now = asyncio.get_running_loop().time()
+                if now >= next_cleanup:
+                    await cleanup_dead_consumers(self.redis, STREAM_IN, GROUP, keep=CONSUMER)
+                    next_cleanup = now + cleanup_interval_sec
+
                 # Reclaim stale pending
                 reclaimed = await self._reclaim_pending()
                 if reclaimed:

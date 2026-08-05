@@ -20,12 +20,17 @@ from shared.redis_client import RedisClient
 from shared.s3 import make_s3_client
 from worker.llm_router_client import LLMRouterClient
 from worker.paddle_ocr_client import paddle_ocr_upload
+from shared.stream_consumers import cleanup_dead_consumers, consumer_name
 
 logger = logging.getLogger(__name__)
 
 STREAM_IN = "stream:posts:vision"
 GROUP = "vision_workers"
-CONSUMER = f"vision-{uuid.uuid4().hex[:8]}"
+# Имя консьюмера стабильно между пересозданиями контейнера (пункт 53 реестра).
+# Прежняя форма `f"{service}-{uuid4().hex[:8]}"` давала новое имя на КАЖДЫЙ старт
+# процесса, и каждая мёртвая запись оставалась в группе навсегда: у crawl4ai
+# 84 рестарта за 45 суток дали ровно 85 записей.
+CONSUMER = consumer_name("vision")
 
 _NONFATAL_VISION_STATUS_CODES = {400, 413, 415, 422}
 _VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv", ".avi")
@@ -559,23 +564,8 @@ class VisionTask:
         return messages
 
     async def _cleanup_dead_consumers(self) -> None:
-        try:
-            consumers = await self.redis.xinfo_consumers(STREAM_IN, GROUP)
-            for consumer in consumers:
-                name = consumer.get("name", "")
-                idle_ms = int(consumer.get("idle", 0) or 0)
-                pending = int(consumer.get("pending", 0) or 0)
-                if name == CONSUMER:
-                    continue
-                if idle_ms > 3_600_000 and pending == 0:
-                    await self.redis.xdel_consumer(STREAM_IN, GROUP, name)
-                    logger.info(
-                        "Deleted dead vision consumer %s (idle=%ds, pending=0)",
-                        name,
-                        idle_ms // 1000,
-                    )
-        except Exception as exc:
-            logger.warning("Vision consumer cleanup error: %s", exc)
+        """См. shared/stream_consumers.cleanup_dead_consumers — общая реализация."""
+        await cleanup_dead_consumers(self.redis, STREAM_IN, GROUP, keep=CONSUMER)
 
     async def close(self):
         await self.redis.disconnect()

@@ -22,6 +22,7 @@ from worker.chains.relevance_concepts_chain import RelevanceConceptsChain
 from worker.chains.valence_chain import ValenceChain
 from worker.integrations.qdrant_client import QdrantFrontierClient
 from worker.integrations.neo4j_client import Neo4jFrontierClient
+from shared.stream_consumers import cleanup_dead_consumers, consumer_name
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,11 @@ STREAM_IN = "stream:posts:parsed"
 STREAM_CRAWL = "stream:posts:crawl"
 STREAM_VISION = "stream:posts:vision"
 GROUP = "enrichment_workers"
-CONSUMER = f"worker-{uuid.uuid4().hex[:8]}"
+# Имя консьюмера стабильно между пересозданиями контейнера (пункт 53 реестра).
+# Прежняя форма `f"{service}-{uuid4().hex[:8]}"` давала новое имя на КАЖДЫЙ старт
+# процесса, и каждая мёртвая запись оставалась в группе навсегда: у crawl4ai
+# 84 рестарта за 45 суток дали ровно 85 записей.
+CONSUMER = consumer_name("worker")
 
 
 class EnrichmentTask:
@@ -667,22 +672,13 @@ class EnrichmentTask:
         return fresh
 
     async def _cleanup_dead_consumers(self):
-        """Delete consumers that are idle > 1h and have no pending messages."""
-        try:
-            consumers = await self.redis.xinfo_consumers(STREAM_IN, GROUP)
-            for c in consumers:
-                name = c.get("name", "")
-                idle_ms = c.get("idle", 0)
-                pending = c.get("pending", 0)
-                # Skip ourselves
-                if name == CONSUMER:
-                    continue
-                # Delete consumers idle > 1h with no pending messages
-                if idle_ms > 3_600_000 and pending == 0:
-                    await self.redis.xdel_consumer(STREAM_IN, GROUP, name)
-                    logger.info("Deleted dead consumer %s (idle=%ds, pending=0)", name, idle_ms // 1000)
-        except Exception as exc:
-            logger.warning("Consumer cleanup error: %s", exc)
+        """Убрать мёртвых консьюмеров группы.
+
+        Реализация уехала в shared/stream_consumers.py: она была написана здесь
+        и в vision_task, а у reindex и crawl4ai её не было вовсе — и корреляция
+        оказалась прямая: где уборка есть, консьюмер один; где нет — 85 и 14.
+        """
+        await cleanup_dead_consumers(self.redis, STREAM_IN, GROUP, keep=CONSUMER)
 
     # ── Main processing ──────────────────────────────────────────────────────
 

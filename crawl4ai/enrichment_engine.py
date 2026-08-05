@@ -13,8 +13,29 @@ from bs4 import BeautifulSoup
 from playwright.async_api import Browser, BrowserContext, Error as PlaywrightError, Page, async_playwright
 
 import structlog
-from shared.metrics import note_crawl_session_recreate, note_rate_limit_event
+from shared.metrics import (
+    note_crawl_outcome,
+    note_crawl_session_recreate,
+    note_rate_limit_event,
+)
 from shared.s3 import make_s3_client
+
+
+def _http_reason(status: int, *, browser: bool = False) -> str:
+    """Код ответа → метка `reason` с ограниченной кардинальностью.
+
+    Поимённо выделены только те коды, по которым принимают разные решения:
+    403 означает «источник нас не пускает» (типично для Cloudflare и Medium
+    и лечится прокси), 404 — «ссылка мертва» и лечиться не может, 5xx — «сервер
+    лежит» и стоит ретрая. Всё прочее сливается в один хвост, иначе метка
+    приняла бы вид произвольного числа и разнесла кардинальность.
+    """
+    prefix = "browser_http" if browser else "http"
+    if status in (401, 403, 404, 410, 429):
+        return f"{prefix}_{status}"
+    if 500 <= status < 600:
+        return f"{prefix}_5xx"
+    return f"{prefix}_other"
 
 log = structlog.get_logger()
 
@@ -237,10 +258,18 @@ class EnrichmentEngine:
             return None
 
     async def enrich_url(self, url: str, workspace_id: str, post_id: str) -> Optional[dict]:
-        """Crawl a URL and return enrichment data dict. Returns None if skipped."""
+        """Crawl a URL and return enrichment data dict. Returns None if skipped.
+
+        Каждый выход из этой функции отмечается в frontier_crawl_outcomes_total.
+        Возвращаемый тип не меняли сознательно: одиннадцать точек выхода и один
+        вызывающий, который трактует None как «нечего добавить», — переход на
+        типизированный результат тронул бы всю цепочку ради того же самого, что
+        даёт счётчик. Наблюдаемость появляется, поведение остаётся прежним.
+        """
         async with self._semaphore:
             if not await self._check_rate_limit(url):
                 log.info("Rate limited", url=url)
+                note_crawl_outcome("rate_limited")
                 return None
 
             url_hash = self._url_hash(url)
@@ -248,6 +277,7 @@ class EnrichmentEngine:
 
             cached = await self._cache_get(cache_key)
             if cached:
+                note_crawl_outcome("url_cache_hit", outcome="saved")
                 return cached
 
             # Conditional request headers
@@ -269,20 +299,28 @@ class EnrichmentEngine:
                     status, content_bytes = await self._browser_fetch(url)
                     if status != 200:
                         log.info("Browser HTTP error", url=url, status=status)
+                        note_crawl_outcome(_http_reason(status, browser=True))
                         return None
                     content = content_bytes.decode("utf-8", errors="ignore")
                 else:
                     session = await self._ensure_session()
                     async with session.get(url, headers=headers) as resp:
                         if resp.status == 304:
+                            # Not Modified: контент не изменился с прошлого раза.
+                            # Это успех, а не отказ — условный запрос сэкономил
+                            # и трафик, и разбор. Ветку я сам пропустил при
+                            # инструментировании, нашёл тест по AST.
+                            note_crawl_outcome("http_304_not_modified", outcome="saved")
                             return await self._cache_get(cache_key)
                         if resp.status == 429:
                             note_rate_limit_event("crawl4ai", "http_origin", "fetch")
+                            note_crawl_outcome("http_429")
                             retry_after = int(resp.headers.get("Retry-After", 60))
                             await asyncio.sleep(min(retry_after, 120))
                             return None
                         if resp.status != 200:
                             log.info("HTTP error", url=url, status=resp.status)
+                            note_crawl_outcome(_http_reason(resp.status))
                             return None
 
                         content_bytes = await resp.read()
@@ -297,6 +335,7 @@ class EnrichmentEngine:
                 by_content = await self._cache_get(content_cache_key)
                 if by_content:
                     await self._cache_set(cache_key, by_content)
+                    note_crawl_outcome("content_cache_hit", outcome="saved")
                     return by_content
 
                 soup = BeautifulSoup(content, "lxml")
@@ -336,17 +375,22 @@ class EnrichmentEngine:
                 }
                 await self._cache_set(cache_key, result)
                 await self._cache_set(content_cache_key, result)
+                note_crawl_outcome("ok", outcome="saved")
                 return result
 
             except asyncio.TimeoutError:
                 log.warning("Timeout", url=url)
+                note_crawl_outcome("timeout")
                 return None
             except aiohttp.ClientError as exc:
                 log.warning("HTTP client error", url=url, error=str(exc))
+                note_crawl_outcome("client_error")
                 return None
             except PlaywrightError as exc:
                 log.warning("Browser crawl error", url=url, error=str(exc))
+                note_crawl_outcome("browser_error")
                 return None
             except Exception as exc:
                 log.warning("Crawl error", url=url, error=str(exc))
+                note_crawl_outcome("unexpected_error")
                 return None

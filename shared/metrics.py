@@ -72,6 +72,22 @@ try:
         "Pipeline stage outcomes for our own processing steps.",
         ["service", "stage", "workspace", "outcome"],
     )
+    # Исходы краула отдельным семейством, а не меткой stage у счётчика выше:
+    # у краула своя ось `reason` из девяти значений, и смешивать её с общей
+    # разбивкой стадий значило бы либо плодить пустые комбинации, либо потерять
+    # причину отказа. Границу между семействами держит тест.
+    #
+    # До 2026-08-05 все неуспехи краула были тупиком: `enrich_url` возвращает
+    # None на девяти разных развилках, вызывающий пишет log.warning и делает XACK.
+    # Отличить «у поста нечего краулить» от «источник отдал 403» было нельзя ни
+    # из данных, ни из метрик. За сутки: 1403 успеха против 1497 неуспехов, и
+    # класс `timeout` (399) в прежних замерах не считали вовсе — из-за этого
+    # доля отказов гуляла между 41% и 35% от замера к замеру.
+    CRAWL_OUTCOMES_TOTAL = Counter(
+        "frontier_crawl_outcomes_total",
+        "crawl4ai fetch outcomes by reason.",
+        ["service", "outcome", "reason"],
+    )
     LAST_POST_AGE_SECONDS = Gauge(
         "frontier_last_post_age_seconds",
         "Age in seconds of the freshest post per workspace (data-silence detector).",
@@ -427,6 +443,7 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     GRAPH_HEALTH_GAUGE = None
     ADMIN_JOB_RUNS_TOTAL = None
     PIPELINE_STAGE_TOTAL = None
+    CRAWL_OUTCOMES_TOTAL = None
     LAST_POST_AGE_SECONDS = None
     SOURCE_FRESHNESS_HOURS = None
     LLM_PROMPT_TOKENS_TOTAL = None
@@ -545,6 +562,18 @@ def note_admin_job_run(job: str, outcome: str, *, service: str = "admin") -> Non
     """Отметить исход прогона джоба планировщика (ok / failed / timeout)."""
     if ADMIN_JOB_RUNS_TOTAL is not None:
         ADMIN_JOB_RUNS_TOTAL.labels(service=service, job=job, outcome=outcome).inc()
+
+
+def note_crawl_outcome(reason: str, outcome: str = "failed", *, service: str = "crawl4ai") -> None:
+    """Отметить исход одной попытки краула.
+
+    `outcome` — крупная категория (`saved` / `empty` / `failed`), `reason` —
+    конкретная развилка. Дефолт `failed` намеренный: успешных точек в коде две,
+    неуспешных девять, и забытый аргумент должен давать пессимистичный ответ,
+    а не оптимистичный.
+    """
+    if CRAWL_OUTCOMES_TOTAL is not None:
+        CRAWL_OUTCOMES_TOTAL.labels(service=service, outcome=outcome, reason=reason).inc()
 
 
 def note_pipeline_stage(

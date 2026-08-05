@@ -20,10 +20,15 @@ from worker.chains.concept_chain import ConceptChain
 from worker.llm_router_client import LLMRouterClient
 from worker.integrations.neo4j_client import Neo4jFrontierClient
 from worker.integrations.qdrant_client import QdrantFrontierClient
+from shared.stream_consumers import cleanup_dead_consumers, consumer_name
 
 logger = logging.getLogger(__name__)
 
-CONSUMER = f"reindex-{uuid.uuid4().hex[:8]}"
+# Имя консьюмера стабильно между пересозданиями контейнера (пункт 53 реестра).
+# Прежняя форма `f"{service}-{uuid4().hex[:8]}"` давала новое имя на КАЖДЫЙ старт
+# процесса, и каждая мёртвая запись оставалась в группе навсегда: у crawl4ai
+# 84 рестарта за 45 суток дали ровно 85 записей.
+CONSUMER = consumer_name("reindex")
 CLAIM_IDLE_MS = 600_000
 
 
@@ -438,8 +443,20 @@ class ReindexTask:
     async def run_loop(self) -> None:
         await self.setup()
         logger.info("Starting reindex loop, consumer=%s", CONSUMER)
+        # Уборки мёртвых консьюмеров здесь не было вовсе, и к 05.08.2026 группа
+        # накопила 14 записей при одном живом процессе. Раз в час — тот же ритм,
+        # что у enrichment; чаще незачем, порог мёртвости и так час.
+        cleanup_interval_sec = 3600
+        next_cleanup = 0.0
         while True:
             try:
+                now = asyncio.get_running_loop().time()
+                if now >= next_cleanup:
+                    await cleanup_dead_consumers(
+                        self.redis, STREAM_POSTS_REINDEX, GROUP_POSTS_REINDEX, keep=CONSUMER
+                    )
+                    next_cleanup = now + cleanup_interval_sec
+
                 for mid, data in await self._reclaim_pending():
                     await self.process_event(mid, data)
 

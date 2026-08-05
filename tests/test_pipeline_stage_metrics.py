@@ -115,6 +115,66 @@ def test_pipeline_stage_blank_workspace_becomes_unknown() -> None:
     assert _sample("frontier_pipeline_stage_total", labels) == before + 1
 
 
+# ── frontier_crawl_outcomes_total ────────────────────────────────────────────
+
+
+def test_crawl_outcome_defaults_to_failure() -> None:
+    """Забытый аргумент обязан давать пессимистичный ответ.
+
+    Успешных точек выхода в `enrich_url` две, неуспешных девять. Дефолт `saved`
+    означал бы, что новая ветка отказа по недосмотру попадёт в успехи и доля
+    отказов занизится — то есть метрика соврёт в ту сторону, в которую
+    её как раз и заводят проверять.
+    """
+    labels = {"service": "crawl4ai", "outcome": "failed", "reason": "probe_default"}
+    before = _sample("frontier_crawl_outcomes_total", labels)
+    metrics.note_crawl_outcome("probe_default")
+    assert _sample("frontier_crawl_outcomes_total", labels) == before + 1
+
+
+def test_every_exit_of_enrich_url_is_counted() -> None:
+    """Ни одна ветка выхода не должна остаться неучтённой.
+
+    Именно необследованные ветки давали расхождение замеров: класс `timeout`
+    (399 за сутки) в прежних подсчётах не считали вовсе, и доля отказов гуляла
+    между 41% и 35% от замера к замеру.
+    """
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "crawl4ai" / "enrichment_engine.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    target = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "enrich_url"
+    )
+    lines = source.splitlines()
+    uncounted = []
+    for node in ast.walk(target):
+        if not isinstance(node, ast.Return):
+            continue
+        # Счётчик обязан стоять в пределах трёх строк перед return: дальше
+        # начинается соседняя ветка, и привязка становится недостоверной.
+        window = "\n".join(lines[max(0, node.lineno - 4) : node.lineno])
+        if "note_crawl_outcome" not in window:
+            uncounted.append(f"строка {node.lineno}: {lines[node.lineno - 1].strip()}")
+
+    assert not uncounted, "\n  ".join(
+        [
+            "ветки выхода enrich_url без учёта в frontier_crawl_outcomes_total:",
+            *uncounted,
+            "",
+            "Каждый выход обязан отметиться, иначе доля отказов занижается "
+            "ровно на объём необследованной ветки — так класс timeout выпадал "
+            "из подсчётов и делал замеры невоспроизводимыми.",
+        ]
+    )
+
+
 # ── frontier_admin_job_runs_total ────────────────────────────────────────────
 
 
