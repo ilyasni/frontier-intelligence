@@ -8,6 +8,7 @@ import os
 import uuid
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 from redis.asyncio import Redis
@@ -19,6 +20,7 @@ from mcp.guards import assert_known_workspace
 from shared.config import Settings, get_settings
 from shared.db import get_engine
 from shared.qdrant_sparse import HAS_SPARSE
+from shared.provenance import canonical_url
 from shared.search_contracts import SearchRequest
 from shared.source_quality import normalize_source_authority
 from worker.llm_router_client import LLMRouterClient
@@ -427,6 +429,91 @@ async def _attach_own_stake(hits: list[dict[str, Any]], settings: Settings) -> d
     return meta
 
 
+# ── Ре-синдикация: N копий одного материала — не N подтверждений ─────────────
+#
+# Замер 05.08.2026 на живой базе: за 30 дней в disruption 11 220 постов из 47 301
+# (23.7%) лежат в 4779 группах с одинаковым содержимым и РАЗНЫМИ source_id.
+# В реальной выдаче это 10-13% топ-30: три запроса дали 26-27 различных
+# canonical-url на 30 хитов. Все пары — разный post_id, разный source_id,
+# одинаковый canonical url.
+#
+# Для модели-потребителя это хуже шума: она читает повтор как независимое
+# подтверждение и повышает уверенность там, где первоисточник один.
+_DEDUP_OVERFETCH = 2
+_DEDUP_MAX_FETCH = 120
+
+
+def _resyndication_dedup_enabled(settings: Any) -> bool:
+    """Через getattr, как `_own_stake_enabled`: образ mcp может уехать вперёд конфига."""
+    return bool(getattr(settings, "search_resyndication_dedup_enabled", True))
+
+
+def _dedup_key(hit: dict[str, Any]) -> str | None:
+    """Ключ схлопывания или None, если хит схлопывать нельзя.
+
+    Голый хост без пути (`https://example.com/`) ключом не считается: под него
+    подпадают разные материалы одного сайта, и схлопывание склеило бы их в один.
+    """
+    payload = hit.get("payload") or {}
+    raw = payload.get("url")
+    canonical = canonical_url(raw) if raw else None
+    if not canonical:
+        return None
+    parsed = urlparse(canonical)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    if parsed.path in ("", "/") and not parsed.query:
+        return None
+    return canonical
+
+
+def _collapse_resyndication(
+    hits: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Схлопнуть перепечатки, сохранив порядок по score.
+
+    Список приходит уже отсортированным, поэтому первое вхождение группы — это
+    хит с максимальным score, и он становится представителем. `dict` держит
+    порядок вставки, так что пересортировка не нужна и порядок не меняется.
+
+    Хит без пригодного ключа НИКОГДА не схлопывается: ему выдаётся уникальный
+    сторож. Иначе все хиты без url слиплись бы в один.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for index, hit in enumerate(hits):
+        key = _dedup_key(hit) or f"\x00nokey:{index}"
+        representative = groups.get(key)
+        payload = hit.get("payload") or {}
+        if representative is None:
+            hit["echo_count"] = 1
+            hit["echoes"] = []
+            groups[key] = hit
+            continue
+        representative["echo_count"] = representative.get("echo_count", 1) + 1
+        representative["echoes"].append(
+            {
+                "post_id": payload.get("post_id"),
+                "source_id": payload.get("source_id"),
+                "score": hit.get("score"),
+                "origin_workspace": hit.get("origin_workspace"),
+            }
+        )
+
+    kept = list(groups.values())
+    for hit in kept:
+        payload = hit.get("payload") or {}
+        source_ids = {payload.get("source_id")} | {
+            echo.get("source_id") for echo in hit.get("echoes") or []
+        }
+        hit["echo_source_ids"] = sorted(sid for sid in source_ids if sid)
+    return kept, {
+        "raw_hits": len(hits),
+        "kept": len(kept),
+        "collapsed": len(hits) - len(kept),
+        "groups": sum(1 for hit in kept if hit.get("echo_count", 1) > 1),
+    }
+
+
 async def run_search_request(
     req: SearchRequest,
     *,
@@ -445,6 +532,19 @@ async def run_search_request(
         [req.workspace], include_bridges=include_bridges
     )
     effective_limit = limit_override or req.limit
+    # Над-выборка под схлопывание перепечаток. Без неё дедуп поверх уже обрезанного
+    # списка молча превращает limit=10 в 7-9, и клиент об этом не узнает: замер на
+    # трёх живых запросах дал 26-27 различных canonical-url на топ-30, то есть
+    # 10-13% выдачи — перепечатки.
+    #
+    # Множитель скромный (2х, потолок 120) намеренно: вызов hybrid_search стоит
+    # ВНУТРИ цикла по воркспейсам, и при включённых мостах над-выборка умножается
+    # на их число. Наблюдаемой доли дублей 13% хватает с запасом.
+    fetch_limit = (
+        min(effective_limit * _DEDUP_OVERFETCH, _DEDUP_MAX_FETCH)
+        if _resyndication_dedup_enabled(settings)
+        else effective_limit
+    )
     vector = await _get_embedding(req.query, settings)
     qdrant = QdrantFrontierClient()
     try:
@@ -456,7 +556,7 @@ async def run_search_request(
             workspace_hits = await qdrant.hybrid_search(
                 vector,
                 workspace_id,
-                limit=effective_limit,
+                limit=fetch_limit,
                 query_text=req.query,
                 embedding_version=str(settings.gigachat_embeddings_model or "").strip() or None,
                 lang=req.lang,
@@ -482,6 +582,14 @@ async def run_search_request(
     )
     hydrated = [_maybe_hydrate_score(hit, score_map) for hit in hits]
     hydrated.sort(key=lambda item: item.get("score", 0.0), reverse=True)
+    # Схлопывание ре-синдикации стоит ЗДЕСЬ: после сортировки и ДО среза, то есть
+    # до всех четырёх потребителей `hydrated` — own_stake, синтеза, самой выдачи
+    # и entity_evidence. Поставить его после среза значит недодать клиенту; после
+    # синтеза — оставить модель считать N копий одного материала за N подтверждений,
+    # и тесты на составе выдачи при этом были бы зелёными.
+    resyndication: dict[str, Any] | None = None
+    if _resyndication_dedup_enabled(settings):
+        hydrated, resyndication = _collapse_resyndication(hydrated)
     # `limit` остаётся потолком ВСЕЙ выдачи, а не потолком на воркспейс: иначе включение
     # мостов у disruption молча превращает limit=10 в 50. Сколько чего доехало после
     # среза — видно в bridges.per_workspace_hits.
@@ -518,6 +626,8 @@ async def run_search_request(
         "applied_filters": _applied_filters(req, workspace_ids=workspace_ids),
         "entity_evidence": entity_evidence(hydrated, req.entities),
     }
+    if resyndication is not None:
+        response["resyndication"] = resyndication
     if include_bridges:
         counted: dict[str, int] = {workspace_id: 0 for workspace_id in workspace_ids}
         for hit in hydrated:
