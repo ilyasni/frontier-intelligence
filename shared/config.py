@@ -335,6 +335,17 @@ class Settings(BaseSettings):
     telegram_alert_proxy_url: str = Field("", alias="TELEGRAM_ALERT_PROXY_URL")
     alertmanager_webhook_token: str = Field("", alias="ALERTMANAGER_WEBHOOK_TOKEN")
 
+    # ── IMAP (email-коннектор) ───────────────────────────────────────────────
+    # Пароль ящика НИКОГДА не живёт в конфиге источника: тот едет из
+    # git-трекаемого config/sources.yml и лежит в PostgreSQL открытым текстом
+    # (sources.extra), то есть попадает в бэкапы и в выдачу админского API.
+    # Источник несёт только ИМЯ ключа (extra.fetch.password_key), значение —
+    # отсюда. Один ящик закрывается IMAP_PASSWORD; несколько — JSON-картой
+    # IMAP_PASSWORDS вида {"alerts": "...", "digest": "..."}. Карта объявлена
+    # строкой, а не dict: значения приезжают из .env, где вложенных структур нет.
+    imap_password: str = Field("", alias="IMAP_PASSWORD")
+    imap_passwords: str = Field("", alias="IMAP_PASSWORDS")
+
     # SearXNG
     searxng_url: str = Field("http://searxng:8080", alias="SEARXNG_URL")
     searxng_enabled: bool = Field(True, alias="SEARXNG_ENABLED")

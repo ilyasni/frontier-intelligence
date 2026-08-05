@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp.bridges import resolve_bridge_workspaces
 from mcp.guards import assert_known_workspace
 from shared.config import Settings, get_settings
 from shared.db import get_engine
@@ -108,7 +109,11 @@ def _maybe_hydrate_score(hit: dict[str, Any], score_map: dict[str, dict[str, flo
     return hit
 
 
-def _applied_filters(req: SearchRequest) -> dict[str, Any]:
+def _applied_filters(
+    req: SearchRequest,
+    *,
+    workspace_ids: list[str] | None = None,
+) -> dict[str, Any]:
     filters: dict[str, Any] = {
         "workspace": req.workspace,
         "limit": req.limit,
@@ -117,6 +122,11 @@ def _applied_filters(req: SearchRequest) -> dict[str, Any]:
         value = getattr(req, key, None)
         if value not in (None, [], ""):
             filters[key] = value
+    # Ключи появляются только при включённых мостах: при include_bridges=false ответ
+    # побайтово прежний, и сравнение двух выдач остаётся честной проверкой.
+    if getattr(req, "include_bridges", False):
+        filters["include_bridges"] = True
+        filters["workspaces"] = list(workspace_ids or [req.workspace])
     return filters
 
 
@@ -226,7 +236,11 @@ async def _synthesize_results(req: SearchRequest, hits: list[dict[str, Any]], se
                 f"{combined}"
             ),
             task="mcp_synthesis",
-            model_override=settings.gigachat_model_pro if prefer_pro else None,
+            # model_override снят 2026-08-05 (пункт 41 реестра): голый override
+            # подменял только модель у первого кандидата семейства, оставляя его
+            # провайдера, и wormsoft получал идентификатор GigaChat → 404 на
+            # КАЖДОМ вызове. Нужна модель посильнее — задавай пару целиком
+            # (provider_override + model_override), а не одну её половину.
             pro=prefer_pro,
             max_tokens=500,
         )
@@ -423,21 +437,43 @@ async def run_search_request(
     limit_override: int | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
+    include_bridges = bool(getattr(req, "include_bridges", False))
+    # Мосты читаются из БД (workspaces.cross_workspace_bridges), а не из YAML: YAML
+    # запечён в образ, мосты правятся в рантайме. При include_bridges=false в БД не
+    # ходим вообще и набор равен [req.workspace] — путь по умолчанию не меняется.
+    workspace_ids, bridges_meta = await resolve_bridge_workspaces(
+        [req.workspace], include_bridges=include_bridges
+    )
+    effective_limit = limit_override or req.limit
     vector = await _get_embedding(req.query, settings)
     qdrant = QdrantFrontierClient()
     try:
-        hits = await qdrant.hybrid_search(
-            vector,
-            req.workspace,
-            limit=limit_override or req.limit,
-            query_text=req.query,
-            embedding_version=str(settings.gigachat_embeddings_model or "").strip() or None,
-            lang=req.lang,
-            days_back=days_back_override if days_back_override is not None else req.days_back,
-            valence=valence_override if valence_override is not None else req.valence,
-            signal_type=signal_type_override if signal_type_override is not None else req.signal_type,
-            source_region=source_region_override if source_region_override is not None else req.source_region,
-        )
+        hits: list[dict[str, Any]] = []
+        for workspace_id in workspace_ids:
+            # Один вектор на все воркспейсы: эмбеддинг зависит только от запроса.
+            # Коллекция в Qdrant одна, изоляция — payload-фильтром по workspace_id,
+            # поэтому `score` разных воркспейсов сравним и общая сортировка честна.
+            workspace_hits = await qdrant.hybrid_search(
+                vector,
+                workspace_id,
+                limit=effective_limit,
+                query_text=req.query,
+                embedding_version=str(settings.gigachat_embeddings_model or "").strip() or None,
+                lang=req.lang,
+                days_back=days_back_override if days_back_override is not None else req.days_back,
+                valence=valence_override if valence_override is not None else req.valence,
+                signal_type=signal_type_override if signal_type_override is not None else req.signal_type,
+                source_region=source_region_override if source_region_override is not None else req.source_region,
+            )
+            if include_bridges:
+                # Атрибуция происхождения — условие, без которого мосты включать нельзя.
+                # Иначе disruption молча получает сигналы ai_trends, и своё от чужого
+                # не отличить. Ключи верхнего уровня, как own_stake: payload — это то,
+                # что лежит в Qdrant, и дописывать туда служебное нельзя.
+                for hit in workspace_hits:
+                    hit["origin_workspace"] = workspace_id
+                    hit["bridged"] = workspace_id != req.workspace
+            hits.extend(workspace_hits)
     finally:
         await qdrant.close()
 
@@ -446,6 +482,10 @@ async def run_search_request(
     )
     hydrated = [_maybe_hydrate_score(hit, score_map) for hit in hits]
     hydrated.sort(key=lambda item: item.get("score", 0.0), reverse=True)
+    # `limit` остаётся потолком ВСЕЙ выдачи, а не потолком на воркспейс: иначе включение
+    # мостов у disruption молча превращает limit=10 в 50. Сколько чего доехало после
+    # среза — видно в bridges.per_workspace_hits.
+    hydrated = hydrated[:effective_limit]
     # Врезка второй оси — строго ПОСЛЕ сортировки. Порядок списка на этот момент
     # окончателен, ниже сортировок нет, и own_stake физически нечем повлиять на выдачу
     # (инвариант 1). Ключи только добавляются, `score` не трогается.
@@ -475,9 +515,16 @@ async def run_search_request(
         "sparse_enabled": HAS_SPARSE,
         "synthesize": req.synthesize,
         "synthesis": synthesis,
-        "applied_filters": _applied_filters(req),
+        "applied_filters": _applied_filters(req, workspace_ids=workspace_ids),
         "entity_evidence": entity_evidence(hydrated, req.entities),
     }
+    if include_bridges:
+        counted: dict[str, int] = {workspace_id: 0 for workspace_id in workspace_ids}
+        for hit in hydrated:
+            origin = str(hit.get("origin_workspace") or req.workspace)
+            counted[origin] = counted.get(origin, 0) + 1
+        bridges_meta["per_workspace_hits"] = counted
+        response["bridges"] = bridges_meta
     if own_corpus is not None:
         # Ключ появляется только при включённой второй оси: при OWN_STAKE_ENABLED=false
         # ответ побайтово прежний, и сравнение двух выдач остаётся честной проверкой.

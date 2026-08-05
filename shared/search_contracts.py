@@ -30,6 +30,11 @@ class SearchRequest(BaseModel):
     signal_type: str | None = Field(default=None, min_length=2, max_length=32)
     source_region: str | None = Field(default=None, min_length=2, max_length=24)
     entities: list[str] | None = None
+    # Расширить поиск воркспейсами, объявленными в workspaces.cross_workspace_bridges.
+    # По умолчанию выключено: включённый мост меняет состав выдачи, и клиент, который
+    # о нём не просил, не должен получать чужие сигналы. При include_bridges=true каждый
+    # результат несёт origin_workspace/bridged — без атрибуции мост запрещён.
+    include_bridges: bool = False
 
     @field_validator("query")
     @classmethod

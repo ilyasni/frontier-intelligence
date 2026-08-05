@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mcp.guards import assert_known_workspace
+from mcp.guards import assert_known_workspace, assert_row_workspace
 from shared.db import get_engine
 from shared.config import get_settings
 from shared.redis_streams import collect_redis_stream_snapshot
@@ -42,6 +42,11 @@ class ClusterListRequest(BaseModel):
 
 class ClusterEvidenceRequest(BaseModel):
     cluster_id: str
+    # `workspace` необязателен ради обратной совместимости с уже
+    # настроенными клиентами, но если он передан — строка обязана ему
+    # принадлежать. Без этого поля выборка шла `WHERE id = :id` вообще
+    # без фильтра, то есть любой знающий id читал чужой воркспейс.
+    workspace: str | None = None
     kind: Literal["auto", "semantic", "trend", "emerging"] = "auto"
     evidence_limit: int = Field(default=6, ge=1, le=20)
 
@@ -59,11 +64,21 @@ class MissingSignalListRequest(BaseModel):
 
 class ClusterDetailsRequest(BaseModel):
     cluster_id: str
+    # `workspace` необязателен ради обратной совместимости с уже
+    # настроенными клиентами, но если он передан — строка обязана ему
+    # принадлежать. Без этого поля выборка шла `WHERE id = :id` вообще
+    # без фильтра, то есть любой знающий id читал чужой воркспейс.
+    workspace: str | None = None
     kind: Literal["auto", "semantic", "trend", "emerging", "missing"] = "auto"
 
 
 class MissingSignalDetailsRequest(BaseModel):
     signal_id: str
+    # `workspace` необязателен ради обратной совместимости с уже
+    # настроенными клиентами, но если он передан — строка обязана ему
+    # принадлежать. Без этого поля выборка шла `WHERE id = :id` вообще
+    # без фильтра, то есть любой знающий id читал чужой воркспейс.
+    workspace: str | None = None
 
 
 class WorkspaceOverviewRequest(BaseModel):
@@ -75,6 +90,11 @@ class WorkspaceOverviewRequest(BaseModel):
 
 class SourceDetailsRequest(BaseModel):
     source_id: str
+    # `workspace` необязателен ради обратной совместимости с уже
+    # настроенными клиентами, но если он передан — строка обязана ему
+    # принадлежать. Без этого поля выборка шла `WHERE id = :id` вообще
+    # без фильтра, то есть любой знающий id читал чужой воркспейс.
+    workspace: str | None = None
     recent_runs_limit: int = Field(default=10, ge=1, le=30)
     recent_posts_limit: int = Field(default=10, ge=1, le=30)
 
@@ -690,18 +710,22 @@ async def get_cluster_details(req: ClusterDetailsRequest) -> dict:
     if req.kind in {"auto", "semantic"}:
         row = await _fetch_one("SELECT * FROM semantic_clusters WHERE id = :id", {"id": req.cluster_id})
         if row:
+            assert_row_workspace(row, req.workspace, what="cluster")
             return {"kind": "semantic", "cluster": row}
     if req.kind in {"auto", "trend"}:
         row = await _fetch_one("SELECT * FROM trend_clusters WHERE id = :id", {"id": req.cluster_id})
         if row:
+            assert_row_workspace(row, req.workspace, what="cluster")
             return {"kind": "trend", "cluster": row}
     if req.kind in {"auto", "emerging"}:
         row = await _fetch_one("SELECT * FROM emerging_signals WHERE id = :id", {"id": req.cluster_id})
         if row:
+            assert_row_workspace(row, req.workspace, what="cluster")
             return {"kind": "emerging", "cluster": row}
     if req.kind in {"auto", "missing"}:
         row = await _fetch_one("SELECT * FROM missing_signals WHERE id = :id", {"id": req.cluster_id})
         if row:
+            assert_row_workspace(row, req.workspace, what="cluster")
             return {"kind": "missing", "cluster": row}
     raise HTTPException(status_code=404, detail="Cluster not found")
 
@@ -711,6 +735,7 @@ async def get_missing_signal_details(req: MissingSignalDetailsRequest) -> dict:
     row = await _fetch_one("SELECT * FROM missing_signals WHERE id = :id", {"id": req.signal_id})
     if not row:
         raise HTTPException(status_code=404, detail="Missing signal not found")
+    assert_row_workspace(row, req.workspace, what="missing signal")
     return {"signal": row}
 
 
@@ -747,6 +772,14 @@ async def get_cluster_evidence(req: ClusterEvidenceRequest) -> dict:
             """,
             {"id": req.cluster_id},
         )
+
+    # Одна проверка на все три ветки: какая бы строка ни нашлась, она обязана
+    # принадлежать запрошенному воркспейсу. Раньше выборка шла `WHERE id = :id`
+    # без фильтра вовсе — доказательная база чужого кластера отдавалась любому,
+    # кто знает id, вместе с содержимым постов.
+    for _row, _what in ((semantic_row, "cluster"), (trend_row, "cluster"), (emerging_row, "signal")):
+        if _row:
+            assert_row_workspace(_row, req.workspace, what=_what)
 
     if semantic_row:
         evidence = await _load_cluster_posts(semantic_row.get("doc_ids") or [], req.evidence_limit)
@@ -864,6 +897,10 @@ async def get_signal_timeline(req: SignalTimelineRequest) -> dict:
 
     if not cluster:
         raise HTTPException(status_code=404, detail="Signal not found")
+    # assert_known_workspace выше проверял только сам слаг: кластер тянулся
+    # `WHERE id = :id` без фильтра, то есть таймлайн чужого сигнала отдавался
+    # любому, кто знает id.
+    assert_row_workspace(cluster, req.workspace, what="signal")
 
     series = await _fetch_rows(
         """

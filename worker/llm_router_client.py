@@ -2135,18 +2135,37 @@ class LLMRouterClient:
                 )
             )
         elif model_override and base_candidates:
-            first = base_candidates[0]
-            candidates.append(
-                RoutingCandidate(
-                    provider=first.provider,
-                    model=model_override.strip(),
-                    enabled=first.enabled,
-                    capability_tags=list(first.capability_tags),
-                    budget_class=first.budget_class,
-                    notes="model_override",
-                )
+            # ГОЛЫЙ model_override (без provider_override) подменял модель
+            # у ПЕРВОГО кандидата семейства, оставляя его провайдера. Для
+            # mcp_synthesis первым идёт wormsoft, а override приходил с
+            # идентификатором GigaChat — то есть wormsoft получал чужое имя
+            # модели и отвечал 404. Замер: 8 вызовов синтеза за 60 дней,
+            # 4 ошибки wormsoft и 4 успеха polza, ни одного успеха первого
+            # кандидата. Каждый вызов гарантированно тратил круг впустую.
+            wanted = model_override.strip()
+            owner = next(
+                (c for c in base_candidates if str(c.model or "").strip() == wanted),
+                None,
             )
-            candidates.extend(base_candidates[1:])
+            if owner is not None:
+                # Модель объявлена в политике — маршрутизируем к её ВЛАДЕЛЬЦУ,
+                # а не к первому попавшемуся провайдеру. Остальные кандидаты
+                # остаются фолбэком в прежнем порядке.
+                candidates.append(owner)
+                candidates.extend(c for c in base_candidates if c is not owner)
+            else:
+                # Владелец неизвестен: приписать модель произвольному провайдеру
+                # значит снова получить 404. Override игнорируется, семейство
+                # отрабатывает штатной цепочкой — это хуже намерения вызывающего,
+                # но лучше гарантированной ошибки, и в логе видно, что случилось.
+                logger.warning(
+                    "bare model_override=%r does not belong to any candidate of family=%r "
+                    "(providers: %s) — ignoring it; pass provider_override to pin a pair",
+                    wanted,
+                    task_family,
+                    [c.provider for c in base_candidates],
+                )
+                candidates.extend(base_candidates)
         else:
             candidates.extend(base_candidates)
 

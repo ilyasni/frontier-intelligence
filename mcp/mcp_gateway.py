@@ -76,6 +76,7 @@ async def search_frontier(
     signal_type: str | None = None,
     source_region: str | None = None,
     entities: list[str] | None = None,
+    include_bridges: bool = False,
 ) -> dict:
     """Search frontier intelligence documents."""
     async with httpx.AsyncClient(timeout=90.0) as client:
@@ -92,6 +93,7 @@ async def search_frontier(
                 "signal_type": signal_type,
                 "source_region": source_region,
                 "entities": entities,
+                "include_bridges": include_bridges,
             },
         )
         r.raise_for_status()
@@ -218,6 +220,7 @@ async def get_frontier_brief(
     clusters_limit: int = 8,
     missing_limit: int = 6,
     synthesize: bool = True,
+    include_bridges: bool = False,
 ) -> dict:
     async with httpx.AsyncClient(timeout=120.0) as client:
         r = await client.post(
@@ -229,6 +232,7 @@ async def get_frontier_brief(
                 "clusters_limit": clusters_limit,
                 "missing_limit": missing_limit,
                 "synthesize": synthesize,
+                "include_bridges": include_bridges,
             },
         )
         r.raise_for_status()

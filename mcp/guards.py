@@ -202,3 +202,52 @@ def assert_known_workspace(workspace: str | None) -> None:
     if slug not in get_workspace_allowlist():
         logger.warning("unknown_workspace rejected slug=%s", slug[:64])
         raise HTTPException(status_code=400, detail="unknown workspace")
+
+
+def assert_row_workspace(row: object, workspace: str | None, *, what: str = "resource") -> None:
+    """Строка обязана принадлежать запрошенному воркспейсу.
+
+    Три инструмента (`get_cluster_details`, `get_cluster_evidence`,
+    `get_missing_signal_details`) и `get_source_details` выбирали строку
+    `WHERE id = :id` вообще без фильтра по воркспейсу, а `get_signal_timeline`
+    звал `assert_known_workspace`, но тянул кластер тем же голым запросом.
+    То есть любой, кто знает id, читал чужой воркспейс — при том, что
+    `workspace_id` в проекте объявлен обязательным полем везде.
+
+    **404, а не 403.** Отказ в доступе подтвердил бы, что объект с таким id
+    существует, — то есть превратил бы гвард в оракул для перебора. Клиент
+    получает ровно тот же ответ, что и для несуществующего id.
+
+    `workspace=None` пропускается: поле опционально ради обратной совместимости
+    с уже настроенными клиентами. Ужесточать до обязательного — отдельное
+    решение, оно ломает работающие вызовы.
+    """
+    if workspace is None:
+        return
+    requested = str(workspace).strip()
+    if not requested:
+        return
+    if row is None:
+        return  # отсутствие строки обрабатывает сам инструмент
+
+    actual = None
+    if isinstance(row, dict):
+        actual = row.get("workspace_id")
+    else:
+        actual = getattr(row, "workspace_id", None)
+
+    if actual is None:
+        # Строка без воркспейса — либо схема разъехалась, либо выборка не
+        # достала колонку. Пропускать молча нельзя: гвард, который не может
+        # проверить, обязан сказать об этом, а не притвориться сработавшим.
+        logger.warning("row_workspace_missing what=%s requested=%s", what, requested[:64])
+        return
+
+    if str(actual).strip() != requested:
+        logger.warning(
+            "cross_workspace_access what=%s requested=%s actual=%s",
+            what,
+            requested[:64],
+            str(actual)[:64],
+        )
+        raise HTTPException(status_code=404, detail=f"{what} not found")

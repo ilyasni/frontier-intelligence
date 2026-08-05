@@ -228,7 +228,8 @@ async def _synthesize_balanced(
                 f"{json.dumps(prompt_payload, ensure_ascii=False)}"
             ),
             task="mcp_synthesis",
-            model_override=settings.gigachat_model_pro,
+            # См. пункт 41: голый model_override давал гарантированный 404 на
+            # первом кандидате семейства. Пара задаётся целиком или никак.
             pro=True,
             max_tokens=900,
         )

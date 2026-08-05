@@ -1,8 +1,11 @@
 """Shared source type definitions, presets, and config normalization helpers."""
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 SOURCE_TYPE_TELEGRAM = "telegram"
 SOURCE_TYPE_RSS = "rss"
@@ -266,7 +269,12 @@ SOURCE_DEFAULT_OVERRIDES: dict[str, dict[str, Any]] = {
             "mailbox": "INBOX",
             "search": "ALL",
             "username": "",
-            "password": "",
+            # Не пароль, а ИМЯ ключа в IMAP_PASSWORDS: значение живёт в Settings
+            # (shared/config.py). Пустое значение = использовать IMAP_PASSWORD.
+            # Названо auth_ref, а не password_key, намеренно: admin/backend/routers/
+            # sources.py маскирует любой ключ с подстрокой "password"/"pass", и
+            # имя ключа вернулось бы в UI как "***", а оттуда PATCH'ем — в БД.
+            "auth_ref": "",
             "host": "",
             "port": 993,
             "use_ssl": True,
@@ -336,6 +344,19 @@ def normalize_source_extra(source_type: str, extra: dict[str, Any] | None) -> di
         "mode": mode,
         "max_media_bytes": max(0, max_media_bytes),
     }
+
+    # Пароль ящика вырезается из extra на входе, а не игнорируется на чтении:
+    # иначе значение, однажды написанное в sources.yml, доедет до sources.extra
+    # в PostgreSQL и останется там открытым текстом навсегда. Ключ должен быть
+    # только именем (password_key), само значение живёт в Settings.
+    if canonical_source_type(source_type) == SOURCE_TYPE_EMAIL:
+        fetch_cfg = normalized.get("fetch")
+        if isinstance(fetch_cfg, dict) and fetch_cfg.pop("password", None):
+            logger.warning(
+                "email source config carried extra.fetch.password — value dropped; "
+                "set IMAP_PASSWORD/IMAP_PASSWORDS in .env and reference it via "
+                "extra.fetch.password_key"
+            )
     return normalized
 
 

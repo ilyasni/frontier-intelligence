@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
+from mcp.bridges import resolve_bridge_workspaces
 from mcp.guards import assert_known_workspace
 from shared.config import get_settings
 from worker.llm_router_client import LLMRouterClient
@@ -33,6 +34,10 @@ class FrontierBriefRequest(BaseModel):
     clusters_limit: int = Field(default=8, ge=1, le=30)
     missing_limit: int = Field(default=6, ge=0, le=30)
     synthesize: bool = True
+    # Добавить к брифу воркспейсы, объявленные в workspaces.cross_workspace_bridges.
+    # По умолчанию выключено; при include_bridges=true каждый блок брифа несёт
+    # origin_workspace/bridged, иначе мост неотличим от собственного сигнала.
+    include_bridges: bool = False
 
     @field_validator("workspace", mode="before")
     @classmethod
@@ -132,7 +137,8 @@ async def _synthesize_brief(
                 )[:12000]
             ),
             task="mcp_synthesis",
-            model_override=settings.gigachat_model_pro,
+            # См. пункт 41: голый model_override давал гарантированный 404 на
+            # первом кандидате семейства. Пара задаётся целиком или никак.
             pro=True,
             max_tokens=900,
         )
@@ -155,9 +161,16 @@ async def _synthesize_brief(
 
 @router.post("")
 async def get_frontier_brief(req: FrontierBriefRequest) -> dict:
-    workspace_ids = req.workspace_ids()
-    for workspace in workspace_ids:
+    requested = req.workspace_ids()
+    for workspace in requested:
         assert_known_workspace(workspace)
+    # Мосты — из БД, а не из config/workspaces.yml: YAML запечён в образ и расходится
+    # с базой, где мосты правит редактор в админке. include_bridges=false — тождество,
+    # запроса к БД нет, набор равен запрошенному.
+    workspace_ids, bridges_meta = await resolve_bridge_workspaces(
+        requested, include_bridges=req.include_bridges
+    )
+    requested_set = set(requested)
     compact = []
     missing_by_workspace: dict[str, Any] = {}
     for workspace in workspace_ids:
@@ -186,13 +199,24 @@ async def get_frontier_brief(req: FrontierBriefRequest) -> dict:
             else {"signals": []}
         )
         missing_by_workspace[workspace] = missing.get("signals") or []
-        compact.append(_compact_workspace(overview))
+        entry = _compact_workspace(overview)
+        if req.include_bridges:
+            # Атрибуция происхождения. `entry["workspace"]` — строка воркспейса из БД,
+            # и слаг в ней есть, но он утоплен в объект: и синтезатор, и человек читают
+            # бриф поблочно. Явные плоские ключи — условие, при котором мосты вообще
+            # разрешены: без них чужой воркспейс неотличим от своего.
+            entry["origin_workspace"] = workspace
+            entry["bridged"] = workspace not in requested_set
+        compact.append(entry)
 
     synthesis = await _synthesize_brief(compact, missing_by_workspace) if req.synthesize else None
-    return {
-        "workspaces": req.workspace_ids(),
+    response = {
+        "workspaces": workspace_ids,
         "brief": compact,
         "missing_signals": missing_by_workspace,
         "synthesize": req.synthesize,
         "synthesis": synthesis,
     }
+    if req.include_bridges:
+        response["bridges"] = bridges_meta
+    return response
