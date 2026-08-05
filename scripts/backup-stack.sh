@@ -52,9 +52,28 @@ if docker exec frontier-intelligence-postgres-1 sh -lc \
   # pg_dump оставляет ровно такой же непустой файл, и до 04.08.2026 такой дамп
   # уехал бы в S3 как успешный. pg_restore --list разбирает оглавление целиком,
   # то есть ловит обрыв и порчу, и при этом ничего не восстанавливает.
-  PG_OBJECTS="$(docker exec -i frontier-intelligence-postgres-1 \
-      pg_restore --list /dev/stdin < "$DEST/postgres.dump" 2>>"$LOG" \
-      | grep -cE '^[0-9]+;')"
+  #
+  # Файл КОПИРУЕТСЯ в контейнер, а не подаётся на stdin. Прежняя форма была
+  # `docker exec -i ... pg_restore --list /dev/stdin < файл`, и она ненадёжна
+  # по устройству: `docker exec -i` прогоняет stdin через сокет демона, а он
+  # не seekable — тогда как pg_restore для custom-формата местами обязан
+  # перематывать по смещениям данных. Сработает проверка или нет, зависит от
+  # внутренней раскладки конкретного дампа, то есть от его размера и состава.
+  #
+  # 03.08 и 04.08 везло, 05.08 перестало: прогон отрапортовал
+  # «pg_restore --list не дал объектов» и поднял FrontierBackupRunFailing на
+  # ПОЛНОСТЬЮ ИСПРАВНОМ дампе — тот же файл по реальному пути отдаёт 145
+  # объектов оглавления. Проверка, задуманная против тихого отказа, сама стала
+  # источником ложной тревоги.
+  PG_VERIFY_PATH="/tmp/backup-verify-$$.dump"
+  if docker cp "$DEST/postgres.dump" "frontier-intelligence-postgres-1:$PG_VERIFY_PATH" 2>>"$LOG"; then
+    PG_OBJECTS="$(docker exec frontier-intelligence-postgres-1 \
+        pg_restore --list "$PG_VERIFY_PATH" 2>>"$LOG" | grep -cE '^[0-9]+;')"
+    docker exec frontier-intelligence-postgres-1 rm -f "$PG_VERIFY_PATH" 2>>"$LOG" || true
+  else
+    PG_OBJECTS=0
+    echo "postgres dump verify: не удалось скопировать дамп в контейнер" >>"$LOG"
+  fi
   if [ "${PG_OBJECTS:-0}" -gt 0 ]; then
     echo "postgres.dump: оглавление читается, объектов $PG_OBJECTS"
   else
