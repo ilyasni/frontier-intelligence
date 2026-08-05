@@ -42,6 +42,36 @@ try:
         "Neo4j concept-graph health metrics (RSI contour D).",
         ["service", "workspace", "metric"],
     )
+    # Исход каждого прогона джоба планировщика. Три метрики выше выставляются
+    # ВНУТРИ дочернего процесса (admin.backend.manual_jobs), у которого свой
+    # REGISTRY и никакого HTTP-сервера, — поэтому в экспозиции admin они
+    # присутствовали именами и не отдавали ни одного сэмпла, а два алерта на них
+    # физически не могли сработать. Родитель теперь перепубликовывает их из JSON
+    # ребёнка, и вместе с этим считает сами прогоны: провал ребёнка иначе не виден
+    # в метриках вовсе (manual_jobs при исключении пишет в stderr и возвращает 1,
+    # то есть на провальных прогонах перепубликовывать просто нечего).
+    ADMIN_JOB_RUNS_TOTAL = Counter(
+        "frontier_admin_job_runs_total",
+        "Scheduler job subprocess runs by outcome.",
+        ["service", "job", "outcome"],
+    )
+    # Единственный счётчик СОБСТВЕННЫХ стадий конвейера. Одно имя с меткой `stage`,
+    # а не восемь отдельных: кардинальность ~6 воркспейсов x 6 стадий x 5 исходов
+    # ≈ 180 серий, что для этого стека пренебрежимо, зато разрез строится одним
+    # запросом и новая стадия не требует нового имени.
+    #
+    # Зачем вообще: телеметрия проекта была построена вокруг ВНЕШНИХ зависимостей
+    # (LLM-провайдеры, Redis Streams, S3), а собственные стадии не считал никто.
+    # Статус писался только в PostgreSQL (indexing_status.embedding_status), то есть
+    # СОСТОЯНИЕ можно было посчитать задним числом SQL-запросом, а ПОТОКА не
+    # существовало: ни rate(), ни доли дропа, ни всплеска ошибок. 04.08.2026 на
+    # 190 977 done приходилось 122 600 dropped, а 29 из 32 ошибок за всю историю
+    # случились в последние сутки — и этого не видел ни один дашборд.
+    PIPELINE_STAGE_TOTAL = Counter(
+        "frontier_pipeline_stage_total",
+        "Pipeline stage outcomes for our own processing steps.",
+        ["service", "stage", "workspace", "outcome"],
+    )
     LAST_POST_AGE_SECONDS = Gauge(
         "frontier_last_post_age_seconds",
         "Age in seconds of the freshest post per workspace (data-silence detector).",
@@ -357,6 +387,34 @@ try:
         "Redis stream consumer idle age in seconds.",
         ["service", "stream", "group", "consumer"],
     )
+    # DLQ объявлена в коде с апреля 2026 и до сих пор не наблюдалась ничем:
+    # ключа в Redis нет (poison-сообщений пока не случалось), и «пусто» было
+    # неотличимо от «механизм сломан». Серия обязана существовать со значением 0.
+    REDIS_DLQ_LENGTH = Gauge(
+        "frontier_redis_dlq_length",
+        "Length of a dead-letter stream; zero is published explicitly for a missing key.",
+        ["service", "stream"],
+    )
+    # Число consumer-групп у стрима. Ноль при растущем entries-added — продюсер,
+    # пишущий в пустоту: события вытесняются триммингом непрочитанными, а lag и
+    # pending при этом нулевые, потому что отставать нечему.
+    REDIS_STREAM_GROUPS = Gauge(
+        "frontier_redis_stream_groups",
+        "Number of consumer groups attached to a Redis stream.",
+        ["service", "stream"],
+    )
+    REDIS_STREAM_ENTRIES_ADDED = Gauge(
+        "frontier_redis_stream_entries_added",
+        "Total entries ever added to a Redis stream (XINFO STREAM entries-added).",
+        ["service", "stream"],
+    )
+    # 1, если MAXLEN срезал записи ДО того, как группа успела их прочитать.
+    # Именно этот класс потери не виден ни по lag, ни по pending.
+    REDIS_STREAM_DELIVERY_GAP = Gauge(
+        "frontier_redis_stream_delivery_gap",
+        "1 when trimming removed entries a consumer group had not delivered yet.",
+        ["service", "stream", "group"],
+    )
     _PROMETHEUS_AVAILABLE = True
 except Exception:  # pragma: no cover - fallback for environments without dependency
     _PROMETHEUS_AVAILABLE = False
@@ -367,6 +425,8 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     NOVELTY_JUDGE_TOTAL = None
     RELEVANCE_AUDIT_GAUGE = None
     GRAPH_HEALTH_GAUGE = None
+    ADMIN_JOB_RUNS_TOTAL = None
+    PIPELINE_STAGE_TOTAL = None
     LAST_POST_AGE_SECONDS = None
     SOURCE_FRESHNESS_HOURS = None
     LLM_PROMPT_TOKENS_TOTAL = None
@@ -428,6 +488,10 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     REDIS_STREAM_OLDEST_PENDING_AGE_SECONDS = None
     REDIS_STREAM_CONSUMER_PENDING = None
     REDIS_STREAM_CONSUMER_IDLE_SECONDS = None
+    REDIS_DLQ_LENGTH = None
+    REDIS_STREAM_GROUPS = None
+    REDIS_STREAM_ENTRIES_ADDED = None
+    REDIS_STREAM_DELIVERY_GAP = None
 
 
 def start_metrics_server(port: int) -> None:
@@ -455,9 +519,16 @@ def note_rate_limit_event(service: str, upstream: str, operation: str) -> None:
         ).inc()
 
 
-def note_novelty_judge(service: str, verdict: str) -> None:
-    if NOVELTY_JUDGE_TOTAL is not None:
-        NOVELTY_JUDGE_TOTAL.labels(service=service, verdict=verdict).inc()
+def note_novelty_judge(service: str, verdict: str, count: int = 1) -> None:
+    """Отметить вердикт(ы) novelty-судьи.
+
+    `count` нужен родительскому процессу: он перепубликовывает итог дочернего
+    прогона одним числом, а не по одному вердикту за раз. Инкремент нулём
+    пропускается — Counter от этого не появится в экспозиции, но и лишней серии
+    с нулём не создаст.
+    """
+    if NOVELTY_JUDGE_TOTAL is not None and count > 0:
+        NOVELTY_JUDGE_TOTAL.labels(service=service, verdict=verdict).inc(count)
 
 
 def set_relevance_audit_metric(service: str, workspace: str, metric: str, value: float) -> None:
@@ -468,6 +539,32 @@ def set_relevance_audit_metric(service: str, workspace: str, metric: str, value:
 def set_graph_health_metric(service: str, workspace: str, metric: str, value: float) -> None:
     if GRAPH_HEALTH_GAUGE is not None:
         GRAPH_HEALTH_GAUGE.labels(service=service, workspace=workspace, metric=metric).set(value)
+
+
+def note_admin_job_run(job: str, outcome: str, *, service: str = "admin") -> None:
+    """Отметить исход прогона джоба планировщика (ok / failed / timeout)."""
+    if ADMIN_JOB_RUNS_TOTAL is not None:
+        ADMIN_JOB_RUNS_TOTAL.labels(service=service, job=job, outcome=outcome).inc()
+
+
+def note_pipeline_stage(
+    service: str, stage: str, outcome: str, workspace: str = "", count: int = 1
+) -> None:
+    """Отметить исход стадии конвейера.
+
+    Пустой `workspace` намеренно превращается в `unknown`, а не отбрасывается:
+    в части точек (например откат до сохранения поста) воркспейс ещё неизвестен,
+    и терять там событие целиком хуже, чем потерять разрез по нему. Пустая метка
+    выглядела бы в выдаче как отдельный воркспейс с именем «» — `unknown`
+    честнее и заметнее.
+    """
+    if PIPELINE_STAGE_TOTAL is not None and count > 0:
+        PIPELINE_STAGE_TOTAL.labels(
+            service=service,
+            stage=stage,
+            workspace=workspace or "unknown",
+            outcome=outcome,
+        ).inc(count)
 
 
 def set_last_post_age(service: str, ages_by_workspace: dict[str, float]) -> None:
@@ -933,3 +1030,34 @@ def set_redis_stream_metrics(service: str, snapshot: dict) -> None:
             REDIS_STREAM_CONSUMER_IDLE_SECONDS.labels(**labels).set(
                 float(consumer.get("idle_seconds") or 0.0)
             )
+
+    # DLQ: ноль печатается ВСЕГДА, в том числе для несуществующего ключа.
+    # Отсутствие серии — это «неизвестно», а нам нужно «пусто».
+    for dlq_item in snapshot.get("dlq", []) or []:
+        stream = str(dlq_item.get("stream") or "")
+        if not stream:
+            continue
+        REDIS_DLQ_LENGTH.labels(service=service, stream=stream).set(
+            int(dlq_item.get("length") or 0)
+        )
+
+    # Здоровье стримов: осиротевший продюсер и потеря при тримминге. Обе величины
+    # невыразимы через lag/pending — там, где они интересны, и lag, и pending
+    # равны нулю по построению.
+    for health_item in snapshot.get("health", []) or []:
+        stream = str(health_item.get("stream") or "")
+        if not stream:
+            continue
+        REDIS_STREAM_GROUPS.labels(service=service, stream=stream).set(
+            int(health_item.get("groups") or 0)
+        )
+        REDIS_STREAM_ENTRIES_ADDED.labels(service=service, stream=stream).set(
+            int(health_item.get("entries_added") or 0)
+        )
+        for gap_item in health_item.get("gaps", []) or []:
+            group = str(gap_item.get("group") or "")
+            if not group:
+                continue
+            REDIS_STREAM_DELIVERY_GAP.labels(
+                service=service, stream=stream, group=group
+            ).set(1 if gap_item.get("delivery_gap") else 0)

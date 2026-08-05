@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 
 from shared.config import get_settings
+from shared.metrics import note_pipeline_stage
 from shared.sqlalchemy_pool import ASYNC_ENGINE_POOL_KWARGS
 from shared.redis_client import RedisClient
 from shared.events.posts_parsed_v1 import PostParsedEvent
@@ -485,8 +486,20 @@ class EnrichmentTask:
 
     async def _update_indexing_status(self, post_id: str, status: str,
                                        error: str = "", qdrant_id: str = "",
-                                       graph_status: str = ""):
-        """Upsert into indexing_status."""
+                                       graph_status: str = "", workspace_id: str = ""):
+        """Upsert into indexing_status.
+
+        `workspace_id` нужен только счётчику стадий и потому необязателен: в части
+        путей (откат до сохранения поста) воркспейс ещё не установлен, и терять
+        там событие целиком хуже, чем потерять разрез по нему — см.
+        note_pipeline_stage.
+        """
+        # Счётчик инкрементируется ДО записи в БД намеренно. Это счётчик ПОПЫТОК
+        # перевести пост в стадию, и если запись упадёт, разрыв между ним и
+        # фактическим содержимым indexing_status и будет тем сигналом, которого
+        # сейчас нет вовсе: сама запись обёрнута в try/except у трёх из пяти
+        # вызывающих, то есть её провал не виден ниоткуда.
+        note_pipeline_stage("worker", "index", status, workspace_id)
         async with self.Session() as session:
             if graph_status:
                 await session.execute(text("""
@@ -707,7 +720,7 @@ class EnrichmentTask:
             return
 
         post_id = await self._save_post(event)
-        await self._update_indexing_status(post_id, "pending")
+        await self._update_indexing_status(post_id, "pending", workspace_id=event.workspace_id)
 
         # Create media_group if this is an album
         if event.grouped_id:
@@ -815,6 +828,7 @@ class EnrichmentTask:
                         "dropped",
                         qdrant_id="",
                         graph_status="skipped",
+                        workspace_id=event.workspace_id,
                     )
                 except Exception as exc:
                     logger.error(
@@ -912,6 +926,7 @@ class EnrichmentTask:
             await self._update_indexing_status(
                 post_id, "done", qdrant_id=post_id,
                 graph_status="done" if concepts else "skipped",
+                workspace_id=event.workspace_id,
             )
 
             # Crawl только внешние ссылки (linked_urls), не permalink t.me
@@ -951,7 +966,9 @@ class EnrichmentTask:
                 await self.redis.xadd(STREAM_IN, {**data, "retry_count": str(retry_count + 1)})
             else:
                 logger.error("Max retries exceeded for %s: %s", post_id, exc)
-                await self._update_indexing_status(post_id, "error", error=str(exc)[:500])
+                await self._update_indexing_status(
+                    post_id, "error", error=str(exc)[:500], workspace_id=event.workspace_id
+                )
                 await self.redis.xack(STREAM_IN, GROUP, msg_id)
 
     async def _gather_process_bounded(self, pairs: list[tuple[str, dict]]) -> None:

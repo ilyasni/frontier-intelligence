@@ -27,6 +27,12 @@ from admin.backend.services.trend_alerts import run_urgent_trend_alerts
 from admin.backend.services.wormsoft_limits import fetch_wormsoft_limits
 from admin.backend.services.xray_health import run_xray_health_check
 from shared.config import get_settings
+from shared.metrics import (
+    note_admin_job_run,
+    note_novelty_judge,
+    set_graph_health_metric,
+    set_relevance_audit_metric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +174,9 @@ async def _run_job_subprocess(job_name: str, workspace_id: str | None) -> dict[s
         # caller's ``async with lock`` unwinds and frees the lock for the next run.
         await _terminate_job_subprocess(process, job_name, workspace_id)
         if isinstance(exc, asyncio.CancelledError):
+            note_admin_job_run(job_name, "cancelled")
             raise
+        note_admin_job_run(job_name, "timeout")
         raise RuntimeError(
             f"job_subprocess_timeout after {timeout:.0f}s: {job_name} "
             f"workspace_id={workspace_id or '__all__'}"
@@ -179,12 +187,95 @@ async def _run_job_subprocess(job_name: str, workspace_id: str | None) -> dict[s
         # ни stderr — сообщение вырождалось в безликое "job_subprocess_failed",
         # неотличимое от логической ошибки. Из-за этого OOM на workspace=disruption
         # не замечали с апреля по август 2026. Код возврата прикладываем всегда.
+        #
+        # Счётчик инкрементируется ДО raise: на провальных прогонах ребёнок пишет
+        # JSON в stderr и возвращает 1, то есть перепубликовывать нечего, и без
+        # этой строки провал не оставлял бы в метриках вообще никакого следа.
+        note_admin_job_run(job_name, "failed")
         raise RuntimeError(
             f"{err_text or 'job_subprocess_failed: дочерний процесс не оставил вывода'} "
             f"[{_describe_returncode(process.returncode)} job_name={job_name} "
             f"workspace_id={workspace_id or '__all__'}]"
         )
-    return json.loads((stdout or b"{}").decode("utf-8", errors="replace"))
+    result = json.loads((stdout or b"{}").decode("utf-8", errors="replace"))
+    note_admin_job_run(job_name, "ok")
+    _republish_child_metrics(job_name, result)
+    return result
+
+
+# Джобы, чьи метрики выставляются ВНУТРИ дочернего процесса и потому не доживают
+# до экспозиции родителя. Значение — функция, раскладывающая полезную нагрузку
+# одного воркспейса по сеттерам.
+#
+# Почему не multiprocess-режим prometheus_client: PROMETHEUS_MULTIPROC_DIR
+# переключает ВЕСЬ реестр процесса, и голые Gauge, на которых висят живые правила
+# alerts.yml, начинают требовать явного multiprocess_mode — цена несоразмерна.
+# Почему не textfile-коллектор: его каталог не смонтирован в admin, а
+# frontier_novelty_judge_total — Counter, монотонность которого пришлось бы
+# поддерживать руками. Родитель уже получает разобранный JSON ребёнка, и этого
+# достаточно: при workspace_id=__all__ полезная нагрузка несёт разбивку `results`
+# с `workspace_id` внутри каждого элемента, то есть метки есть чем размечать.
+def _republish_novelty_judge(item: dict[str, Any]) -> None:
+    judged = int(item.get("judged") or 0)
+    underrated = int(item.get("underrated") or 0)
+    failed = int(item.get("failed") or 0)
+    # confirmed_weak не приходит отдельным полем, но выводится точно: судья либо
+    # признал сигнал недооценённым, либо подтвердил его слабость.
+    confirmed_weak = max(judged - underrated, 0)
+    for verdict, count in (
+        ("failed", failed),
+        ("underrated", underrated),
+        ("confirmed_weak", confirmed_weak),
+    ):
+        note_novelty_judge("admin", verdict, count)
+
+
+def _republish_relevance_audit(item: dict[str, Any]) -> None:
+    workspace = str(item.get("workspace_id") or "")
+    if not workspace:
+        return
+    for metric in ("rejected_30d", "audited_30d", "false_negatives_30d", "false_negative_rate"):
+        if metric in item:
+            set_relevance_audit_metric("admin", workspace, metric, float(item[metric] or 0))
+
+
+def _republish_graph_health(item: dict[str, Any]) -> None:
+    workspace = str(item.get("workspace_id") or "")
+    health = item.get("health")
+    if not workspace or not isinstance(health, dict):
+        return
+    for metric, value in health.items():
+        try:
+            set_graph_health_metric("admin", workspace, str(metric), float(value))
+        except (TypeError, ValueError):
+            logger.debug("graph_health metric %s is not numeric: %r", metric, value)
+
+
+_CHILD_METRIC_REPUBLISHERS = {
+    "run_novelty_judge": _republish_novelty_judge,
+    "run_relevance_audit": _republish_relevance_audit,
+    "run_graph_maintenance": _republish_graph_health,
+    "run_graph_resolution": _republish_graph_health,
+}
+
+
+def _republish_child_metrics(job_name: str, result: Any) -> None:
+    """Выставить в родителе метрики, которые ребёнок посчитал и унёс с собой.
+
+    Никогда не роняет вызывающего: наблюдаемость не имеет права стоить прогона.
+    """
+    republish = _CHILD_METRIC_REPUBLISHERS.get(job_name)
+    if republish is None or not isinstance(result, dict):
+        return
+    try:
+        items = result.get("results")
+        # workspace_id=__all__ → {"results": [ {...}, ... ]}; один воркспейс →
+        # плоский словарь. Обе формы приходят от одного и того же job-враппера.
+        for item in items if isinstance(items, list) else [result]:
+            if isinstance(item, dict):
+                republish(item)
+    except Exception:
+        logger.exception("failed to republish child metrics for job=%s", job_name)
 
 
 def _describe_returncode(returncode: int | None) -> str:

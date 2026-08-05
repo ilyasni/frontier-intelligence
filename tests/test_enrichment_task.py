@@ -67,10 +67,19 @@ async def test_dropped_post_clears_graph_status_and_qdrant_id() -> None:
     task.qdrant.delete_document.assert_awaited_once_with("post-1")
     assert task._update_indexing_status.await_args_list[0].args == ("post-1", "pending")
     assert task._update_indexing_status.await_args_list[-1].args == ("post-1", "dropped")
+    # `workspace_id` добавлен 2026-08-05 вместе со счётчиком стадий
+    # (frontier_pipeline_stage_total): без него у 39% дропа не было разреза по
+    # воркспейсам, а сам дроп не существовал как метрика. Пробрасывается на всех
+    # путях, где событие в области видимости; там, где нет, метка становится
+    # `unknown` — см. note_pipeline_stage.
     assert task._update_indexing_status.await_args_list[-1].kwargs == {
         "qdrant_id": "",
         "graph_status": "skipped",
+        "workspace_id": "disruption",
     }
+    assert (
+        task._update_indexing_status.await_args_list[0].kwargs["workspace_id"] == "disruption"
+    )
 
 
 async def test_disabled_source_event_is_acked_even_if_status_write_fails() -> None:

@@ -1,4 +1,208 @@
 groups:
+  # Собственные стадии конвейера и здоровье Redis-стримов (заход 8, 2026-08-05).
+  #
+  # До этой группы у конвейера не было ни одного счётчика СВОИХ стадий: статус
+  # писался только в PostgreSQL, то есть состояние можно было посчитать задним
+  # числом SQL-запросом, а потока не существовало. Поэтому 39% дропа по
+  # релевантности, всплеск ошибок (29 из 32 за всю историю пришлись на одни
+  # сутки) и 37 309 событий, вытесненных триммингом непрочитанными, были
+  # невидимы одновременно — и обнаруживались только когда данные переставали
+  # поступать вовсе, через 6-24 часа.
+  - name: frontier_pipeline
+    rules:
+      # Порог абсолютный и намеренно грубый: ошибки индексации — редкое событие
+      # (32 за всю историю до 04.08.2026), поэтому любой заметный всплеск важнее
+      # точности. Регрессию доли дропа сюда НЕ ставим: базовая линия требует
+      # окна длиннее ретенции Prometheus (200ч), см. пункт 42 реестра.
+      - alert: FrontierPipelineErrorBurst
+        expr: sum by (stage) (increase(frontier_pipeline_stage_total{outcome="error"}[1h])) >= 10
+        for: 15m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Стадия {{ $labels.stage }} даёт ошибки пачками"
+          description: "На стадии {{ $labels.stage }} за час накопилось {{ $value }} исходов outcome=error. Разрез по воркспейсам: sum by (workspace) (increase(frontier_pipeline_stage_total{stage=\"{{ $labels.stage }}\",outcome=\"error\"}[1h])). До появления этого счётчика такой всплеск не был виден ничем: статус стадии писался только в indexing_status, то есть существовал как состояние, но не как поток."
+
+      # Тихая потеря на самом входе: xadd не удался, событие не попало в стрим,
+      # след оставался только в логах ingest.
+      - alert: FrontierIngestPublishFailing
+        expr: sum by (workspace) (increase(frontier_pipeline_stage_total{stage="ingest",outcome="publish_failed"}[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+          service: ingest
+          notify: telegram
+        annotations:
+          summary: "Публикация событий ingest не удаётся ({{ $labels.workspace }})"
+          description: "За 15 минут {{ $value }} событий воркспейса {{ $labels.workspace }} не доехали до stream:posts:parsed. Чекпоинт при этом НЕ сдвигается (at-least-once), то есть следующий прогон перечитает окно — но если отказы продолжаются, источник стоит на месте. Проверь Redis и его память."
+
+      # Джоб планировщика упал. При исключении дочерний процесс пишет JSON
+      # в stderr и возвращает 1, поэтому перепубликовывать его метрики нечего —
+      # без этого счётчика провал не оставлял в наблюдаемости вообще ничего.
+      - alert: FrontierAdminJobFailing
+        expr: sum by (job) (increase(frontier_admin_job_runs_total{outcome=~"failed|timeout"}[6h])) >= 3
+        for: 15m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Джоб {{ $labels.job }} падает повторно"
+          description: "{{ $value }} неудачных прогонов {{ $labels.job }} за 6 часов. outcome=timeout означает превышение ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC (900с по умолчанию) — ночная кластеризация disruption уже занимает 523-673с, запас невелик. outcome=failed — ненулевой код возврата, расшифровку сигнала смотри в логах admin."
+
+      # Пункт 12 реестра. Ключа DLQ в Redis нет вовсе, поэтому ноль печатается
+      # экспортёром ЯВНО — иначе «poison не случался» и «DLQ не наблюдается»
+      # были бы одним и тем же пустым местом.
+      - alert: FrontierDlqNotEmpty
+        expr: max by (stream) (frontier_redis_dlq_length) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "В DLQ {{ $labels.stream }} лежат сообщения"
+          description: "{{ $value }} poison-сообщений в {{ $labels.stream }}. Механизм «сохранить и разобрать позже» существовал только в половине «сохранить»: консьюмера у DLQ нет, разбирать надо руками — XRANGE {{ $labels.stream }} - + COUNT 10 и смотреть поле error."
+
+      # Пункт 9 реестра: продюсер, пишущий в стрим, который никто не читает.
+      # lag и pending этого не показывают — групп нет, отставать нечему.
+      - alert: FrontierRedisStreamOrphanProducer
+        expr: (max by (stream) (frontier_redis_stream_groups) == 0) and (max by (stream) (increase(frontier_redis_stream_entries_added[1h])) > 0)
+        for: 30m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "В стрим {{ $labels.stream }} пишут, но его никто не читает"
+          description: "У {{ $labels.stream }} ноль consumer-групп, при этом за час прибавилось {{ $value }} записей. Они будут вытеснены триммингом непрочитанными, и ни lag, ни pending этого не покажут. Либо подключить потребителя, либо снять продюсера — группа без потребителя проблему не решает, а лишь меняет её форму на растущий pending."
+
+      # Пункт 39 реестра: MAXLEN режет по длине, не спрашивая, прочитано ли.
+      - alert: FrontierRedisStreamDeliveryGap
+        expr: max by (stream, group) (frontier_redis_stream_delivery_gap) > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Тримминг съел недоставленное: {{ $labels.stream }}/{{ $labels.group }}"
+          description: "last-delivered-id группы {{ $labels.group }} старше первой уцелевшей записи {{ $labels.stream }}: MAXLEN срезал сообщения ДО того, как их прочитали. Они потеряны безвозвратно. lag и pending при этом нулевые — отстающих записей больше не существует, ровно та тишина, что сопровождала Redis-OOM 31.07.2026. Смотри, не встал ли потребитель, и подними STREAM_MAXLEN, если поток вырос."
+
+  # Хранилища (заход 8, пункт 14 реестра). До 2026-08-05 ни Redis, ни PostgreSQL,
+  # ни Neo4j не скрейпились вообще: отказ хранилища был виден только по вторичным
+  # признакам через 6-24 часа. Redis-OOM 31.07.2026 положил ingest, обогащение и
+  # поиск на 9 часов при НУЛЕВЫХ lag и pending — писать в стрим было уже нечем,
+  # поэтому все существовавшие правила промолчали.
+  #
+  # Значения снимает scripts/export-storage-metrics.sh в textfile-коллектор:
+  # экспортёры-контейнеры не притащить (Docker Hub с хоста недоступен), а
+  # self-metrics нет ни у одного из трёх образов.
+  - name: frontier_storage
+    rules:
+      # То самое, чего не хватало 31.07. Порог 0.8 при maxmemory 2 GiB и текущем
+      # потреблении ~0.29 GiB (14%) — запас шестикратный, ложных срабатываний не ждём.
+      # Условие maxmemory > 0 обязательно: ноль означает «лимит не задан», и без
+      # проверки деление дало бы +Inf на каждом скрейпе.
+      - alert: FrontierRedisMemoryHigh
+        expr: frontier_redis_maxmemory_bytes > 0 and (frontier_redis_used_memory_bytes / frontier_redis_maxmemory_bytes) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: redis
+          notify: telegram
+        annotations:
+          summary: "Redis занял больше 80% своего потолка"
+          description: "Использовано {{ $value | humanizePercentage }} от maxmemory. Именно это состояние 31.07.2026 положило стек на 9 часов, и заметить его было нечем: при упёршемся в потолок Redis lag и pending остаются нулевыми. Смотри длину стримов (XLEN) и кэш эмбеддингов; STREAM_MAXLEN=10000 уже стоит."
+
+      # Политика вытеснения volatile-ttl: Redis выбрасывает ключи с TTL, то есть
+      # первым страдает кэш эмбеддингов — молча и с деградацией скорости, а не
+      # с ошибкой. Любое ненулевое вытеснение стоит увидеть.
+      - alert: FrontierRedisEvictingKeys
+        expr: increase(frontier_redis_evicted_keys_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+          notify: telegram
+        annotations:
+          summary: "Redis вытесняет ключи"
+          description: "За 15 минут вытеснено {{ $value }} ключей. Политика volatile-ttl бьёт по ключам с TTL, то есть по кэшу эмбеддингов: работа продолжится, но подорожает и замедлится, без единой ошибки в логах."
+
+      - alert: FrontierRedisBgsaveFailing
+        expr: frontier_redis_up == 1 and frontier_redis_rdb_last_bgsave_ok == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: redis
+          notify: telegram
+        annotations:
+          summary: "Последний bgsave Redis завершился ошибкой"
+          description: "rdb_last_bgsave_status != ok. Снимок на диск не создаётся, значит перезапуск Redis потеряет состояние стримов и кэш. Обычная причина — нет места на диске или не хватает памяти на fork."
+
+      # max_connections = 100 (проверено), сейчас занято ~12. 80 — это отказ
+      # в обслуживании на пороге, а не абстрактный процент.
+      - alert: FrontierPostgresConnectionsHigh
+        expr: frontier_pg_numbackends > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: postgres
+          notify: telegram
+        annotations:
+          summary: "PostgreSQL близок к лимиту подключений"
+          description: "{{ $value }} подключений при max_connections=100. Дальше новые соединения получают отказ, и первым ляжет тот сервис, который переподключается чаще прочих. Ищи утечку пула."
+
+      - alert: FrontierPostgresLongRunningQuery
+        expr: frontier_pg_longest_query_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "Клиентский запрос выполняется дольше 15 минут"
+          description: "Самый долгий активный запрос идёт {{ $value | humanizeDuration }}. Autovacuum и служебные бэкенды из подсчёта исключены, то есть это наш код. Долгий запрос держит снапшот и мешает вакууму."
+
+      - alert: FrontierNeo4jDown
+        expr: frontier_neo4j_up == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: neo4j
+          notify: telegram
+        annotations:
+          summary: "Neo4j не отвечает на опрос"
+          description: "cypher-shell не вернул счётчики графа. Значения frontier_neo4j_node_count и _relationship_count при этом остаются последними известными — насколько они устарели, показывает frontier_neo4j_measured_timestamp_seconds."
+
+      # Опрос конкретного хранилища не удался, но экспортёр жив. Отличается от
+      # правила ниже: там молчит сам экспортёр, здесь — конкретная база.
+      - alert: FrontierStorageProbeFailing
+        expr: min(frontier_redis_up) == 0 or min(frontier_pg_up) == 0
+        for: 15m
+        labels:
+          severity: critical
+          service: monitoring
+          notify: telegram
+        annotations:
+          summary: "Экспортёр не может опросить Redis или PostgreSQL"
+          description: "Признак живости одного из двух ключевых хранилищ равен нулю дольше 15 минут. Либо база не отвечает, либо `docker exec` из-под cron-пользователя перестал работать — проверь обе версии, вторая тихая."
+
+      # Страховка от тихой смерти самого экспортёра: без неё все правила выше
+      # замолчат разом, не зафиксировав ни одного отказа. Тот же приём, что у
+      # FrontierAnalysisFreshnessExporterDown и FrontierBackupMetricsExporterDown.
+      - alert: FrontierStorageMetricsExporterDown
+        expr: absent(frontier_redis_up)
+        for: 30m
+        labels:
+          severity: warning
+          service: monitoring
+          notify: telegram
+        annotations:
+          summary: "Экспортёр метрик хранилищ молчит"
+          description: "Серия frontier_redis_up отсутствует >30м, значит вся группа frontier_storage сейчас не может сработать в принципе. Проверь cron scripts/export-storage-metrics.sh, каталог prometheus/textfile и флаг --collector.textfile.directory у node-exporter."
+
   - name: frontier_runtime_resilience
     rules:
       - alert: FrontierTelegramClientResetBurst

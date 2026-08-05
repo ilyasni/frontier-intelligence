@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 from ingest.source_runtime import SourceRuntimeStore
 from shared.events.posts_parsed_v1 import PostParsedEvent
 from shared.linked_urls import extract_urls_from_plain_text, finalize_linked_urls
+from shared.metrics import note_pipeline_stage
 from shared.redis_client import RedisClient
 from shared.source_definitions import normalize_source_extra
 
@@ -146,6 +147,7 @@ class AbstractSource(abc.ABC):
 
     async def emit_to_stream(self, events: list[PostParsedEvent]) -> int:
         pushed = 0
+        failed = 0
         for event in events:
             try:
                 await self.redis.xadd(
@@ -154,7 +156,14 @@ class AbstractSource(abc.ABC):
                 )
                 pushed += 1
             except Exception as exc:
+                failed += 1
                 logger.error("Failed to push event %s: %s", event.external_id, exc)
+        # Вход конвейера. Без него доля дропа на следующей стадии не с чем сравнить:
+        # знаменатель существовал только в PostgreSQL и только как состояние.
+        # Неудачный xadd считается отдельно — это тихая потеря на самом входе,
+        # которая до сих пор оставляла след лишь в логах.
+        note_pipeline_stage("ingest", "ingest", "published", self.workspace_id, pushed)
+        note_pipeline_stage("ingest", "ingest", "publish_failed", self.workspace_id, failed)
         self._emitted_count = pushed
         return pushed
 
