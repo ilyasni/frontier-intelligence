@@ -69,7 +69,13 @@ async def _trend_rows(workspace_id: str | None, limit: int) -> list[dict[str, An
                     freshness_score, evidence_strength_score, velocity_score, acceleration_score,
                     baseline_rate, current_rate, change_point_count, change_point_strength,
                     has_recent_change_point, signal_score, signal_stage, doc_count, source_count,
-                    doc_ids, semantic_cluster_ids, keywords, explainability, detected_at
+                    doc_ids, semantic_cluster_ids, keywords, explainability, detected_at,
+                    -- Провенанс. Без этих колонок скрипт был ДЕСТРУКТИВЕН: upsert
+                    -- заменяет payload целиком, поэтому прогон затирал измеренные
+                    -- значения у тех точек, где они уже были, заменяя их нулями.
+                    title_ru, evidence,
+                    deduped_source_count, distinct_voices, echo_ratio,
+                    arrival_dispersion, distinct_originators, independence_score
                 FROM trend_clusters
                 WHERE (CAST(:workspace_id AS text) IS NULL OR workspace_id = CAST(:workspace_id AS text))
                 ORDER BY detected_at DESC
@@ -137,7 +143,21 @@ async def sync_trend_clusters_to_qdrant(
                 "semantic_cluster_ids": _as_list(row.get("semantic_cluster_ids")),
                 "keywords": _as_list(row.get("keywords")),
                 "source_count": row["source_count"],
-                "evidence": [],
+                # evidence раньше был жёстко пустым списком, и прогон стирал
+                # доказательную базу у всех точек, которых касался.
+                "evidence": _as_list(row.get("evidence")),
+                "title_ru": row.get("title_ru"),
+                "insight": row.get("insight"),
+                "opportunity": row.get("opportunity"),
+                "deduped_source_count": row.get("deduped_source_count"),
+                "distinct_voices": row.get("distinct_voices"),
+                "echo_ratio": row.get("echo_ratio"),
+                "arrival_dispersion": row.get("arrival_dispersion"),
+                # БЕЗ `or 0`: в БД это NULL у 380 строк из 404, и None в payload
+                # обязан остаться None. Ноль здесь означал бы «измерено, ноль
+                # независимых источников» — ровно та ложь, которую убрал пункт 26.
+                "distinct_originators": row.get("distinct_originators"),
+                "independence_score": row.get("independence_score"),
                 "first_seen_at": _parse_dt(time_span.get("first_seen_at")),
                 "last_seen_at": _parse_dt(time_span.get("last_seen_at")),
                 "detected_at": row["detected_at"],

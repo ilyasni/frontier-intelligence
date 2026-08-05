@@ -72,6 +72,29 @@ class FrontierBriefRequest(BaseModel):
         return deduped
 
 
+def _provenance_block(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Блок независимости сигнала — или None, если она не измерялась.
+
+    Возврат None, а не словаря нулей, принципиален. Провенанс считается с
+    02.08.2026, и на 05.08 измерены 48 трендов из 404: словарь нулей отправил
+    бы синтезатору 88% выдуманных измерений, а модель приняла бы их за факт
+    «источники полностью зависимы». Ровно эту ложь убрал пункт 26 на уровне
+    отдачи; здесь она не должна вернуться через бриф.
+
+    Опирается на `provenance_measured`, который проставляет `_mark_provenance`
+    в mcp/tools/observability.py. Проверять `independence_score is None` тоже
+    можно, но флаг честнее: он говорит о факте измерения, а не о значении.
+    """
+    if not item.get("provenance_measured"):
+        return None
+    return {
+        "independence_score": item.get("independence_score"),
+        "deduped_source_count": item.get("deduped_source_count"),
+        "distinct_originators": item.get("distinct_originators"),
+        "echo_ratio": item.get("echo_ratio"),
+    }
+
+
 def _compact_workspace(payload: dict[str, Any]) -> dict[str, Any]:
     clusters = payload.get("clusters") or {}
     return {
@@ -95,6 +118,10 @@ def _compact_workspace(payload: dict[str, Any]) -> dict[str, Any]:
                 "signal_score": item.get("signal_score"),
                 "burst_score": item.get("burst_score"),
                 "keywords": item.get("keywords") or [],
+                # Провенанс доезжает до брифа впервые: whitelist вырезал его,
+                # и синтезатор оценивал силу сигнала, не зная, стоят ли за ним
+                # независимые источники или одна перепечатка в пяти местах.
+                "provenance": _provenance_block(item),
             }
             for item in (clusters.get("trends") or [])[:8]
         ],
@@ -105,6 +132,7 @@ def _compact_workspace(payload: dict[str, Any]) -> dict[str, Any]:
                 "signal_stage": item.get("signal_stage"),
                 "signal_score": item.get("signal_score"),
                 "recommended_watch_action": item.get("recommended_watch_action"),
+                "provenance": _provenance_block(item),
             }
             for item in (clusters.get("emerging") or [])[:8]
         ],
@@ -127,6 +155,16 @@ async def _synthesize_brief(
             user=(
                 "Return JSON with keys: executive_summary, strongest_signals, weak_signals, "
                 "missing_signals, risks, recommended_next_actions, confidence.\n\n"
+                # Провенанс без инструкции читается как обычная метрика, и низкий
+                # independence_score модель принимает за слабый сигнал. Это разные
+                # вещи: слабый сигнал — мало материала, низкая независимость — много
+                # материала из одного первоисточника, разошедшегося по перепечаткам.
+                "A signal may carry a `provenance` block. Interpret it ONLY when the "
+                "block is present: its absence means independence was never computed, "
+                "not that the sources are dependent. Low independence_score together "
+                "with high echo_ratio means re-syndication — one origin reprinted in "
+                "many places — which is different from a weak signal, and it should "
+                "lower confidence in breadth rather than in strength.\n\n"
                 + json.dumps(
                     {
                         "workspaces": workspaces,
