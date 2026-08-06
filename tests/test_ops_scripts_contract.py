@@ -296,3 +296,33 @@ def test_powershell_ssh_results_are_checked() -> None:
     assert not problems, "\n  ".join(
         ["PowerShell scripts that ignore remote command failures:", *problems]
     )
+
+
+def test_shell_callers_default_the_admin_username() -> None:
+    """Имя пользователя админки обязано иметь дефолт, а не браться из .env буквально.
+
+    В серверном `.env` есть только `ADMIN_PASSWORD`; `ADMIN_USER` там отсутствует,
+    а сервис подставляет его сам — `admin/backend/main.py`:
+    `os.environ.get("ADMIN_USER", "admin")`. Скрипт, читающий переменную буквально,
+    уходит с ПУСТЫМ именем, `secrets.compare_digest(user, "admin")` не сходится,
+    и каждый вызов получает 401.
+
+    Замерено вживую 06.08.2026: тот же запрос с пустым именем → 401, с "admin" → 200.
+    То есть заход 7 вылечил молчание (скрипт стал честно падать), но переобработать
+    окно по-прежнему было нельзя — а выглядело это как «админка не пускает».
+
+    Питонья реализация (`scripts/admin_api_auth.py:35 DEFAULT_ADMIN_USER`) дефолт
+    держала с самого начала. Разъехались две реализации одного и того же, и проверка
+    ниже держит их вместе.
+    """
+    offenders: list[str] = []
+    for path in sorted(SCRIPTS_DIR.glob("*.sh")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "ADMIN_USER" not in text:
+            continue
+        if not re.search(r'admin_user="\$\{admin_user:-admin\}"', text):
+            offenders.append(path.name)
+    assert not offenders, (
+        "скрипты читают ADMIN_USER без дефолта \"admin\", а в серверном .env этой "
+        f"переменной нет — каждый вызов админки вернёт 401: {offenders}"
+    )

@@ -40,6 +40,15 @@ read_env_value() {
 }
 
 admin_user="$(read_env_value ADMIN_USER)"
+# ADMIN_USER в серверном .env НЕ ЗАДАН — там только ADMIN_PASSWORD. Имя пользователя
+# подставляет сам сервис: admin/backend/main.py:66 `os.environ.get("ADMIN_USER", "admin")`.
+# Без этой строки curl уходил с пустым именем, `secrets.compare_digest(user, "admin")`
+# не сходился, и КАЖДЫЙ вызов возвращал 401 — то есть заход 7 вылечил молчание
+# (скрипт теперь честно падает), но переобработать окно по-прежнему было нельзя.
+# Проверено вживую 06.08.2026: с пустым именем 401, с "admin" — 200.
+# Соседний scripts/admin_api_auth.py:35 этот дефолт держит с самого начала;
+# разъехались именно две реализации одного и того же.
+admin_user="${admin_user:-admin}"
 admin_password="$(read_env_value ADMIN_PASSWORD)"
 
 if [ -z "$admin_password" ]; then
