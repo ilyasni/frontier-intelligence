@@ -105,7 +105,13 @@ AUTO_BATCH_EXPECTED_ENABLED: dict[str, bool] = {
     # ── auto_hmi, волна 1 (05.08.2026) ──────────────────────────────────────
     "auto_rss_arxiv_cs_hc_automotive": True,
     "auto_rss_techcrunch_transportation": True,
-    "auto_rss_insideevs_ux": True,
+    # 06.08.2026: выключен обратно решением владельца. Волна 1 включила его вопреки
+    # комментарию в config/sources.yml, стоящему прямо над записью: «фид мёртв
+    # у источника (свежайшая статья 2023-02), включать смысла нет». Замер подтвердил
+    # комментарий — за всё время 1 пост, published_at 2025-07-15, при опросе каждые
+    # два часа. Живые альтернативы уже работают в disruption: rss_insideevs_all,
+    # rss_insideevs_autonomous.
+    "auto_rss_insideevs_ux": False,
     "auto_web_ieee_spectrum_autonomous": True,
     "auto_web_automotiveworld_sdv": True,
     # Telegram придержан: у этих пяти НЕТ блока filters, и весь поток канала

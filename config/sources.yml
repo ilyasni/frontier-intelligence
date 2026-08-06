@@ -2447,13 +2447,18 @@ sources:
   # 2026-08-03: копия design_rss_insideevs_ux. Фид мёртв у источника (свежайшая статья 2023-02),
   # включать смысла нет — оставлен для полноты набора, живые альтернативы: rss_insideevs_all,
   # rss_insideevs_autonomous (оба в disruption).
+  #
+  # 2026-08-06: волной раската 05.08 источник всё-таки включили — вопреки комментарию строкой
+  # выше. Замер подтвердил комментарий: за всё время 1 пост, свежайший published_at 2025-07-15,
+  # при опросе каждые два часа. Выключен обратно решением владельца. Выключение — ДВА действия
+  # (эта строка + PATCH /api/sources/{id}/toggle), иначе bootstrap молча вернёт true.
   - id: auto_rss_insideevs_ux
     workspace_id: auto_hmi
     source_type: rss
     name: InsideEVs UX
     url: https://insideevs.com/rss/category/user-experience/
     schedule_cron: "5 */2 * * *"
-    is_enabled: true
+    is_enabled: false
     extra:
       rollout_batch: batch:auto_hmi
       preset: insideevs_ux
