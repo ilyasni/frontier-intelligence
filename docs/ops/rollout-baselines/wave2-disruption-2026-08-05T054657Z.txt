@@ -1,0 +1,40 @@
+волна: wave2-disruption
+снято: 2026-08-05T054657Z
+
+== источников включено ==
+217
+
+== стадии конвейера ==
+    {'outcome': 'published', 'stage': 'ingest'} = 755
+    {'outcome': 'pending', 'stage': 'index'} = 214
+    {'outcome': 'done', 'stage': 'index'} = 183
+    {'outcome': 'dropped', 'stage': 'index'} = 27
+
+== исходы краула ==
+    {'outcome': 'saved'} = 217
+    {'outcome': 'failed'} = 9
+
+== длительность кластеризации, сек ==
+auto_hmi|0
+ai_research|49
+ai_products_media|46
+design|41
+ai_trends|58
+disruption|552
+
+== покрытие кластеризации ==
+    {'workspace': 'ai_products_media'} = 1
+    {'workspace': 'ai_research'} = 0.9827
+    {'workspace': 'ai_trends'} = 0.9975
+    {'workspace': 'auto_hmi'} = 0.5
+    {'workspace': 'design'} = 1
+    {'workspace': 'disruption'} = 0.4461
+
+== расход LLM за сутки ==
+    {'provider': 'wormsoft', 'status': 'ok'} = 6163.414166940292
+    {'provider': 'gigachat', 'status': 'ok'} = 1719.3965350804126
+    {'provider': 'gigachat', 'status': 'error'} = 25.01502403846154
+    {'provider': 'polza', 'status': 'ok'} = 1206.276687555886
+    {'provider': 'wormsoft', 'status': 'error'} = 26.005965652856197
+    {'provider': 'openrouter', 'status': 'error'} = 41.0096584383453
+    {'provider': 'polza', 'status': 'error'} = 1.0002079002079003

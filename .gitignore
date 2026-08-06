@@ -43,11 +43,18 @@ searxng/settings.yml
 searxng/*.bak
 searxng/*.bak-*
 
-# Серверные артефакты, которые генерируются на месте, а не пишутся руками:
-# дневные дайджесты алертов (scripts/alert-triage-deliver.sh) и метрики
-# textfile-коллектора (scripts/export-analysis-freshness.sh по крону).
-docs/ops/alert-digests/
+# Метрики textfile-коллектора (scripts/export-storage-metrics.sh и соседи по крону)
+# перегенерируются каждые десять минут — в истории от них нет никакой пользы.
 prometheus/textfile/
+
+# А вот дневные дайджесты алертов (scripts/alert-triage-deliver.sh) отсюда УБРАНЫ
+# 06.08.2026 и теперь ведутся в git. Они пишутся раз в сутки, никогда не переписываются,
+# и их ОТСУТСТВИЕ само является доказательством: по пропущенным дням (27.07, 31.07,
+# 03.08, 04.08) и видно, что петля разбора падает через раз — пункт 18 реестра.
+# До этой правки каталог был исключён и из git, и из rsync (.rsync-exclude), то есть
+# история существовала ровно в одном экземпляре на сервере. Исключение в
+# .rsync-exclude ОСТАЁТСЯ: оно защищает каталог от `sync-push --delete`, потому что
+# локально этих файлов нет.
 
 # Runtime / Docker volume data.
 # Keep schema and helper files under storage/** tracked; only exclude actual data dumps/dirs.
