@@ -298,7 +298,26 @@ async def _upsert_proposal(
     prop: dict[str, Any],
     rationale: str,
 ) -> None:
-    proposal_id = _digest(f"{workspace_id}|{prop['threshold_key']}|pending", "thrprop")
+    # id обязан быть уникален на ПРЕДЛОЖЕНИЕ, а не на пару (воркспейс, порог).
+    #
+    # Прежняя форма `_digest(f"{ws}|{key}|pending")` давала одно и то же значение
+    # навсегда, а `ON CONFLICT` ниже покрывает только частичный уникальный индекс
+    # `(workspace_id, threshold_key) WHERE status = 'pending'`. Как только
+    # предложение уходило из `pending` — то есть как только человек его одобрял,
+    # отклонял или оно вытеснялось, — строка сохраняла тот же `id`, и следующий
+    # ночной прогон падал на первичном ключе: конфликт по `id` этой веткой
+    # не обрабатывается.
+    #
+    # Цена дефекта измерена 06.08.2026: `threshold_proposals` содержит 7 строк,
+    # все `superseded`, самая свежая от 29.06 — то есть ретро-петля порогов
+    # мертва с 26.06, а `run_retrospective_review` падает каждую ночь на
+    # workspace=disruption («duplicate key ... thrprop:0bf63509c5b450e6»)
+    # и роняет вместе с собой весь прогон по этому воркспейсу.
+    #
+    # `run_id` в ключе даёт ровно нужную зернистость: внутри одного прогона
+    # предложение по паре встречается один раз, между прогонами id разный,
+    # а «одно pending на пару» продолжает держать частичный индекс.
+    proposal_id = _digest(f"{workspace_id}|{prop['threshold_key']}|{run_id}", "thrprop")
     await session.execute(
         text(
             """

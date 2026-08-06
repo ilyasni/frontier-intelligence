@@ -161,7 +161,12 @@ async def run_relevance_audit_metrics(workspace_id: str) -> dict[str, Any]:
 async def _upsert_relevance_proposal(
     session: AsyncSession, *, workspace_id: str, run_id: str, prop: dict[str, Any]
 ) -> None:
-    proposal_id = _digest(f"{workspace_id}|relevance_threshold|pending", "thrprop")
+    # Тот же дефект, что в worker/services/retrospective.py::_upsert_proposal:
+    # постоянный id + ON CONFLICT только по частичному индексу `WHERE status='pending'`
+    # = гарантированное падение на первичном ключе, как только предложение уходит
+    # из pending. Здесь оно ещё не выстрелило только потому, что ни одного
+    # relevance-предложения пока не создавалось (audited_30d = 0 у всех воркспейсов).
+    proposal_id = _digest(f"{workspace_id}|relevance_threshold|{run_id}", "thrprop")
     rationale = (
         f"Понизить relevance_threshold: {prop['current_value']} → {prop['proposed_value']}. "
         f"Из {prop['evidence']['n_audited']} отсуженных reject'ов "
