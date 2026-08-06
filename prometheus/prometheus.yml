@@ -28,6 +28,15 @@ scrape_configs:
     static_configs:
       - targets: ['mcp:8100']
 
+  # Девятый таргет, заведён 06.08.2026. Шлюз 8102 — единственная поверхность,
+  # которой пользуется человек (Claude Code и Desktop ходят только сюда), и до
+  # этой строки он не скрейпился вовсе: ни вызовов инструментов, ни латентности,
+  # ни признака живости. Отказ обнаруживался тем, что кто-то ткнул.
+  - job_name: mcp-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['mcp-gateway:8102']
+
   - job_name: admin
     metrics_path: /metrics
     static_configs:

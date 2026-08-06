@@ -796,15 +796,22 @@ groups:
           summary: "Core Frontier service is down"
           description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 5 minutes."
 
+      # mcp-gateway добавлен в селектор 06.08.2026 вместе с девятым скрейп-таргетом.
+      # До этого шлюз 8102 не скрейпился вовсе, то есть `up` по нему не существовал
+      # и правило накрыть его не могло физически — при том что это ЕДИНСТВЕННАЯ
+      # поверхность, которой пользуется человек: Claude Code и Desktop ходят только
+      # сюда, а REST 8100 закрыт на loopback. Отказ шлюза обнаруживался тем, что
+      # кто-то ткнул, — так 31.07–02.08 четыре инструмента отдавали 500 полсуток.
       - alert: FrontierControlPlaneServiceDown
-        expr: up{job="mcp"} == 0
+        expr: up{job=~"mcp|mcp-gateway"} == 0
         for: 10m
         labels:
           severity: warning
           service: '{{ $labels.job }}'
+          notify: telegram
         annotations:
           summary: "Control-plane Frontier service is down"
-          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 10 minutes."
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 10 minutes. Для mcp-gateway это значит, что MCP-клиенты (Claude Code, Desktop) сейчас не получат ни одного инструмента."
 
       - alert: FrontierSupportServiceDown
         expr: up{job=~"crawl4ai|alertmanager|node-exporter"} == 0

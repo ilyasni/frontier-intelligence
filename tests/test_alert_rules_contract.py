@@ -459,3 +459,41 @@ def test_no_rule_groups_own_metrics_by_the_reserved_job_label() -> None:
         "правила группируют собственные метрики по зарезервированной метке `job` "
         f"(нужен `job_name`): {offenders}"
     )
+
+
+def test_every_scrape_target_is_covered_by_a_down_rule() -> None:
+    """У каждой скрейп-цели обязано быть правило, ловящее её падение.
+
+    Заведено 06.08.2026. Повод: `mcp-gateway` — единственная поверхность,
+    которой пользуется человек (Claude Code и Desktop ходят только на 8102,
+    REST 8100 закрыт на loopback), — не был ни в scrape_configs, ни в одном
+    правиле `up == 0`. Его отказ обнаруживался тем, что кто-то ткнул.
+
+    Проверка идёт от prometheus.yml к alerts.yml: добавил таргет — обязан
+    накрыть его правилом, иначе новый сервис молча окажется вне наблюдения
+    ровно так же.
+    """
+    import yaml as _yaml
+
+    scrape_path = REPO_ROOT / "prometheus" / "prometheus.yml"
+    scrape = _yaml.safe_load(scrape_path.read_text(encoding="utf-8"))
+    targets = {
+        str(job.get("job_name"))
+        for job in scrape.get("scrape_configs") or []
+        if job.get("job_name")
+    }
+    assert len(targets) >= 8, f"разобрано целей: {sorted(targets)} — сломался разбор"
+
+    covered: set[str] = set()
+    for rule in _rules():
+        expr = str(rule.get("expr") or "")
+        if "up{" not in expr or "== 0" not in expr:
+            continue
+        for pattern in re.findall(r'job\s*=~?\s*"([^"]*)"', expr):
+            covered.update(part.strip() for part in pattern.split("|") if part.strip())
+
+    uncovered = sorted(targets - covered)
+    assert not uncovered, (
+        f"скрейп-цели без правила на падение: {uncovered}. Цель, которую никто "
+        "не проверяет на up == 0, отказывает молча."
+    )

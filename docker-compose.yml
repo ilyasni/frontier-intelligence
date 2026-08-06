@@ -557,6 +557,17 @@ services:
       - "8102:8102"
     depends_on:
       - mcp
+    # curl в образе нет (Dockerfile.gateway ставит только httpx, mcp и
+    # prometheus-client), поэтому проверяем питоном из того же образа.
+    # /healthz намеренно не ходит в REST: healthcheck отвечает на вопрос «жив ли
+    # этот процесс», а не «жив ли весь стек» — иначе падение mcp:8100
+    # перезапускало бы шлюз по кругу, ничего этим не исправляя.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8102/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     logging: *docker-json-logging
     restart: unless-stopped
     networks: [frontier-net]
