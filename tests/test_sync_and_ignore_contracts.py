@@ -349,7 +349,6 @@ CLOSED_IN_BOTH: tuple[str, ...] = (
     # а `git add .` затащил бы root-owned мусор в индекс.
     "backups/x",
     "runtime/x",
-    "docs/ops/alert-digests/2026-08-01.md",
     "prometheus/textfile/x.prom",
     # Данные docker-томов (в отличие от схемы и миграций рядом — см. KEPT_IN_BOTH).
     "storage/postgres/data/base/1",
@@ -549,3 +548,48 @@ def test_gitignore_negations_are_not_buried_under_an_excluded_parent() -> None:
                 f"{_describe(decider)}"
             )
     assert not dead, "dead '!' rules in .gitignore: " + "; ".join(dead)
+
+
+# ── Закрыто в rsync, но ВЕДЁТСЯ в git ────────────────────────────────────────
+#
+# Разведено 06.08.2026. Дневные дайджесты алертов стояли в CLOSED_IN_BOTH рядом
+# с `backups/` и `runtime/` под общей причиной «состояние, писанное на сервере».
+# Причина верна только наполовину: `--delete` их правда сотрёт, поэтому исключение
+# в .rsync-exclude обязано остаться. Но второй половины — «`git add .` затащил бы
+# root-owned мусор» — здесь нет: это 80 КБ markdown'а, написанного человеком,
+# по одному файлу в сутки, и они никогда не переписываются.
+#
+# Цена прежней трактовки измерена сверкой 06.08.2026: закрытые в обоих файлах,
+# они существовали ровно в одном экземпляре — на сервере. При этом пункт 18
+# реестра (петля разбора алертов падает через раз) доказывается ПРОПУЩЕННЫМИ
+# днями — 27.07, 31.07, 03.08, 04.08, — то есть вся его доказательная база жила
+# без единой копии.
+CLOSED_IN_RSYNC_TRACKED_IN_GIT: tuple[str, ...] = (
+    "docs/ops/alert-digests/2026-08-01.md",
+    "docs/ops/rollout-baselines/wave1-auto_hmi-design_ux-2026-08-05T053006Z.txt",
+)
+
+
+@pytest.mark.parametrize("path", CLOSED_IN_RSYNC_TRACKED_IN_GIT)
+def test_server_written_history_is_excluded_from_rsync_but_kept_in_git(path: str) -> None:
+    """Асимметрия здесь намеренная, и обе её половины обязаны держаться.
+
+    Половина первая: файл ОБЯЗАН быть исключён из rsync. Локально его нет, и
+    `sync-push --delete` без исключения снесёт историю — ровно так 03.08.2026
+    погиб `prometheus/textfile`.
+
+    Половина вторая: файл обязан НЕ быть в .gitignore. Иначе история снова
+    останется в одном экземпляре, а её потеря обнаружится в тот момент, когда
+    понадобится доказать, какие дни петля пропустила.
+    """
+    excluded, rsync_rule = _is_excluded(path)
+    ignored, git_rule = _is_ignored(path)
+
+    assert excluded, (
+        f"{path!r} не исключён из rsync ({_describe(rsync_rule)}) — `sync-push --delete` "
+        "сотрёт серверную историю, которой локально нет"
+    )
+    assert not ignored, (
+        f"{path!r} снова закрыт в .gitignore ({_describe(git_rule)}). Это возвращает "
+        "состояние, при котором история существует в единственном экземпляре на сервере."
+    )
