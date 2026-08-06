@@ -281,6 +281,7 @@ async def list_tools():
                     "properties": {
                         "cluster_id": {"type": "string", "description": "Cluster or signal ID"},
                         "kind": {"type": "string", "description": "auto | semantic | trend | emerging | missing (default: auto)"},
+                        "workspace": {"type": "string", "description": "Scope check: if given, the row must belong to this workspace or the tool returns 404"},
                     },
                     "required": ["cluster_id"],
                 },
@@ -292,6 +293,7 @@ async def list_tools():
                     "type": "object",
                     "properties": {
                         "signal_id": {"type": "string", "description": "Missing signal ID"},
+                        "workspace": {"type": "string", "description": "Scope check: if given, the row must belong to this workspace or the tool returns 404"},
                     },
                     "required": ["signal_id"],
                 },
@@ -305,6 +307,7 @@ async def list_tools():
                         "source_id": {"type": "string", "description": "Source ID"},
                         "recent_runs_limit": {"type": "integer", "description": "Max source runs to return (default: 10)"},
                         "recent_posts_limit": {"type": "integer", "description": "Max recent posts to return (default: 10)"},
+                        "workspace": {"type": "string", "description": "Scope check: if given, the row must belong to this workspace or the tool returns 404"},
                     },
                     "required": ["source_id"],
                 },
@@ -318,6 +321,7 @@ async def list_tools():
                         "cluster_id": {"type": "string", "description": "Cluster ID"},
                         "kind": {"type": "string", "description": "auto | semantic | trend | emerging (default: auto)"},
                         "evidence_limit": {"type": "integer", "description": "Max evidence posts to return (default: 6)"},
+                        "workspace": {"type": "string", "description": "Scope check: if given, the row must belong to this workspace or the tool returns 404"},
                     },
                     "required": ["cluster_id"],
                 },

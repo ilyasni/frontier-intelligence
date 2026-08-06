@@ -12,6 +12,9 @@ import os
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 
 REST_BASE = os.environ.get("MCP_REST_BASE", "http://localhost:8100")
 
@@ -48,6 +51,28 @@ def _raise_for_status_with_detail(response: httpx.Response) -> None:
         raw = payload.get("detail")
         if isinstance(raw, str) and raw.strip():
             detail = raw.strip()
+        elif isinstance(raw, list):
+            # FastAPI при ошибке ВАЛИДАЦИИ кладёт в detail не строку, а список
+            # объектов {loc, msg, type}. Проверка `isinstance(raw, str)` на нём
+            # не срабатывала, и управление уходило в голый raise_for_status ниже —
+            # то есть ровно в тот случай, ради которого функция и написана, она
+            # не работала. А случай не экзотический: 45 полей моделей несут
+            # ge/le/min_length, и ни одно из этих ограничений не доезжает до
+            # клиента в схеме, поэтому 422 — нормальный исход обычного вызова.
+            parts: list[str] = []
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    continue
+                loc = ".".join(
+                    str(item)
+                    for item in entry.get("loc", [])
+                    if item not in ("body", "query", "path")
+                )
+                msg = str(entry.get("msg", "")).strip()
+                parts.append(f"{loc}: {msg}" if loc and msg else (msg or loc))
+            joined = "; ".join(part for part in parts if part)
+            if joined:
+                detail = joined
     if detail is None:
         # Тело не в форме {"detail": "..."} — добавить нечего, поведение прежнее.
         response.raise_for_status()
@@ -57,6 +82,77 @@ def _raise_for_status_with_detail(response: httpx.Response) -> None:
         request=response.request,
         response=response,
     )
+
+
+# ── Наблюдаемость шлюза ──────────────────────────────────────────────────────
+#
+# До 06.08.2026 у 8102 не было ни `/healthz`, ни `/metrics`, ни строки в
+# scrape_configs: единственная поверхность, которой пользуется человек (Claude Code
+# и Desktop ходят только сюда), была вне наблюдения целиком. Её отказ обнаруживался
+# тем, что кто-то ткнул — так 31.07–02.08 четыре инструмента отдавали 500 пятьдесят
+# четыре часа. При этом шлюз несёт четыре ПИШУЩИХ инструмента RSI-контура, и
+# `approve_entity_merge` необратимо сливает концепты в Neo4j.
+#
+# Реестр здесь свой, а не `shared/metrics.py`: образ шлюза собирается из одного
+# файла (`mcp/Dockerfile.gateway` копирует ровно `mcp_gateway.py`), тащить в него
+# весь `shared/` ради двух метрик дороже, чем объявить их на месте.
+
+TOOL_CALLS = Counter(
+    "frontier_mcp_tool_calls_total",
+    "MCP gateway tool calls by tool and outcome.",
+    ["tool", "outcome"],
+)
+TOOL_LATENCY = Histogram(
+    "frontier_mcp_tool_duration_seconds",
+    "MCP gateway tool call latency.",
+    ["tool"],
+    # Верхний бакет 120с не случаен: синтез в search_balanced ходит в LLM
+    # с таймаутом 120, и без него весь этот хвост попадал бы в +Inf одной кучей.
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
+)
+
+
+def _tool_name(response: httpx.Response) -> str:
+    """Имя инструмента из URL запроса: `.../tools/<name>`.
+
+    Берём из ответа, а не из аргумента: так точку инструментации нельзя забыть
+    при добавлении новой обёртки — она одна и лежит на пути КАЖДОГО вызова.
+    """
+    tail = str(response.request.url).rsplit("/tools/", 1)
+    return tail[1].split("?", 1)[0] if len(tail) == 2 else "unknown"
+
+
+def _finish(response: httpx.Response) -> dict:
+    """Общий хвост всех обёрток: счётчик, латентность, разбор отказа, тело."""
+    tool = _tool_name(response)
+    TOOL_CALLS.labels(tool=tool, outcome="ok" if not response.is_error else "error").inc()
+    try:
+        TOOL_LATENCY.labels(tool=tool).observe(response.elapsed.total_seconds())
+    except RuntimeError:
+        # `.elapsed` доступен только у полностью прочитанного ответа. Все обёртки
+        # ходят обычным `client.post`, то есть читают тело целиком, — но если
+        # однажды появится стриминговый вызов, лучше не записать замер вовсе,
+        # чем записать ноль: нулевые наблюдения тихо утянут вниз перцентили.
+        pass
+    _raise_for_status_with_detail(response)
+    return response.json()
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(_request: Request) -> Response:
+    """Живость самого шлюза, без похода в REST.
+
+    Намеренно НЕ проверяет доступность 8100: healthcheck контейнера должен
+    отвечать на вопрос «этот процесс жив», а не «жив ли весь стек». Иначе
+    падение REST перезапускало бы шлюз по кругу, ничего этим не исправляя.
+    Состояние REST видно отдельно — по `up{job="mcp"}`.
+    """
+    return JSONResponse({"status": "ok", "service": "mcp-gateway"})
+
+
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics(_request: Request) -> Response:
+    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @mcp.tool(
@@ -96,8 +192,7 @@ async def search_frontier(
                 "include_bridges": include_bridges,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -130,8 +225,7 @@ async def search_balanced(
                 "days_back": days_back,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -157,8 +251,7 @@ async def search_trend_clusters(
                 "days_back": days_back,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -180,8 +273,7 @@ async def search_by_vision(
                 "has_ocr": has_ocr,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -203,8 +295,7 @@ async def get_concept_graph(
                 "limit": limit,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -235,8 +326,7 @@ async def get_frontier_brief(
                 "include_bridges": include_bridges,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -256,8 +346,7 @@ async def ingest_url(
             f"{REST_BASE}/tools/ingest_url",
             json={"url": url, "post_id": post_id, "workspace": workspace},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -271,8 +360,7 @@ async def list_workspaces(
             f"{REST_BASE}/tools/list_workspaces",
             json={"active_only": active_only},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -287,8 +375,7 @@ async def list_sources_health(
             f"{REST_BASE}/tools/list_sources_health",
             json={"workspace": workspace, "limit": limit},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -303,8 +390,7 @@ async def get_pipeline_stats(
             f"{REST_BASE}/tools/get_pipeline_stats",
             json={"workspace": workspace, "recent_limit": recent_limit},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -326,8 +412,7 @@ async def get_workspace_overview(
                 "clusters_limit": clusters_limit,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -351,8 +436,7 @@ async def list_clusters(
                 "stages": stages,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -362,7 +446,15 @@ async def get_source_details(
     source_id: str,
     recent_runs_limit: int = 10,
     recent_posts_limit: int = 10,
+    workspace: str | None = None,
 ) -> dict:
+    # `workspace` объявлен в Request-модели (mcp/tools/observability.py) как гвард
+    # изоляции: mcp.guards.assert_row_workspace отдаёт 404, если строка принадлежит
+    # чужому воркспейсу. В шлюзе поля не было, единственный клиент ходит через шлюз,
+    # значит прислать он мог только None — а при None гвард делает ранний return.
+    # Защита была написана, задеплоена и не срабатывала ни разу (пункт 61 реестра).
+    # Поле опциональное: делать его обязательным — ломать уже настроенные вызовы,
+    # это отдельное решение.
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             f"{REST_BASE}/tools/get_source_details",
@@ -370,10 +462,10 @@ async def get_source_details(
                 "source_id": source_id,
                 "recent_runs_limit": recent_runs_limit,
                 "recent_posts_limit": recent_posts_limit,
+                "workspace": workspace,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -389,8 +481,7 @@ async def list_emerging_signals(
             f"{REST_BASE}/tools/list_emerging_signals",
             json={"workspace": workspace, "limit": limit, "stages": stages},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -405,8 +496,7 @@ async def list_missing_signals(
             f"{REST_BASE}/tools/list_missing_signals",
             json={"workspace": workspace, "limit": limit},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -415,27 +505,43 @@ async def list_missing_signals(
 async def get_cluster_details(
     cluster_id: str,
     kind: str = "auto",
+    workspace: str | None = None,
 ) -> dict:
+    # `workspace` объявлен в Request-модели (mcp/tools/observability.py) как гвард
+    # изоляции: mcp.guards.assert_row_workspace отдаёт 404, если строка принадлежит
+    # чужому воркспейсу. В шлюзе поля не было, единственный клиент ходит через шлюз,
+    # значит прислать он мог только None — а при None гвард делает ранний return.
+    # Защита была написана, задеплоена и не срабатывала ни разу (пункт 61 реестра).
+    # Поле опциональное: делать его обязательным — ломать уже настроенные вызовы,
+    # это отдельное решение.
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             f"{REST_BASE}/tools/get_cluster_details",
-            json={"cluster_id": cluster_id, "kind": kind},
+            json={"cluster_id": cluster_id, "kind": kind, "workspace": workspace},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
     description="Get a single missing-signal record with evidence URLs and opportunity text."
 )
-async def get_missing_signal_details(signal_id: str) -> dict:
+async def get_missing_signal_details(
+    signal_id: str,
+    workspace: str | None = None,
+) -> dict:
+    # `workspace` объявлен в Request-модели (mcp/tools/observability.py) как гвард
+    # изоляции: mcp.guards.assert_row_workspace отдаёт 404, если строка принадлежит
+    # чужому воркспейсу. В шлюзе поля не было, единственный клиент ходит через шлюз,
+    # значит прислать он мог только None — а при None гвард делает ранний return.
+    # Защита была написана, задеплоена и не срабатывала ни разу (пункт 61 реестра).
+    # Поле опциональное: делать его обязательным — ломать уже настроенные вызовы,
+    # это отдельное решение.
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             f"{REST_BASE}/tools/get_missing_signal_details",
-            json={"signal_id": signal_id},
+            json={"signal_id": signal_id, "workspace": workspace},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -445,14 +551,26 @@ async def get_cluster_evidence(
     cluster_id: str,
     kind: str = "auto",
     evidence_limit: int = 6,
+    workspace: str | None = None,
 ) -> dict:
+    # `workspace` объявлен в Request-модели (mcp/tools/observability.py) как гвард
+    # изоляции: mcp.guards.assert_row_workspace отдаёт 404, если строка принадлежит
+    # чужому воркспейсу. В шлюзе поля не было, единственный клиент ходит через шлюз,
+    # значит прислать он мог только None — а при None гвард делает ранний return.
+    # Защита была написана, задеплоена и не срабатывала ни разу (пункт 61 реестра).
+    # Поле опциональное: делать его обязательным — ломать уже настроенные вызовы,
+    # это отдельное решение.
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(
             f"{REST_BASE}/tools/get_cluster_evidence",
-            json={"cluster_id": cluster_id, "kind": kind, "evidence_limit": evidence_limit},
+            json={
+                "cluster_id": cluster_id,
+                "kind": kind,
+                "evidence_limit": evidence_limit,
+                "workspace": workspace,
+            },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -468,8 +586,7 @@ async def get_signal_timeline(
             f"{REST_BASE}/tools/get_signal_timeline",
             json={"entity_kind": entity_kind, "entity_id": entity_id, "workspace": workspace},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -499,8 +616,7 @@ async def export_inbox_cards(
                 "days_back": days_back,
             },
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -541,8 +657,7 @@ async def record_card_feedback(
         # забутстрапь воркспейс», 409 «у батча уже есть chosen, пришли новый batch_id»),
         # а разметка пятёрки при этом набрана руками и теряется. Остальные инструменты
         # шлюза намеренно не трогаю — это отдельный проход.
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -563,8 +678,7 @@ async def list_card_feedback(
             f"{REST_BASE}/tools/list_card_feedback",
             json={"workspace": workspace, "limit": limit},
         )
-        r.raise_for_status()
-        return r.json()
+        return _finish(r)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -604,8 +718,7 @@ async def get_graph_health(workspace: str, duplicates_limit: int = 25) -> dict:
             f"{REST_BASE}/tools/get_graph_health",
             json={"workspace": workspace, "duplicates_limit": duplicates_limit},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -624,8 +737,7 @@ async def list_entity_merge_proposals(
             f"{REST_BASE}/tools/list_entity_merge_proposals",
             json={"workspace": workspace, "status": status, "limit": limit},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -640,8 +752,7 @@ async def approve_entity_merge(proposal_id: str, reviewed_by: str = "operator") 
             f"{REST_BASE}/tools/approve_entity_merge",
             json={"proposal_id": proposal_id, "reviewed_by": reviewed_by},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(description="RSI loop D+: reject a concept-merge proposal. The graph is left untouched.")
@@ -655,8 +766,7 @@ async def reject_entity_merge(
             f"{REST_BASE}/tools/reject_entity_merge",
             json={"proposal_id": proposal_id, "reviewed_by": reviewed_by, "note": note},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -675,8 +785,7 @@ async def list_threshold_proposals(
             f"{REST_BASE}/tools/list_threshold_proposals",
             json={"workspace": workspace, "status": status, "limit": limit},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -695,8 +804,7 @@ async def list_underrated_signals(
             f"{REST_BASE}/tools/list_underrated_signals",
             json={"workspace": workspace, "days_back": days_back, "limit": limit},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -715,8 +823,7 @@ async def list_relevance_audit_sample(
             f"{REST_BASE}/tools/list_relevance_audit_sample",
             json={"workspace": workspace, "days_back": days_back, "limit": limit},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -741,8 +848,7 @@ async def mark_relevance_audit(
                 "note": note,
             },
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(
@@ -757,8 +863,7 @@ async def approve_threshold_change(proposal_id: str, reviewed_by: str = "operato
             f"{REST_BASE}/tools/approve_threshold_change",
             json={"proposal_id": proposal_id, "reviewed_by": reviewed_by},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 @mcp.tool(description="RSI: reject a threshold-change proposal. Thresholds are left untouched.")
@@ -772,8 +877,7 @@ async def reject_threshold_change(
             f"{REST_BASE}/tools/reject_threshold_change",
             json={"proposal_id": proposal_id, "reviewed_by": reviewed_by, "note": note},
         )
-        _raise_for_status_with_detail(r)
-        return r.json()
+        return _finish(r)
 
 
 if __name__ == "__main__":

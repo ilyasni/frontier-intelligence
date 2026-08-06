@@ -634,6 +634,12 @@ async def get_source_details(req: SourceDetailsRequest) -> dict:
         raise HTTPException(status_code=404, detail="Source not found")
 
     row = rows[0]
+    # Пятая дыра того же класса, что закрывали пункт 11: выборка идёт `WHERE s.id = :id`
+    # без фильтра по воркспейсу, а гварда здесь не было — при том что `SourceDetailsRequest`
+    # поле `workspace` объявляет, и в докстринге самого гварда `get_source_details`
+    # упомянут. Пропущен он был потому, что структурный тест держал захардкоженный
+    # список из четырёх имён, и пятое в него просто не входило.
+    assert_row_workspace(row, req.workspace, what="source")
     health = source_quality_payload(row)
     recent_runs = await _fetch_rows(
         """

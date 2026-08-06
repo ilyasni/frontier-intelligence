@@ -86,21 +86,54 @@ def test_every_id_lookup_tool_checks_the_row_workspace() -> None:
     ).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    # Инструменты, которые достают строку по идентификатору и потому обязаны
-    # проверять её принадлежность.
-    id_lookup_tools = {
-        "get_cluster_details",
-        "get_cluster_evidence",
-        "get_missing_signal_details",
-        "get_signal_timeline",
-    }
-    problems = []
+    # Набор инструментов ВЫВОДИТСЯ из кода, а не перечисляется.
+    #
+    # Прежняя редакция держала четыре имени литералом, и этого хватило ровно до
+    # первого пятого: `get_source_details` выбирает `WHERE s.id = :source_id` без
+    # фильтра по воркспейсу, объявляет поле `workspace` в своей Request-модели,
+    # упомянут в докстринге самого гварда — и в список не входил, поэтому тест
+    # его не видел (найдено сверкой 06.08.2026). Список из имён проверяет
+    # известное, а не класс; новый инструмент завтра снова проехал бы мимо.
+    #
+    # Признак «читает строку по id»: в теле функции есть строковый литерал с
+    # `WHERE` и сравнением `... id = :`. Запросы, которые тут же фильтруют по
+    # `workspace_id = :`, гварда не требуют — они безопасны по построению.
+    import re
+
+    # `id = :workspace` из набора исключён намеренно: это выборка САМОГО воркспейса
+    # по его слагу (get_workspace_overview), а слаг уже проверен assert_known_workspace.
+    # Гвард принадлежности строки там требовать нечего — строка и есть воркспейс.
+    id_lookup = re.compile(r"\bid\s*=\s*:(?!workspace\b)", re.IGNORECASE)
+    scoped_by_sql = re.compile(r"workspace_id\s*=\s*:", re.IGNORECASE)
+
+    def _reads_row_by_id(fn: ast.AsyncFunctionDef) -> bool:
+        for sub in ast.walk(fn):
+            if not isinstance(sub, ast.Constant) or not isinstance(sub.value, str):
+                continue
+            sql = sub.value
+            if "WHERE" not in sql.upper():
+                continue
+            if id_lookup.search(sql) and not scoped_by_sql.search(sql):
+                return True
+        return False
+
+    checked: list[str] = []
+    problems: list[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef) or node.name not in id_lookup_tools:
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name.startswith("_"):
             continue
-        body = ast.dump(node)
-        if "assert_row_workspace" not in body:
+        if not _reads_row_by_id(node):
+            continue
+        checked.append(node.name)
+        if "assert_row_workspace" not in ast.dump(node):
             problems.append(node.name)
+
+    # Страховка от вакуумной проверки: если разбор перестанет находить инструменты,
+    # тест позеленеет на пустом множестве. Пять — это то, что есть на 06.08.2026.
+    assert len(checked) >= 5, (
+        f"разбор нашёл всего {len(checked)} инструментов, читающих строку по id "
+        f"({checked}) — сломался извлекатель, а не код"
+    )
 
     assert not problems, (
         f"инструменты читают строку по id и не проверяют её воркспейс: {problems}. "
