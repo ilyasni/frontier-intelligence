@@ -50,10 +50,18 @@ try:
     # ребёнка, и вместе с этим считает сами прогоны: провал ребёнка иначе не виден
     # в метриках вовсе (manual_jobs при исключении пишет в stderr и возвращает 1,
     # то есть на провальных прогонах перепубликовывать просто нечего).
+    # Метка называется `job_name`, а НЕ `job`. `job` зарезервирована Prometheus под
+    # имя скрейп-задачи, и при скрейпе одноимённая метка приложения молча уезжает
+    # в `exported_job` (honor_labels по умолчанию false). Замер 06.08.2026 показал
+    # цену: правило `sum by (job) (increase(frontier_admin_job_runs_total{...}))`
+    # группировало по скрейп-задаче, то есть схлопывало ВСЕ джобы планировщика в
+    # один ряд `job="admin"`, суммировало их отказы между собой и подставляло в
+    # текст уведомления «Джоб admin падает повторно». Имя `job_name` уже принято
+    # в проекте — оно в белом списке меток admin/backend/services/telegram_alerts.py:68.
     ADMIN_JOB_RUNS_TOTAL = Counter(
         "frontier_admin_job_runs_total",
         "Scheduler job subprocess runs by outcome.",
-        ["service", "job", "outcome"],
+        ["service", "job_name", "outcome"],
     )
     # Единственный счётчик СОБСТВЕННЫХ стадий конвейера. Одно имя с меткой `stage`,
     # а не восемь отдельных: кардинальность ~6 воркспейсов x 6 стадий x 5 исходов
@@ -561,7 +569,7 @@ def set_graph_health_metric(service: str, workspace: str, metric: str, value: fl
 def note_admin_job_run(job: str, outcome: str, *, service: str = "admin") -> None:
     """Отметить исход прогона джоба планировщика (ok / failed / timeout)."""
     if ADMIN_JOB_RUNS_TOTAL is not None:
-        ADMIN_JOB_RUNS_TOTAL.labels(service=service, job=job, outcome=outcome).inc()
+        ADMIN_JOB_RUNS_TOTAL.labels(service=service, job_name=job, outcome=outcome).inc()
 
 
 def note_crawl_outcome(reason: str, outcome: str = "failed", *, service: str = "crawl4ai") -> None:

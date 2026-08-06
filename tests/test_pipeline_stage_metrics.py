@@ -185,7 +185,10 @@ def test_admin_job_outcomes_are_counted_separately() -> None:
     перепубликовывать нечего — без этого счётчика провальные прогоны не
     оставляли в метриках вообще ничего, а именно ради них всё и делалось.
     """
-    ok = {"service": "admin", "job": "run_novelty_judge", "outcome": "ok"}
+    # Метка `job_name`, а не `job`: `job` зарезервирована Prometheus под имя
+    # скрейп-задачи и при скрейпе уезжает в `exported_job`, из-за чего правило
+    # `sum by (job)` схлопывало все джобы планировщика в один ряд `job="admin"`.
+    ok = {"service": "admin", "job_name": "run_novelty_judge", "outcome": "ok"}
     failed = {**ok, "outcome": "failed"}
     before_ok = _sample("frontier_admin_job_runs_total", ok)
     before_failed = _sample("frontier_admin_job_runs_total", failed)
@@ -527,7 +530,7 @@ async def test_failed_job_subprocess_actually_counts_the_failure(monkeypatch) ->
 
     monkeypatch.setattr(scheduler_module.asyncio, "create_subprocess_exec", _fake_exec)
 
-    labels = {"service": "admin", "job": "run_graph_maintenance", "outcome": "failed"}
+    labels = {"service": "admin", "job_name": "run_graph_maintenance", "outcome": "failed"}
     before = _sample("frontier_admin_job_runs_total", labels)
 
     with pytest.raises(RuntimeError):

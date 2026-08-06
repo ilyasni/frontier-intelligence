@@ -42,15 +42,38 @@ groups:
       # в stderr и возвращает 1, поэтому перепубликовывать его метрики нечего —
       # без этого счётчика провал не оставлял в наблюдаемости вообще ничего.
       - alert: FrontierAdminJobFailing
-        expr: sum by (job) (increase(frontier_admin_job_runs_total{outcome=~"failed|timeout"}[6h])) >= 3
+        expr: sum by (job_name) (increase(frontier_admin_job_runs_total{outcome=~"failed|timeout"}[6h])) >= 3
         for: 15m
         labels:
           severity: warning
           service: admin
           notify: telegram
         annotations:
-          summary: "Джоб {{ $labels.job }} падает повторно"
-          description: "{{ $value }} неудачных прогонов {{ $labels.job }} за 6 часов. outcome=timeout означает превышение ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC (900с по умолчанию) — ночная кластеризация disruption уже занимает 523-673с, запас невелик. outcome=failed — ненулевой код возврата, расшифровку сигнала смотри в логах admin."
+          summary: "Джоб {{ $labels.job_name }} падает повторно"
+          description: "{{ $value }} неудачных прогонов {{ $labels.job_name }} за 6 часов. outcome=timeout означает превышение ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC (1800с по умолчанию с 05.08.2026, коммит 7cf0b33) — ночная кластеризация disruption занимает 484-552с, то есть около 30% лимита. outcome=failed — ненулевой код возврата, расшифровку сигнала смотри в логах admin."
+
+      # Правило выше ловит ТОЛЬКО всплеск и по построению слепо к суточным джобам:
+      # порог «≥3 отказа за 6 часов» суточный прогон не наберёт никогда, даже падая
+      # каждую ночь. Это не теория — так и вышло: `run_retrospective_review` падал
+      # на workspace=disruption каждую ночь с 26.06.2026 по 06.08.2026 (дубликат
+      # первичного ключа в threshold_proposals), ретро-петля порогов не выдала ни
+      # одного предложения за 41 сутки, и ни один из 82 алертов этого не показал.
+      #
+      # Отсюда второе правило — на ПОВТОРЯЕМОСТЬ, а не на объём: отказ был вчера
+      # и повторился сегодня. Разовый сбой (сеть, рестарт) даёт единицу за 49 часов
+      # и не будит; постоянный дефект даёт двойку и будит на второй день.
+      # Окно 49ч, а не 48: суточный крон плавает на минуты, ровно 48 отрезало бы
+      # предыдущий прогон в половине случаев.
+      - alert: FrontierAdminJobFailingDaily
+        expr: sum by (job_name) (increase(frontier_admin_job_runs_total{outcome=~"failed|timeout"}[49h])) >= 2
+        for: 30m
+        labels:
+          severity: warning
+          service: admin
+          notify: telegram
+        annotations:
+          summary: "Джоб {{ $labels.job_name }} падает не первый день"
+          description: "{{ $value }} неудачных прогонов {{ $labels.job_name }} за двое суток — то есть отказ повторяется, а не случился однажды. Для суточных джобов (run_retrospective_review, run_novelty_judge, run_relevance_audit, run_semantic_clusters) это единственное правило, способное сработать: FrontierAdminJobFailing требует ≥3 отказов за 6 часов и суточный прогон столько не наберёт. Смотри `docker logs frontier-intelligence-admin-1 | grep 'failed for workspace'` — счётчик считает ПО ВОРКСПЕЙСАМ, поэтому падение одного из шести видно здесь и не видно по статусу самой задачи APScheduler."
 
       # Пункт 8 реестра. За сутки 1403 успеха против 1497 неуспехов, и все
       # неуспехи были тупиком: `enrich_url` возвращает None на девяти развилках,
@@ -1178,7 +1201,7 @@ groups:
           notify: telegram
         annotations:
           summary: "Потолок кластеризации мал для потока {{ $labels.workspace }}"
-          description: "Суточный приток подходящих постов приблизился к semantic_cluster_max_posts или превысил его: выборка берёт N самых свежих, остальное не кластеризуется никогда. Именно так disruption держал покрытие 40% при потолке 400 и потоке ~1000/сут. Потолок правится в config/workspaces.yml, extra.cluster_analysis — и НЕ забудь про docker cp в контейнеры, config/ запечён в образ. Цена подъёма — матрица попарных косинусов O(n^2) и время прогона: 400 постов = 37с, 2000 = 523с при таймауте субпроцесса 900с."
+          description: "Суточный приток подходящих постов приблизился к semantic_cluster_max_posts или превысил его: выборка берёт N самых свежих, остальное не кластеризуется никогда. Именно так disruption держал покрытие 40% при потолке 400 и потоке ~1000/сут. Потолок правится в config/workspaces.yml, extra.cluster_analysis — и НЕ забудь про docker cp в контейнеры, config/ запечён в образ. Цена подъёма — матрица попарных косинусов O(n^2) и время прогона: 400 постов = 37с, 2000 = 484-552с при таймауте субпроцесса 1800с (поднят 05.08.2026 вместе с переносом крона на 05:00, вне окна ночного бэкапа)."
 
       # Страховочный абсолютный порог: покрытие рухнуло разом (сломался прогон,
       # а не потолок). Порог 0.3 выбран ниже текущих 44% у disruption сознательно —

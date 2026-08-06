@@ -425,3 +425,37 @@ def test_trend_cluster_silence_is_observed_but_does_not_page() -> None:
             f"{paging} pages on {overlap}, whose silence is expected rather than broken. "
             "Observe them with FrontierTrendClustersStale (info, no notify) instead."
         )
+
+
+def test_no_rule_groups_own_metrics_by_the_reserved_job_label() -> None:
+    """`job` принадлежит Prometheus, а не приложению.
+
+    Метка `job` проставляется скрейпом; одноимённая метка приложения при
+    honor_labels=false молча уезжает в `exported_job`. Значит выражение
+    `sum by (job) (frontier_...)` группирует не по тому, что имел в виду автор,
+    а по имени скрейп-задачи — все джобы схлопываются в один ряд `job="admin"`,
+    их отказы складываются между собой, а `{{ $labels.job }}` в тексте
+    уведомления печатает «admin».
+
+    Найдено 06.08.2026 замером: `sum by (job) (increase(
+    frontier_admin_job_runs_total{outcome=~"failed|timeout"}[49h]))` на живом
+    Prometheus вернул единственный ряд `{job="admin"}`, хотя на `/metrics`
+    сервиса лежало девять рядов с разными именами джобов.
+
+    Свои метки размечаются `job_name` — это имя уже принято в проекте
+    (`frontier_admin_manual_job_*`, белый список меток в
+    admin/backend/services/telegram_alerts.py).
+    """
+    offenders: list[str] = []
+    for rule in _rules():
+        expr = str(rule.get("expr") or "")
+        if "frontier_" not in expr:
+            continue
+        for group_by in re.findall(r"by\s*\(([^)]*)\)", expr):
+            labels = {label.strip() for label in group_by.split(",")}
+            if "job" in labels:
+                offenders.append(f"{rule.get('alert')}: by ({group_by.strip()})")
+    assert not offenders, (
+        "правила группируют собственные метрики по зарезервированной метке `job` "
+        f"(нужен `job_name`): {offenders}"
+    )
