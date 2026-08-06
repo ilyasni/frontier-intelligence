@@ -90,6 +90,44 @@ emit() {
         fi
     done
 
+    # Материал, который кластеризация не увидит никогда (пункт 75 реестра).
+    #
+    # Выборка кластеризации требует `p.published_at IS NOT NULL` наравне с
+    # `embedding_status='done'` и порогом релевантности. Пост без даты публикации
+    # исключён предикатом — не «редко проходит», а не участвует вовсе.
+    #
+    # Замер 07.08.2026: у web-источников таких 1126 из 1186 (95%), у rss 2 из 207787,
+    # у telegram и api ноль. Отказ до сих пор был невидим целиком: `source_runs`
+    # пишет `success`, `fetched_count` растёт, пост сохраняется и находится поиском.
+    #
+    # Алерта на эту серию НЕТ и пока не будет: доля уже высока, правило зажглось бы
+    # в первую же минуту и превратилось бы в фон — та же болезнь, что лечил пункт 56.
+    # Сначала решение владельца по развилке (пункт 75), потом порог. До тех пор это
+    # наблюдаемость, а не тревога.
+    #
+    # Ноль печатается ЯВНО: отсутствие серии неотличимо от «экспортёр не дошёл».
+    docker exec "$PG_CONTAINER" psql -U "${POSTGRES_USER:-frontier}" -d "${POSTGRES_DB:-frontier}" \
+        -At -F'|' -c "
+            WITH ws AS (SELECT id FROM workspaces WHERE is_active),
+            agg AS (
+                SELECT p.workspace_id,
+                       count(*) FILTER (WHERE p.published_at IS NULL) AS no_date,
+                       count(*) AS total
+                  FROM posts p
+                 WHERE p.created_at > now() - interval '7 days'
+                 GROUP BY p.workspace_id
+            )
+            SELECT ws.id, COALESCE(a.no_date, 0), COALESCE(a.total, 0)
+              FROM ws LEFT JOIN agg a ON a.workspace_id = ws.id
+             ORDER BY ws.id
+        " </dev/null | while IFS='|' read -r ws no_date total; do
+        if [ -z "${ws:-}" ]; then
+            continue
+        fi
+        printf 'frontier_posts_without_published_at{workspace="%s"} %s\n' "$ws" "${no_date:-0}"
+        printf 'frontier_posts_ingested_7d{workspace="%s"} %s\n' "$ws" "${total:-0}"
+    done
+
     # Свежесть ежедневной петли разбора алертов (docs/runbooks/alert-triage-daily.md).
     #
     # Считается по времени записи последнего дайджеста НА СЕРВЕРЕ, а не изнутри самой
