@@ -443,8 +443,12 @@ class Settings(BaseSettings):
         "17 */6 * * *",
         alias="ADMIN_SOURCE_SCORE_REFRESH_CRON",
     )
+    # 05.08.2026 (коммит 7cf0b33) крон переехал с 03:35 на 05:00 — прогон
+    # disruption вырос до 484-552с и пересекался с окном ночного бэкапа (03:30).
+    # Значение задано в docker-compose.yml, но дефолт обязан совпадать: иначе
+    # ops-скрипт, поднимающий Settings без compose, планирует джоб на старое время.
     admin_semantic_cluster_cron: str = Field(
-        "35 3 * * *",
+        "0 5 * * *",
         alias="ADMIN_SEMANTIC_CLUSTER_CRON",
     )
     admin_signal_cluster_cron: str = Field(

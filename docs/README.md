@@ -346,7 +346,7 @@ docker compose exec -T postgres psql -U frontier -d frontier -c \
         ▼
 ┌─── ANALYTICS — APScheduler в контейнере admin, задания в субпроцессах ───┐
 │                                                                          │
-│ 35 3 * * *     semantic clustering — связные компоненты графа            │
+│ 0 5 * * *      semantic clustering — связные компоненты графа            │
 │                косинусной близости (не HDBSCAN)                          │
 │ 20 */8 * * *   signal analysis: stable trend clusters + emerging         │
 │                signals + missing signals (SearXNG gap-анализ)            │
@@ -1128,7 +1128,7 @@ curl -sS -u admin:"$ADMIN_PASSWORD" http://127.0.0.1:8101/api/pipeline/scheduler
 
 | Задача | Переменная | Дефолт | Что делает |
 |---|---|---|---|
-| `run_semantic_clusters` | `ADMIN_SEMANTIC_CLUSTER_CRON` | `35 3 * * *` | семантические кластеры + сигналы, раз в сутки |
+| `run_semantic_clusters` | `ADMIN_SEMANTIC_CLUSTER_CRON` | `0 5 * * *` | семантические кластеры + сигналы, раз в сутки |
 | `run_signal_analysis` | `ADMIN_SIGNAL_CLUSTER_CRON` | `20 */8 * * *` | сигналы поверх готовых кластеров + missing signals, трижды в сутки |
 | `refresh_source_scores` | `ADMIN_SOURCE_SCORE_REFRESH_CRON` | `17 */6 * * *` | пересчёт `source_score` / `source_authority` |
 
