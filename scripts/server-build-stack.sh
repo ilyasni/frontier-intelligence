@@ -40,6 +40,19 @@ overlay_supported() {
   esac
 }
 
+# Зеркало PyPI передаём ЯВНЫМ --build-arg, а не надеясь на интерполяцию
+# `${PIP_INDEX_URL:-}` из docker-compose.yml.
+#
+# Замерено 06.08.2026: с экспортированной переменной окружения сборка всё равно
+# ушла на pypi.org и упала по ReadTimeout — прямой egress к нему с этого хоста
+# мёртв (тот же класс, что с Docker Hub и Cloudflare). До этой правки дефект был
+# невидим, потому что слой `pip install` у всех образов закэширован: скрипт
+# успешно «пересобирал» что угодно РОВНО ДО первого изменения зависимостей.
+# Соседний scripts/server-build-mcp.sh передавал --build-arg с самого начала —
+# разъехались две реализации одного и того же.
+: "${PIP_INDEX_URL:=https://mirrors.aliyun.com/pypi/simple/}"
+export PIP_INDEX_URL
+
 standard_build() {
   bash scripts/server-prepare-base-images.sh "${SERVICES[@]}"
   docker compose -f docker-compose.yml \
@@ -51,7 +64,9 @@ standard_build() {
     --profile paddleocr \
     --profile mcp \
     --profile admin \
-    build "${SERVICES[@]}"
+    build \
+    --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" \
+    "${SERVICES[@]}"
 }
 
 can_overlay_all=1

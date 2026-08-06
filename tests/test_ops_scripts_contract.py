@@ -326,3 +326,31 @@ def test_shell_callers_default_the_admin_username() -> None:
         "скрипты читают ADMIN_USER без дефолта \"admin\", а в серверном .env этой "
         f"переменной нет — каждый вызов админки вернёт 401: {offenders}"
     )
+
+
+def test_build_entrypoints_pass_the_pypi_mirror() -> None:
+    """Любая точка входа сборки обязана передавать зеркало PyPI явным --build-arg.
+
+    Заведено 06.08.2026. Прямой egress к pypi.org с сервера мёртв (ReadTimeout —
+    тот же класс, что с Docker Hub и Cloudflare), а зеркало aliyun отвечает.
+    `scripts/server-build-stack.sh` полагался на интерполяцию `${PIP_INDEX_URL:-}`
+    из docker-compose.yml и уходил на pypi.org даже с экспортированной переменной.
+
+    Дефект был невидим, потому что слой `pip install` у всех образов закэширован:
+    скрипт успешно «пересобирал» что угодно РОВНО ДО первого изменения
+    зависимостей. Поймано попыткой добавить prometheus-client в образ шлюза.
+    """
+    offenders: list[str] = []
+    for path in sorted(SCRIPTS_DIR.glob("*.sh")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "docker compose" not in text or " build" not in text:
+            continue
+        if "PIP_INDEX_URL" not in text:
+            continue
+        if "--build-arg" not in text:
+            offenders.append(path.name)
+    assert not offenders, (
+        "скрипты сборки знают про PIP_INDEX_URL, но не передают его через "
+        f"--build-arg: {offenders}. Интерполяции из compose недостаточно — "
+        "проверено замером, сборка уходит на недоступный pypi.org."
+    )
