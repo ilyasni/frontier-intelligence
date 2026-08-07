@@ -24,7 +24,10 @@ async def _fetch_one(sql: str, params: dict):
 
 
 @router.get("/semantic")
-async def list_semantic_clusters(workspace_id: str | None = None, limit: int = 50):
+# Граница у limit, а не голый int: без неё `?limit=10000000` уходит в SQL как
+# есть и кладёт и Postgres, и браузер. Соседние роутеры (posts.py, graph.py)
+# границы задают — разъехались реализации одного и того же.
+async def list_semantic_clusters(workspace_id: str | None = None, limit: int = Query(50, ge=1, le=500)):
     engine = get_engine()
     async with AsyncSession(engine) as session:
         result = await session.execute(
@@ -43,7 +46,7 @@ async def list_semantic_clusters(workspace_id: str | None = None, limit: int = 5
 
 
 @router.get("/trends")
-async def list_trend_clusters(workspace_id: str | None = None, pipeline: str = "stable", limit: int = 50):
+async def list_trend_clusters(workspace_id: str | None = None, pipeline: str = "stable", limit: int = Query(50, ge=1, le=500)):
     engine = get_engine()
     async with AsyncSession(engine) as session:
         result = await session.execute(
@@ -65,7 +68,7 @@ async def list_trend_clusters(workspace_id: str | None = None, pipeline: str = "
 @router.get("/emerging")
 async def list_emerging_signals(
     workspace_id: str | None = None,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=500),
     stages: list[str] | None = Query(default=None),
 ):
     signal_stages = _normalize_signal_stages(stages, default=("emerging",))
@@ -88,7 +91,7 @@ async def list_emerging_signals(
 
 
 @router.get("/runs")
-async def list_cluster_runs(workspace_id: str | None = None, limit: int = 50):
+async def list_cluster_runs(workspace_id: str | None = None, limit: int = Query(50, ge=1, le=500)):
     engine = get_engine()
     async with AsyncSession(engine) as session:
         result = await session.execute(
@@ -125,7 +128,7 @@ async def get_emerging_signal(signal_id: str):
 
 
 @router.get("/missing")
-async def list_missing_signals(workspace_id: str | None = None, limit: int = 50):
+async def list_missing_signals(workspace_id: str | None = None, limit: int = Query(50, ge=1, le=500)):
     engine = get_engine()
     async with AsyncSession(engine) as session:
         result = await session.execute(

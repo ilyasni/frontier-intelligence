@@ -13,6 +13,7 @@ sys.path.insert(0, "/app")
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -46,6 +47,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Frontier Intelligence Admin", version="1.0.0", lifespan=lifespan)
+
+# Сжатие. Замер 07.08.2026: сорок файлов фронта весят 804 193 B сырыми и 261 295 B
+# под gzip — то есть каждая холодная загрузка админки тащила лишние 543 КБ. Заголовка
+# content-encoding в ответах не было вовсе (проверено `curl -H 'Accept-Encoding: gzip'`).
+# Экономия повторяется не только у нового пользователя: фронт смонтирован bind-mount'ом,
+# и любая правка меняет etag, после чего файл тянется целиком заново.
+#
+# minimum_size=1024 — мелочь вроде /api/health сжимать дороже, чем отдать как есть.
+# Порядок регистрации: GZip добавлен ПЕРВЫМ, то есть в стеке Starlette он окажется
+# снаружи и сожмёт в том числе ответы, сформированные авторизацией ниже.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 app.add_middleware(
     CORSMiddleware,
@@ -137,7 +149,16 @@ async def _no_cache_frontend(request: Request, call_next):
     # сразу и не оставался «белый экран» от закэшированной старой версии.
     resp = await call_next(request)
     path = request.url.path
-    if not path.startswith("/api/") and path != "/metrics":
+    if path.startswith("/static/vendor/"):
+        # Вендор (vue, vue-router, cytoscape) не меняется между правками — это
+        # зафиксированные файлы библиотек. Держать их под no-cache значит
+        # ревалидировать 545 КБ при каждой перезагрузке страницы ради файлов,
+        # которые не менялись месяцами. Обновление вендора — сознательная замена
+        # файла, и тогда достаточно сбросить кэш браузера один раз.
+        resp.headers["Cache-Control"] = "public, max-age=604800"
+    elif not path.startswith("/api/") and path != "/metrics":
+        # Свой фронт — под no-cache: он смонтирован bind-mount'ом и правится
+        # мгновенно, закэшированная версия дала бы «белый экран» после правки.
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
     return resp
 
@@ -294,6 +315,21 @@ app.mount("/static", StaticFiles(directory="/app/admin/frontend"), name="static"
 async def frontend(path: str = ""):
     if path == "metrics":
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    # Catch-all объявлен ПОСЛЕ роутеров, поэтому существующие /api/* до него не
+    # доходят. А вот несуществующий или переименованный GET /api/... доходил — и
+    # получал 200 с телом index.html. Фронт при этом не падает: api.js на неразбором
+    # JSON молча кладёт в data строку с HTML, `resp.ok` истинно, и вызывающий видит
+    # «пустой ответ» вместо ошибки маршрута.
+    #
+    # Сценарий не гипотетический, а штатный для этого проекта: фронт живёт
+    # bind-mount'ом и обновляется мгновенно, backend запечён в образ и отстаёт до
+    # пересборки. Новый фронт, зовущий ещё не раскатанную ручку, обязан получить 404,
+    # а не тихое «данных нет».
+    #
+    # Только GET: catch-all объявлен как @app.get, остальные методы и раньше честно
+    # отвечали 405.
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(status_code=404, detail=f"Unknown API route: /{path}")
     return FileResponse("/app/admin/frontend/index.html")
 
 

@@ -333,68 +333,110 @@ async def create_source(src: SourceCreate):
 
     engine = get_engine()
     async with AsyncSession(engine) as session:
-        await session.execute(
-            text(
-                """
-                INSERT INTO sources (
-                    id, workspace_id, source_type, name, url, tg_channel,
-                    tg_account_idx, schedule_cron, is_enabled, proxy_config, extra,
-                    source_authority,
-                    created_at, updated_at
-                )
-                VALUES (
-                    :id, :workspace_id, :source_type, :name, :url, :tg_channel,
-                    :tg_account_idx, :schedule_cron, true, CAST(:proxy_config AS jsonb),
-                    CAST(:extra AS jsonb), :source_authority, NOW(), NOW()
-                )
-                ON CONFLICT (id) DO UPDATE SET
-                    workspace_id = EXCLUDED.workspace_id,
-                    source_type = EXCLUDED.source_type,
-                    name = EXCLUDED.name,
-                    url = EXCLUDED.url,
-                    tg_channel = EXCLUDED.tg_channel,
-                    tg_account_idx = EXCLUDED.tg_account_idx,
-                    schedule_cron = EXCLUDED.schedule_cron,
-                    proxy_config = EXCLUDED.proxy_config,
-                    extra = EXCLUDED.extra,
-                    source_authority = EXCLUDED.source_authority,
-                    updated_at = NOW()
-                """
-            ),
-            {
-                "id": src.id,
-                "workspace_id": src.workspace_id,
-                "source_type": source_type,
-                "name": src.name,
-                "url": url,
-                "tg_channel": tg_channel,
-                "tg_account_idx": src.tg_account_idx,
-                "schedule_cron": src.schedule_cron,
-                "proxy_config": json.dumps(src.proxy_config or {}),
-                "extra": json.dumps(extra),
-                "source_authority": float(extra.get("source_authority", 0.5) or 0.5),
-            },
-        )
+        # COALESCE на proxy_config и schedule_cron — не стилистика, а защита от
+        # тихой потери сбора. Формы РЕДАКТИРОВАНИЯ источника в админке нет: «+ Добавить»
+        # де-факто и есть редактор, и открывается она пустой (SourcesView.blankAdd).
+        # Повторная отправка существующего id раньше затирала proxy_config пустым `{}`
+        # и schedule_cron значением NULL просто потому, что оператор их не заполнил.
+        # Для rss/web-источников за Cloudflare прокси xray обязателен (docs, память
+        # проекта): без него источник отдаёт ReadTimeout и ноль успехов, то есть
+        # выглядит как «сайт лёг». При этом ответ был `{"status": "ok"}` и UI рисовал
+        # зелёный тост об успехе — молчаливый отказ в чистом виде.
+        #
+        # Правило: пустое значение в запросе = «не трогай», а не «обнули».
+        # Следствие, которое надо знать: очистить прокси или расписание ЧЕРЕЗ ЭТУ
+        # РУЧКУ теперь нельзя — для этого нужна отдельная операция с явным намерением.
+        # Это осознанный размен: потерять прокси случайно дороже, чем не иметь
+        # способа стереть его отсюда. Деструктивное действие под видом создания —
+        # ровно то, из-за чего правка и появилась.
+        row = (
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO sources (
+                        id, workspace_id, source_type, name, url, tg_channel,
+                        tg_account_idx, schedule_cron, is_enabled, proxy_config, extra,
+                        source_authority,
+                        created_at, updated_at
+                    )
+                    VALUES (
+                        :id, :workspace_id, :source_type, :name, :url, :tg_channel,
+                        :tg_account_idx, :schedule_cron, true, CAST(:proxy_config AS jsonb),
+                        CAST(:extra AS jsonb), :source_authority, NOW(), NOW()
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        workspace_id = EXCLUDED.workspace_id,
+                        source_type = EXCLUDED.source_type,
+                        name = EXCLUDED.name,
+                        url = EXCLUDED.url,
+                        tg_channel = EXCLUDED.tg_channel,
+                        tg_account_idx = EXCLUDED.tg_account_idx,
+                        schedule_cron = COALESCE(EXCLUDED.schedule_cron, sources.schedule_cron),
+                        proxy_config = CASE
+                            WHEN EXCLUDED.proxy_config = '{}'::jsonb THEN sources.proxy_config
+                            ELSE EXCLUDED.proxy_config
+                        END,
+                        extra = EXCLUDED.extra,
+                        source_authority = EXCLUDED.source_authority,
+                        updated_at = NOW()
+                    RETURNING (xmax = 0) AS created
+                    """
+                ),
+                {
+                    "id": src.id,
+                    "workspace_id": src.workspace_id,
+                    "source_type": source_type,
+                    "name": src.name,
+                    "url": url,
+                    "tg_channel": tg_channel,
+                    "tg_account_idx": src.tg_account_idx,
+                    "schedule_cron": src.schedule_cron,
+                    "proxy_config": json.dumps(src.proxy_config or {}),
+                    "extra": json.dumps(extra),
+                    "source_authority": float(extra.get("source_authority", 0.5) or 0.5),
+                },
+            )
+        ).mappings().first()
         await session.commit()
-    return {"status": "ok", "id": src.id, "source_type": source_type}
+    # `created` отдаётся наружу, потому что без него UI не может отличить создание от
+    # перезаписи и рапортует «Источник сохранён» в обоих случаях. `xmax = 0` — штатный
+    # приём Postgres: у строки, вставленной этим оператором, xmax нулевой, у обновлённой
+    # там лежит идентификатор транзакции.
+    return {
+        "status": "ok",
+        "id": src.id,
+        "source_type": source_type,
+        "created": bool(row and row["created"]),
+    }
 
 
 @router.patch("/{source_id}/toggle")
 async def toggle_source(source_id: str):
     engine = get_engine()
     async with AsyncSession(engine) as session:
-        await session.execute(
-            text(
-                """
-                UPDATE sources
-                SET is_enabled = NOT is_enabled, updated_at = NOW()
-                WHERE id = :id
-                """
-            ),
-            {"id": source_id},
-        )
+        # RETURNING вместо безусловного «ok»: раньше PATCH по несуществующему id
+        # отвечал 200 и фронт рисовал успех, перевернув флаг у себя догадкой
+        # `NOT is_enabled`. Соседние ручки (vision, telegram-handle) 404 отдают —
+        # разъехались две реализации одного и того же в пределах файла.
+        row = (
+            await session.execute(
+                text(
+                    """
+                    UPDATE sources
+                    SET is_enabled = NOT is_enabled, updated_at = NOW()
+                    WHERE id = :id
+                    RETURNING is_enabled
+                    """
+                ),
+                {"id": source_id},
+            )
+        ).mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Source not found")
         await session.commit()
-    return {"status": "ok"}
+    # Возвращаем НОВОЕ состояние, чтобы фронт не угадывал его переворотом локального
+    # значения: догадка расходится с базой, если строку поменяли в другой вкладке.
+    return {"status": "ok", "is_enabled": bool(row["is_enabled"])}
 
 
 @router.patch("/{source_id}/vision")
