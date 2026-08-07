@@ -101,6 +101,10 @@ export default {
       @retry="loadSection('streams', '/api/pipeline/streams')">
       <div class="table-wrap">
         <table class="tbl tbl--fixed" style="min-width:620px">
+        <!-- colgroup обязателен при table-layout: fixed: без него браузер делит ширину
+                 поровну, и колонка-идентификатор обрезается многоточием наравне со
+                 столбцом из одной галочки. Ширины подобраны по содержимому. -->
+        <colgroup><col style="width:30%"><col style="width:26%"><col style="width:14%"><col style="width:14%"><col style="width:16%"></colgroup>
           <thead><tr><th>Stream</th><th>Group</th><th class="num">Lag</th><th class="num">Pending</th><th class="num">Oldest pending</th></tr></thead>
           <tbody>
             <tr v-for="(s, i) in streamRows()" :key="i">

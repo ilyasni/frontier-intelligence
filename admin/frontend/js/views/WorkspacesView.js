@@ -197,7 +197,7 @@ export default {
             <tbody>
               <tr v-for="w in filtered" :key="w.id">
                 <td>
-                  <div class="ellip" style="font-weight:600;cursor:pointer" @click="detail = w" :title="w.name || w.id">{{ w.name || w.id }}</div>
+                  <div class="ellip" style="font-weight:600;cursor:pointer" tabindex="0" role="button" @click="detail = w" @keydown.enter.prevent="detail = w" @keydown.space.prevent="detail = w" :title="w.name || w.id">{{ w.name || w.id }}</div>
                   <div class="row" style="gap:6px;margin-top:4px">
                     <span class="text-xs faint mono ellip">{{ w.id }}</span>
                   </div>

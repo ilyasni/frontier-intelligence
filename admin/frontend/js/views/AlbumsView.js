@@ -108,7 +108,7 @@ export default {
               <th class="num">Постов</th><th>Собран</th><th>Vision</th><th>Создан</th>
             </tr></thead>
             <tbody>
-              <tr v-for="a in filtered" :key="a.id" style="cursor:pointer" @click="openDetail(a)">
+              <tr v-for="a in filtered" :key="a.id" style="cursor:pointer" tabindex="0" @click="openDetail(a)" @keydown.enter.prevent="openDetail(a)" @keydown.space.prevent="openDetail(a)">
                 <td>
                   <div class="ellip mono" style="font-weight:600" :title="a.grouped_id || a.id">{{ a.grouped_id || a.id }}</div>
                   <div class="text-xs faint mono ellip" :title="a.id">{{ a.id }}</div>

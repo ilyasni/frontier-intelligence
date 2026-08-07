@@ -102,7 +102,7 @@ export default {
               <th class="num">Постов</th><th>Workspace</th><th>Создано</th>
             </tr></thead>
             <tbody>
-              <tr v-for="m in filtered" :key="m.sha256" style="cursor:pointer" @click="openDetail(m)">
+              <tr v-for="m in filtered" :key="m.sha256" style="cursor:pointer" tabindex="0" @click="openDetail(m)" @keydown.enter.prevent="openDetail(m)" @keydown.space.prevent="openDetail(m)">
                 <td>
                   <div class="ellip mono" style="font-weight:600" :title="m.sha256">{{ shortSha(m.sha256) }}</div>
                   <div class="text-xs faint mono ellip" :title="m.s3_key">{{ m.s3_key || '—' }}</div>

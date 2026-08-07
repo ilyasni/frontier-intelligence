@@ -211,6 +211,10 @@ export default {
           <div class="muted text-sm mb-3">Агрегаты стоимости по провайдерам</div>
           <div class="table-wrap">
             <table class="tbl tbl--fixed" style="min-width:760px">
+            <!-- colgroup обязателен при table-layout: fixed: без него браузер делит ширину
+                 поровну, и колонка-идентификатор обрезается многоточием наравне со
+                 столбцом из одной галочки. Ширины подобраны по содержимому. -->
+            <colgroup><col style="width:22%"><col style="width:14%"><col style="width:12%"><col style="width:14%"><col style="width:14%"><col style="width:12%"><col style="width:12%"></colgroup>
               <thead><tr><th>Провайдер</th><th class="num">Запросов</th><th class="num">Успех</th><th class="num">Ошибки</th><th class="num">Оценка</th><th class="num">Факт</th><th class="num">Drift</th></tr></thead>
               <tbody>
                 <tr v-for="(c, i) in costRows()" :key="i">
@@ -240,6 +244,10 @@ export default {
       @retry="section('capability', '/api/settings/capability-matrix')">
       <div class="table-wrap">
         <table class="tbl tbl--fixed" style="min-width:900px">
+        <!-- colgroup обязателен при table-layout: fixed: без него браузер делит ширину
+                 поровну, и колонка-идентификатор обрезается многоточием наравне со
+                 столбцом из одной галочки. Ширины подобраны по содержимому. -->
+        <colgroup><col style="width:22%"><col style="width:16%"><col style="width:8%"><col style="width:8%"><col style="width:8%"><col style="width:10%"><col style="width:14%"><col style="width:14%"></colgroup>
           <thead><tr><th>Провайдер</th><th>Модель</th><th>Text</th><th>Vision</th><th>Embed</th><th class="num">Dim</th><th class="num">Context</th><th>Metric</th></tr></thead>
           <tbody>
             <tr v-for="(r, i) in capRows()" :key="i">
@@ -269,6 +277,10 @@ export default {
         <KvGrid :items="circuitCells()"/>
         <div class="table-wrap">
           <table class="tbl tbl--fixed" style="min-width:820px">
+          <!-- colgroup обязателен при table-layout: fixed: без него браузер делит ширину
+                 поровну, и колонка-идентификатор обрезается многоточием наравне со
+                 столбцом из одной галочки. Ширины подобраны по содержимому. -->
+          <colgroup><col style="width:10%"><col style="width:18%"><col style="width:20%"><col style="width:12%"><col style="width:22%"><col style="width:8%"><col style="width:10%"></colgroup>
             <thead><tr><th>Level</th><th>Провайдер</th><th>Модель</th><th>State</th><th>Reason</th><th>До</th><th class="num">Отказов</th></tr></thead>
             <tbody>
               <tr v-for="(c, i) in circuitRows()" :key="i">

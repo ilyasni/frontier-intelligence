@@ -11,7 +11,7 @@ body {
   line-height: var(--lh);
   -webkit-font-smoothing: antialiased;
 }
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--accent-text); text-decoration: none; }
 a:hover { color: var(--accent-hover); }
 button { font-family: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
@@ -113,9 +113,12 @@ button { font-family: inherit; }
 .field__label .req { color: var(--danger); }
 .field__hint { font-size: var(--fs-xs); color: var(--text-faint); }
 .field__error { font-size: var(--fs-xs); color: #fca5a5; }
+/* Граница поля ввода несёт смысл — она и есть указание, где кликать, — поэтому
+   подпадает под WCAG 1.4.11 с порогом 3:1. --border-strong давал 1.73:1 на --surface
+   и 1.94 на --bg: поле визуально не отделялось от фона. --border-interactive даёт 3.00. */
 .input, .select, .textarea {
   width: 100%; padding: 9px 12px; background: var(--bg-elevated); color: var(--text);
-  border: 1px solid var(--border-strong); border-radius: var(--r-md); font-size: var(--fs-sm);
+  border: 1px solid var(--border-interactive); border-radius: var(--r-md); font-size: var(--fs-sm);
   font-family: inherit; transition: border-color .12s, box-shadow .12s;
 }
 .input:focus, .select:focus, .textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
@@ -149,9 +152,21 @@ button { font-family: inherit; }
 /* ---------- Table ---------- */
 .table-wrap { overflow-x: auto; border-radius: var(--r-lg); }
 table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+/* ВНИМАНИЕ про `position: sticky` у `th`. Сам по себе он здесь НЕ РАБОТАЕТ, и это
+   не опечатка, а следствие спецификации: `.table-wrap { overflow-x: auto }` делает
+   контейнер скроллпортом по ОБЕИМ осям (CSS Overflow L3: `visible` при непрозрачной
+   соседней оси вычисляется в `auto`). Вертикально этот контейнер не прокручивается —
+   прокручивается страница, — поэтому липнуть шапке не к чему. Проверяется просто:
+   пролистайте длинную таблицу, шапка уезжает. Липкая ПЕРВАЯ КОЛОНКА при этом
+   работает, потому что горизонтальный скролл настоящий, — из-за этого дефект и
+   выглядел как «всё в порядке».
+   Чтобы шапка залипала, у контейнера должна быть своя высота: класс
+   `.table-wrap--sticky` ниже. Он не навешан по умолчанию намеренно — вложенный
+   вертикальный скролл на каждом экране это решение по вкусу, а не багфикс. */
 .tbl th { text-align: left; padding: 10px 14px; color: var(--text-muted); font-weight: 600;
   font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; background: var(--surface); white-space: nowrap; }
+.table-wrap--sticky { max-height: 70vh; overflow-y: auto; }
 .tbl th.sortable { cursor: pointer; user-select: none; }
 .tbl th.sortable:hover { color: var(--text); }
 .tbl td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
@@ -241,9 +256,31 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
-  .sidebar { transform: translateX(-100%); box-shadow: var(--shadow-lg); }
-  .sidebar.open { transform: translateX(0); }
+  /* `visibility: hidden` в дополнение к сдвигу — не косметика. Уехавший за край
+     сайдбар остаётся в дереве доступности и в порядке табуляции: на узком экране
+     пользователь клавиатуры прожимал десяток невидимых пунктов меню, прежде чем
+     добраться до содержимого. transform один этого не убирает.
+     visibility анимируется дискретно, поэтому выезд не ломается: свойство
+     переключается в конце обратного перехода и сразу в начале прямого. */
+  .sidebar { transform: translateX(-100%); visibility: hidden; box-shadow: var(--shadow-lg);
+    transition: transform .18s ease, visibility 0s linear .18s; }
+  .sidebar.open { transform: translateX(0); visibility: visible; transition-delay: 0s; }
   .main { margin-left: 0; }
   .hamburger { display: inline-flex; }
   .content { padding: var(--sp-4); }
+}
+
+
+/* Уважение к системной настройке «меньше движения». Пользователи с вестибулярными
+   расстройствами выставляют её именно затем, чтобы интерфейс не ездил; за пределами
+   буквы AA, но правка в четыре строки. Полное отключение, а не замедление: значение
+   0.01ms оставляет события transitionend/animationend живыми, поэтому логика,
+   завязанная на них, не ломается. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
