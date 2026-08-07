@@ -4,6 +4,22 @@ import SettingCard from './SettingCard.js';
 import KvGrid from './KvGrid.js';
 import { fmtTs, fmtPct01, toneForStatus } from './helpers.js';
 
+// Ремедиация xray отвечает 200 ВСЕГДА, а исход лежит в теле: 'switched' — сделано,
+// 'noop' (already_active) и 'unavailable' — не сделано. Раньше все три рисовались
+// зелёным «Failover выполнен», то есть отказ был неотличим от успеха ровно в том
+// месте, где оператор чинит связность. См. admin/backend/services/xray_runtime.py:125-207.
+function reportRemediation(res, doneTitle, notDoneTitle) {
+  const status = String((res && res.status) || '').toLowerCase();
+  const where = res && res.active_profile ? `Активен: ${res.active_profile}` : '';
+  if (status === 'switched') {
+    notify.success(doneTitle, where);
+    return true;
+  }
+  const why = (res && (res.reason || res.detail)) || status || 'причина не указана';
+  notify.warn(notDoneTitle, where ? `${why} · ${where}` : String(why));
+  return false;
+}
+
 // Вкладка «Xray»: health + probe, профили, история ремедиации, мутации failover/switch/rollback.
 // Мутации влияют на egress — все через confirmDialog.
 export default {
@@ -80,7 +96,7 @@ export default {
       this.busy = true;
       try {
         const res = await api.post('/api/monitoring/xray/remediate/failover', { reason: 'manual_failover' });
-        notify.success('Failover выполнен', res.active_profile ? `Активен: ${res.active_profile}` : '');
+        reportRemediation(res, 'Failover выполнен', 'Failover не изменил состояние');
         this.afterRemediation();
       } catch (e) { notify.error('Failover не удался', e.detail); }
       finally { this.busy = false; }
@@ -96,7 +112,7 @@ export default {
       this.busy = true;
       try {
         const res = await api.post('/api/monitoring/xray/remediate/switch', { profile_name: this.switchTarget, reason: 'manual_switch' });
-        notify.success('Профиль переключён', res.active_profile ? `Активен: ${res.active_profile}` : this.switchTarget);
+        reportRemediation(res, 'Профиль переключён', 'Профиль не переключён');
         this.switchTarget = '';
         this.afterRemediation();
       } catch (e) { notify.error('Не удалось переключить', e.detail); }
@@ -112,7 +128,7 @@ export default {
       this.busy = true;
       try {
         const res = await api.post('/api/monitoring/xray/remediate/rollback', { reason: 'manual_rollback' });
-        notify.success('Откат выполнен', res.active_profile ? `Активен: ${res.active_profile}` : '');
+        reportRemediation(res, 'Откат выполнен', 'Откат не изменил состояние');
         this.afterRemediation();
       } catch (e) { notify.error('Откат не удался', e.detail); }
       finally { this.busy = false; }
@@ -220,6 +236,10 @@ export default {
       @retry="loadSection('remediation', '/api/monitoring/xray/remediation/history')">
       <div class="table-wrap">
         <table class="tbl tbl--fixed" style="min-width:720px">
+        <!-- colgroup обязателен при table-layout: fixed: без него браузер делит ширину
+                 поровну, и колонка-идентификатор обрезается многоточием наравне со
+                 столбцом из одной галочки. Ширины подобраны по содержимому. -->
+        <colgroup><col style="width:24%"><col style="width:19%"><col style="width:19%"><col style="width:19%"><col style="width:19%"></colgroup>
           <thead><tr><th>Когда</th><th>Триггер</th><th>Профиль</th><th>Причина</th><th>Статус</th></tr></thead>
           <tbody>
             <tr v-for="(r, i) in remediationRows()" :key="i">
@@ -242,6 +262,10 @@ export default {
       @retry="loadSection('history', '/api/monitoring/xray/health/history?limit=15')">
       <div class="table-wrap">
         <table class="tbl tbl--fixed" style="min-width:680px">
+        <!-- colgroup обязателен при table-layout: fixed: без него браузер делит ширину
+                 поровну, и колонка-идентификатор обрезается многоточием наравне со
+                 столбцом из одной галочки. Ширины подобраны по содержимому. -->
+        <colgroup><col style="width:22%"><col style="width:16%"><col style="width:16%"><col style="width:14%"><col style="width:14%"><col style="width:18%"></colgroup>
           <thead><tr><th>Когда</th><th>Статус</th><th class="num">Отказов</th><th class="num">Ratio</th><th class="num">Streak</th><th>Alert</th></tr></thead>
           <tbody>
             <tr v-for="(h, i) in historyRows()" :key="i">

@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { fmtAgo, fmtNum, statusVariant, truncate } from '../format.js';
+import { newSequence } from '../reqseq.js';
 
 // Порядок и русские подписи для статусов индексации — приводим сырые ключи к читаемому виду.
 const STATUS_ORDER = ['done', 'indexed', 'processing', 'pending', 'queued', 'skipped', 'error', 'failed', 'dropped'];
@@ -13,6 +14,8 @@ export default {
   name: 'DashboardView',
   data() {
     return {
+      // Сторож устаревших ответов, см. js/reqseq.js
+      seq: newSequence(),
       stats: {}, recent: [], loading: true, error: null,
       workspace: this.$route.query.ws || '',
     };
@@ -48,13 +51,15 @@ export default {
     statusLabel(s) { return STATUS_LABELS[s] || s; },
     fmtScore(v) { return v == null || isNaN(v) ? '—' : Number(v).toFixed(2); },
     async load() {
+      const fresh = this.seq.next();
       this.loading = true; this.error = null;
       try {
         const data = await api.get('/api/pipeline/stats', { workspace_id: this.workspace || undefined });
+        if (!fresh()) return;
         this.stats = (data && data.stats) || {};
         this.recent = (data && Array.isArray(data.recent)) ? data.recent : [];
-      } catch (e) { this.error = e; }
-      finally { this.loading = false; }
+      } catch (e) { if (!fresh()) return; this.error = e; }
+      finally { if (fresh()) this.loading = false; }
     },
   },
   template: `

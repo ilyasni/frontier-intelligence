@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { notify } from '../ui.js';
 import { fmtAgo, fmtDate, fmtNum, statusVariant, truncate } from '../format.js';
+import { newSequence } from '../reqseq.js';
 
 // Вкладки страницы аналитики трендов. У каждой — свой эндпоинт и таблица ключевых полей;
 // полный объект строки показываем в модалке (dl + JsonView). Стадии emerging — чипами.
@@ -28,6 +29,8 @@ export default {
   name: 'ClustersView',
   data() {
     return {
+      // Сторож устаревших ответов, см. js/reqseq.js
+      seq: newSequence(),
       activeTab: 'semantic',
       filters: { workspace: this.$route.query.ws || '', limit: 50 },
       stages: ['emerging'], // выбранные стадии для вкладки emerging
@@ -86,13 +89,22 @@ export default {
     isStageOn(v) { return this.stages.includes(v); },
     async load() {
       const tab = this.activeTab;
+      // Вкладок пять, а loading/error/loaded — общие. Без проверки «мой ли ответ»
+      // ошибка медленной вкладки садилась поверх уже загруженной соседней, а её
+      // ранний finally гасил спиннер и печатал «Ничего не найдено» при живом запросе.
+      const fresh = this.seq.next();
       this.loading = true; this.error = null;
       try {
         const rows = await this.fetchTab(tab);
+        if (!fresh()) return;
         this.rows[tab] = Array.isArray(rows) ? rows : [];
         this.loaded[tab] = true;
-      } catch (e) { this.error = e; }
-      finally { this.loading = false; }
+      } catch (e) {
+        if (!fresh()) return;
+        this.error = e;
+      } finally {
+        if (fresh()) this.loading = false;
+      }
     },
     fetchTab(tab) {
       const ws = this.filters.workspace || undefined;
@@ -185,7 +197,7 @@ export default {
             <colgroup><col style="width:38%"><col style="width:20%"><col style="width:12%"><col style="width:14%"><col style="width:16%"></colgroup>
             <thead><tr><th>Кластер</th><th>Workspace</th><th class="num">Постов</th><th>Состояние</th><th>Обнаружен</th></tr></thead>
             <tbody>
-              <tr v-for="c in currentRows" :key="c.id ?? c.cluster_id" style="cursor:pointer" @click="openDetail(c)">
+              <tr v-for="c in currentRows" :key="c.id ?? c.cluster_id" style="cursor:pointer" tabindex="0" @click="openDetail(c)" @keydown.enter.prevent="openDetail(c)" @keydown.space.prevent="openDetail(c)">
                 <td><div class="ellip" style="font-weight:600" :title="c.title || c.label">{{ c.title || c.label || '—' }}</div></td>
                 <td class="muted"><span class="ellip mono text-xs" style="display:block" :title="c.workspace_id">{{ c.workspace_id || '—' }}</span></td>
                 <td class="num mono">{{ fmtNum(c.post_count ?? c.doc_count) }}</td>
@@ -202,7 +214,7 @@ export default {
             <colgroup><col style="width:32%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:16%"></colgroup>
             <thead><tr><th>Кластер</th><th>Pipeline</th><th class="num">Signal</th><th class="num">Burst</th><th>Стадия</th><th>Обнаружен</th></tr></thead>
             <tbody>
-              <tr v-for="c in currentRows" :key="c.id ?? c.cluster_id" style="cursor:pointer" @click="openDetail(c)">
+              <tr v-for="c in currentRows" :key="c.id ?? c.cluster_id" style="cursor:pointer" tabindex="0" @click="openDetail(c)" @keydown.enter.prevent="openDetail(c)" @keydown.space.prevent="openDetail(c)">
                 <td><div class="ellip" style="font-weight:600" :title="c.title || c.label">{{ c.title || c.label || '—' }}</div></td>
                 <td><span class="ellip mono text-xs" style="display:block" :title="c.pipeline">{{ c.pipeline || '—' }}</span></td>
                 <td class="num mono">{{ num(c.signal_score) }}</td>
@@ -220,7 +232,7 @@ export default {
             <colgroup><col style="width:38%"><col style="width:18%"><col style="width:15%"><col style="width:14%"><col style="width:15%"></colgroup>
             <thead><tr><th>Сигнал</th><th>Workspace</th><th>Стадия</th><th class="num">Signal</th><th class="num">Confidence</th></tr></thead>
             <tbody>
-              <tr v-for="s in currentRows" :key="s.id ?? s.signal_id" style="cursor:pointer" @click="openDetail(s)">
+              <tr v-for="s in currentRows" :key="s.id ?? s.signal_id" style="cursor:pointer" tabindex="0" @click="openDetail(s)" @keydown.enter.prevent="openDetail(s)" @keydown.space.prevent="openDetail(s)">
                 <td><div class="ellip" style="font-weight:600" :title="s.title || s.label">{{ s.title || s.label || '—' }}</div></td>
                 <td class="muted"><span class="ellip mono text-xs" style="display:block" :title="s.workspace_id">{{ s.workspace_id || '—' }}</span></td>
                 <td><UiBadge :variant="statusVariant(s.signal_stage || 'weak')" :text="s.signal_stage || 'weak'" :dot="false"/></td>
@@ -237,7 +249,7 @@ export default {
             <colgroup><col style="width:44%"><col style="width:22%"><col style="width:16%"><col style="width:18%"></colgroup>
             <thead><tr><th>Пропущенный сигнал</th><th>Workspace</th><th class="num">Gap score</th><th>Обнаружен</th></tr></thead>
             <tbody>
-              <tr v-for="m in currentRows" :key="m.id ?? m.signal_id" style="cursor:pointer" @click="openDetail(m)">
+              <tr v-for="m in currentRows" :key="m.id ?? m.signal_id" style="cursor:pointer" tabindex="0" @click="openDetail(m)" @keydown.enter.prevent="openDetail(m)" @keydown.space.prevent="openDetail(m)">
                 <td><div class="ellip" style="font-weight:600" :title="m.title || m.label || m.query">{{ m.title || m.label || m.query || '—' }}</div></td>
                 <td class="muted"><span class="ellip mono text-xs" style="display:block" :title="m.workspace_id">{{ m.workspace_id || '—' }}</span></td>
                 <td class="num mono">{{ num(m.gap_score) }}</td>
@@ -253,7 +265,7 @@ export default {
             <colgroup><col style="width:22%"><col style="width:15%"><col style="width:18%"><col style="width:45%"></colgroup>
             <thead><tr><th>Начат</th><th>Статус</th><th>Workspace</th><th>Сводка</th></tr></thead>
             <tbody>
-              <tr v-for="(r, i) in currentRows" :key="r.id ?? i" style="cursor:pointer" @click="openDetail(r)">
+              <tr v-for="(r, i) in currentRows" :key="r.id ?? i" style="cursor:pointer" tabindex="0" @click="openDetail(r)" @keydown.enter.prevent="openDetail(r)" @keydown.space.prevent="openDetail(r)">
                 <td class="muted text-sm">{{ r.started_at ? fmtDate(r.started_at) : '—' }}</td>
                 <td><UiBadge :variant="statusVariant(r.status)" :text="r.status || '—'" :dot="false"/></td>
                 <td class="muted"><span class="ellip mono text-xs" style="display:block" :title="r.workspace_id">{{ r.workspace_id || 'все' }}</span></td>

@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { fmtNum } from '../format.js';
+import { newSequence } from '../reqseq.js';
 
 // Единственный экземпляр библиотеки Cytoscape — вендорится локально в /static/vendor,
 // в index.html её нет. Грузим динамически один раз, промис кешируем на модуле.
@@ -48,6 +49,8 @@ export default {
   name: 'GraphView',
   data() {
     return {
+      // Сторож устаревших ответов, см. js/reqseq.js
+      seq: newSequence(),
       loading: false, error: null, built: false,
       filters: {
         workspace: this.$route.query.ws || '',
@@ -80,6 +83,10 @@ export default {
     },
 
     async load() {
+      // Худший случай гонки во всей админке: устаревший ответ уничтожал инстанс
+      // cytoscape и перестраивал граф, из-за чего на экране оказывался граф ПРОШЛОГО
+      // воркспейса при новом значении в фильтре — по виду неотличимо от правды.
+      const fresh = this.seq.next();
       this.loading = true; this.error = null; this.detail = null;
       try {
         const cy = await loadCytoscape();
@@ -89,6 +96,7 @@ export default {
           min_mentions: Math.max(Number(this.filters.min_mentions) || 1, 1),
           max_nodes: Math.min(Number(this.filters.max_nodes) || 50, 150),
         });
+        if (!fresh()) return;
         this.meta = data && data.meta ? data.meta : null;
         const nodes = (data && data.nodes) || [];
         this.built = nodes.length > 0;
@@ -102,11 +110,12 @@ export default {
           this.buildGraph(cy, data);
         }
       } catch (e) {
+        if (!fresh()) return;
         this.error = e;
         this.built = false;
         this.destroyGraph();
       } finally {
-        this.loading = false;
+        if (fresh()) this.loading = false;
       }
     },
 
@@ -152,7 +161,21 @@ export default {
               'background-color': 'data(color)',
               label: 'data(label)',
               color: resolveColor('var(--text)'),
-              'font-size': 11,
+              // Подпись лежит ПОВЕРХ заливки узла, а заливка красится по категории,
+              // и контраст светлого текста на этих цветах провальный: замер 07.08.2026
+              // дал 1.79 на --warn, 1.93 на --success, 1.80 на --info и 3.70 на --accent
+              // при пороге 4.5:1. То есть подписи узлов были нечитаемы, и тем сильнее,
+              // чем «теплее» категория.
+              //
+              // Обводка вместо перекраски текста: она не зависит от цвета узла и не
+              // ломает категорийную семантику заливки. Тёмный контур --bg под светлым
+              // текстом даёт стабильные ~16:1 на любой категории. Это штатное средство
+              // Cytoscape (text-outline-*), а не самодельный хак.
+              'text-outline-color': resolveColor('var(--bg)'),
+              'text-outline-width': 2,
+              'text-outline-opacity': 1,
+              // 11px не было в шкале --fs-*; 12 — это --fs-xs, минимальный кегль системы.
+              'font-size': 12,
               'text-wrap': 'wrap',
               'text-max-width': 110,
               'text-valign': 'center',

@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { notify, confirmDialog } from '../ui.js';
 import { fmtAgo, fmtNum, statusVariant, truncate } from '../format.js';
+import { newSequence } from '../reqseq.js';
 
 const TYPE_LABELS = { telegram: 'Telegram', rss: 'RSS', web: 'Web', api: 'API', email: 'Email' };
 const VISION_MODES = [
@@ -13,6 +14,8 @@ export default {
   name: 'SourcesView',
   data() {
     return {
+      // Сторож устаревших ответов, см. js/reqseq.js
+      seq: newSequence(),
       sources: [], catalog: null, loading: true, error: null, busy: false,
       filters: { workspace: this.$route.query.ws || '', q: '', type: '', status: '' },
       detail: null,
@@ -69,18 +72,39 @@ export default {
       };
     },
     async load() {
+      const fresh = this.seq.next();
       this.loading = true; this.error = null;
       try {
         const data = await api.get('/api/sources', { workspace_id: this.filters.workspace || undefined });
+        if (!fresh()) return;
         this.sources = Array.isArray(data) ? data : [];
-      } catch (e) { this.error = e; }
-      finally { this.loading = false; }
+      } catch (e) { if (!fresh()) return; this.error = e; }
+      finally { if (fresh()) this.loading = false; }
     },
     async toggle(s) {
       try {
-        await api.patch(`/api/sources/${encodeURIComponent(s.id)}/toggle`);
-        s.is_enabled = !s.is_enabled;
-        notify.success(s.is_enabled ? 'Источник включён' : 'Источник выключен', s.name || s.id);
+        const res = await api.patch(`/api/sources/${encodeURIComponent(s.id)}/toggle`);
+        // Новое состояние берём ИЗ ОТВЕТА, а не угадываем переворотом локального
+        // значения: догадка расходится с базой, если строку успели поменять в другой
+        // вкладке. Ручка теперь возвращает is_enabled (и 404, если строки нет вовсе —
+        // раньше отвечала «ok» на любой идентификатор).
+        s.is_enabled = typeof res?.is_enabled === 'boolean' ? res.is_enabled : !s.is_enabled;
+        if (s.is_enabled) {
+          // Включение источника — ДВА действия, и второе делается вне админки.
+          // `bootstrap_configs` при ближайшем прогоне переписывает is_enabled
+          // значением из config/sources.yml (ON CONFLICT ... SET is_enabled =
+          // EXCLUDED.is_enabled), то есть один только PATCH живёт до первого
+          // нажатия соседней кнопки «Bootstrap YAML». Проект уже ловил рецидив
+          // этого и закрепил правило тестом tests/test_sources_config_contract.py —
+          // но в интерфейсе предупреждения не было, и оператор узнавал о полумере
+          // постфактум. Предупреждение, а не успех: действие выполнено наполовину.
+          notify.warn(
+            'Источник включён в базе',
+            `${s.name || s.id} · чтобы включение пережило Bootstrap YAML, проставь is_enabled: true в config/sources.yml`,
+          );
+        } else {
+          notify.success('Источник выключен', s.name || s.id);
+        }
       } catch (e) { notify.error('Не удалось переключить', e.detail); }
     },
     async del(s) {
@@ -237,7 +261,7 @@ export default {
             <tbody>
               <tr v-for="s in filtered" :key="s.id">
                 <td>
-                  <div class="ellip" style="font-weight:600;cursor:pointer" @click="detail = s" :title="s.name || s.id">{{ s.name || s.id }}</div>
+                  <div class="ellip" style="font-weight:600;cursor:pointer" tabindex="0" role="button" @click="detail = s" @keydown.enter.prevent="detail = s" @keydown.space.prevent="detail = s" :title="s.name || s.id">{{ s.name || s.id }}</div>
                   <div class="row" style="gap:6px;margin-top:4px">
                     <UiBadge variant="accent" :text="typeLabel(s.source_type)" :dot="false"/>
                     <span class="text-xs faint mono ellip">{{ s.id }}</span>

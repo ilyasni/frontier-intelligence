@@ -14,6 +14,8 @@ export default {
   name: 'PostsView',
   data() {
     return {
+      // Сторож устаревших ответов, см. js/reqseq.js
+      seq: newSequence(),
       posts: [], loading: true, error: null,
       filters: {
         workspace: this.$route.query.ws || '',
@@ -48,6 +50,8 @@ export default {
       return n;
     },
     async load() {
+      // Смена воркспейса/фильтра на медленном ответе — см. js/reqseq.js
+      const fresh = this.seq.next();
       this.loading = true; this.error = null;
       try {
         const data = await api.get('/api/posts', {
@@ -56,9 +60,10 @@ export default {
           has_media: this.filters.has_media || undefined,
           limit: this.normLimit(),
         });
+        if (!fresh()) return;
         this.posts = Array.isArray(data) ? data : [];
-      } catch (e) { this.error = e; }
-      finally { this.loading = false; }
+      } catch (e) { if (!fresh()) return; this.error = e; }
+      finally { if (fresh()) this.loading = false; }
     },
     async openDetail(p) {
       this.detail = { post: p, enrichments: [], album: null };
@@ -122,7 +127,7 @@ export default {
               <th>Embedding</th><th>Vision</th><th>Graph</th><th>Опубликовано</th>
             </tr></thead>
             <tbody>
-              <tr v-for="p in filtered" :key="p.id" style="cursor:pointer" @click="openDetail(p)">
+              <tr v-for="p in filtered" :key="p.id" style="cursor:pointer" tabindex="0" @click="openDetail(p)" @keydown.enter.prevent="openDetail(p)" @keydown.space.prevent="openDetail(p)">
                 <td>
                   <div class="row" style="gap:6px;margin-bottom:4px">
                     <span class="text-xs faint mono ellip" :title="p.id">{{ p.id }}</span>

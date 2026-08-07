@@ -44,9 +44,25 @@ async function request(method, path, { params, body } = {}) {
     let detail = (data && typeof data === 'object' && (data.detail || data.error || data.message)) || resp.statusText || `HTTP ${resp.status}`;
     if (typeof detail !== 'string') detail = JSON.stringify(detail);
     if (resp.status === 401) {
-      // Сессия истекла/отсутствует — сигналим приложению показать форму входа.
-      window.dispatchEvent(new CustomEvent('admin-unauthorized'));
-      detail = 'Требуется вход';
+      // 401 бывает двух разных видов, и раньше они схлопывались в один текст.
+      //
+      // (1) Middleware на защищённом /api/*: тело `{"detail": "unauthorized"}`,
+      //     смысл — «сессия истекла, войди заново». Здесь подмена уместна.
+      // (2) Сам обработчик логина: тело `{"detail": "Неверный логин или пароль"}`
+      //     (admin/backend/main.py — эндпоинт вынесен из middleware). Раньше этот
+      //     текст безусловно затирался, и форма входа на опечатку в пароле отвечала
+      //     «Требуется вход» — то есть единственный осмысленный диагноз стирался
+      //     ровно там, где он нужен.
+      //
+      // Событие для показа формы входа шлём только в случае (1): на самом экране
+      // входа оно бессмысленно.
+      const isLoginAttempt = path === '/api/auth/login';
+      if (!isLoginAttempt) {
+        window.dispatchEvent(new CustomEvent('admin-unauthorized'));
+      }
+      if (!detail || detail === 'unauthorized' || detail === `HTTP ${resp.status}`) {
+        detail = 'Требуется вход';
+      }
     }
     throw new ApiError(resp.status, detail, data);
   }

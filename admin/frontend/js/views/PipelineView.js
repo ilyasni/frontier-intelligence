@@ -26,6 +26,9 @@ export default {
   data() {
     return {
       loading: true, error: null,
+      // Ошибка по каждому блоку отдельно: отказ одной ручки не должен прятать
+      // данные остальных и не должен читаться как «пусто».
+      errs: { scheduler: null, stats: null, jobs: null, streams: null },
       workspace: this.$route.query.ws || '',
       scheduler: null,
       jobs: [],
@@ -76,24 +79,56 @@ export default {
       return (b - a) / 1000;
     },
     async load() {
-      this.loading = true; this.error = null;
+      // allSettled вместо Promise.all с индивидуальными `.catch`. Прежняя форма
+      // проглатывала отказ каждой из четырёх ручек и подставляла пустышку, из-за
+      // чего `catch (e) { this.error = e }` ниже был мёртвым кодом: Promise.all над
+      // четырёмя всегда-resolved промисами не отклоняется никогда.
+      //
+      // Цена была не косметическая. 500 от /api/pipeline/stats (сырой SQL без
+      // внутреннего try/except — pipeline.py) давал `stats = {}` и `recent = []`,
+      // и экран честно печатал «Постов пока нет» и «Ручных джобов пока нет».
+      // Это не «пусто вместо ошибки», это утверждение факта, которого нет — самая
+      // дорогая форма молчаливого отказа, уже стоившая проекту 54 часов замороженной
+      // аналитики (память: ops_silent_analysis_failure).
+      //
+      // Ошибка хранится ПО БЛОКАМ: отказ статистики не должен прятать живые стримы.
+      this.loading = true;
+      this.error = null;
+      this.errs = { scheduler: null, stats: null, jobs: null, streams: null };
       const ws = this.workspace || undefined;
-      try {
-        const [scheduler, stats, jobs, streams] = await Promise.all([
-          api.get('/api/pipeline/scheduler').catch(() => null),
-          api.get('/api/pipeline/stats', { workspace_id: ws }).catch(() => ({})),
-          api.get('/api/pipeline/jobs/manual', {
-            limit: 20, workspace_id: ws, only_running: this.onlyRunning || undefined,
-          }).catch(() => ({})),
-          api.get('/api/pipeline/streams').catch(() => null),
-        ]);
-        this.scheduler = scheduler;
-        this.stats = (stats && stats.stats) || {};
-        this.recent = (stats && Array.isArray(stats.recent)) ? stats.recent : [];
-        this.jobs = (jobs && Array.isArray(jobs.jobs)) ? jobs.jobs : [];
-        this.streams = streams;
-      } catch (e) { this.error = e; }
-      finally { this.loading = false; }
+      const [scheduler, stats, jobs, streams] = await Promise.allSettled([
+        api.get('/api/pipeline/scheduler'),
+        api.get('/api/pipeline/stats', { workspace_id: ws }),
+        api.get('/api/pipeline/jobs/manual', {
+          limit: 20, workspace_id: ws, only_running: this.onlyRunning || undefined,
+        }),
+        api.get('/api/pipeline/streams'),
+      ]);
+
+      this.scheduler = scheduler.status === 'fulfilled' ? scheduler.value : null;
+      this.errs.scheduler = scheduler.status === 'rejected' ? scheduler.reason : null;
+
+      if (stats.status === 'fulfilled') {
+        const v = stats.value || {};
+        this.stats = v.stats || {};
+        this.recent = Array.isArray(v.recent) ? v.recent : [];
+      } else {
+        this.stats = {};
+        this.recent = [];
+        this.errs.stats = stats.reason;
+      }
+
+      if (jobs.status === 'fulfilled') {
+        this.jobs = Array.isArray((jobs.value || {}).jobs) ? jobs.value.jobs : [];
+      } else {
+        this.jobs = [];
+        this.errs.jobs = jobs.reason;
+      }
+
+      this.streams = streams.status === 'fulfilled' ? streams.value : null;
+      this.errs.streams = streams.status === 'rejected' ? streams.reason : null;
+
+      this.loading = false;
     },
     async loadJobs() {
       try {
@@ -252,7 +287,7 @@ export default {
           <label class="checkbox text-sm"><input type="checkbox" v-model="onlyRunning"> только активные</label>
         </div>
         <div class="card__body--flush">
-          <StateBlock :empty="!jobs.length" empty-text="Ручных джобов пока нет">
+          <StateBlock :error="errs.jobs" :empty="!jobs.length" empty-text="Ручных джобов пока нет" @retry="load">
             <div class="table-wrap">
               <table class="tbl tbl--fixed">
                 <colgroup>
@@ -285,7 +320,7 @@ export default {
       <div class="card">
         <div class="card__head"><h2>Последние посты</h2></div>
         <div class="card__body--flush">
-          <StateBlock :empty="!recent.length" empty-text="Постов пока нет">
+          <StateBlock :error="errs.stats" :empty="!recent.length" empty-text="Постов пока нет" @retry="load">
             <div class="table-wrap">
               <table class="tbl tbl--fixed">
                 <colgroup>
@@ -322,7 +357,7 @@ export default {
           <button v-if="streams" class="btn btn--sm btn--ghost" @click="streamsOpen = true">Полный снимок</button>
         </div>
         <div class="card__body--flush">
-          <StateBlock :empty="!streamRows.length" empty-text="Снимок стримов недоступен">
+          <StateBlock :error="errs.streams" :empty="!streamRows.length" empty-text="Снимок стримов недоступен" @retry="load">
             <div class="table-wrap">
               <table class="tbl tbl--fixed">
                 <colgroup>
