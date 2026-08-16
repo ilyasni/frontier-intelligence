@@ -52,6 +52,13 @@ logger = logging.getLogger(__name__)
 # identical to the pure-Python path. See _components_np / _components_py.
 _COMPONENT_COSINE_EPS = 1e-9
 
+# Byte budget for a single B×N intermediate in the blocked cosine pass (_components_np).
+# The pass keeps ~4 such arrays alive at once, so the real peak is a small multiple of
+# this — but constant in n, which is the whole point: the previous full-matrix form
+# materialized ~8 dense n×n arrays and memcg-OOM-killed signal analysis on the largest
+# workspace once n crossed a few thousand semantic clusters.
+_COMPONENT_BLOCK_BYTES = 32 * 1024 * 1024
+
 
 @dataclass
 class ClusterPost:
@@ -186,42 +193,58 @@ def _components_np(
 ) -> list[list[ClusterPost]]:
     """Vectorized equivalent of _components_py.
 
-    Builds the full pairwise cosine matrix via a single matmul instead of the O(n²)
-    pure-Python double loop. Produces a byte-identical edge set: pairs whose vectorized
-    cosine lands within _COMPONENT_COSINE_EPS of the threshold are re-decided with the
-    exact pure-Python cosine, so matmul's differing summation order can never flip an
-    edge relative to _components_py.
+    Builds the similarity graph with blocked matmuls instead of the O(n²) pure-Python
+    double loop. Only the *edges* are ever needed, never the whole matrix, so rows are
+    processed in blocks sized to a fixed byte budget (_COMPONENT_BLOCK_BYTES): peak
+    memory is constant in n rather than quadratic. The earlier full-matrix form held
+    dot / denom / cos / gap_h / triu_indices / cos_pairs simultaneously — ~8 dense n×n
+    arrays, 1.2 GB at n=5000 — and the memcg SIGKILL that follows raises no MemoryError,
+    so the _components fallback below could never catch it.
+
+    Produces a byte-identical edge set to _components_py: pairs are visited in the same
+    row-major upper-triangle (j > i) order the previous np.triu_indices pass produced, so
+    graph insertion order — and hence DFS order in _connected_components — is unchanged;
+    and pairs whose vectorized cosine lands within _COMPONENT_COSINE_EPS of the threshold
+    are re-decided with the exact pure-Python cosine, so matmul's differing summation
+    order can never flip an edge. float64 is load-bearing: a float32 matmul errs by ~1e-6,
+    which dwarfs the eps band and would silently break that equivalence.
     """
+    n = len(posts)
     matrix = np.asarray([p.vector for p in posts], dtype=np.float64)
     norms = np.sqrt((matrix * matrix).sum(axis=1))
-    dot = matrix @ matrix.T
-    denom = np.outer(norms, norms)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        cos = np.where(denom > 0.0, dot / denom, 0.0)
-
     times = np.array([p.published_at.timestamp() for p in posts], dtype=np.float64)
-    gap_h = np.abs(times[:, None] - times[None, :]) / 3600.0
-
-    iu, ju = np.triu_indices(len(posts), k=1)
-    cos_pairs = cos[iu, ju]
-    gap_ok = gap_h[iu, ju] <= max_gap_h
-    edge = (cos_pairs >= threshold) & gap_ok
-    boundary = gap_ok & (np.abs(cos_pairs - threshold) <= _COMPONENT_COSINE_EPS)
+    columns = np.arange(n)
+    rows_per_block = max(1, min(n, int(_COMPONENT_BLOCK_BYTES // (8 * max(n, 1)))))
 
     graph: dict[str, set[str]] = defaultdict(set)
-    for k in np.nonzero(edge | boundary)[0]:
-        i = int(iu[k])
-        j = int(ju[k])
-        # Near-threshold pairs: defer to the exact cosine for a decision identical to
-        # _components_py. (gap_ok already holds for every boundary pair.)
-        connected = (
-            _cos(posts[i].vector, posts[j].vector) >= threshold
-            if bool(boundary[k])
-            else True
-        )
-        if connected:
-            graph[posts[i].post_id].add(posts[j].post_id)
-            graph[posts[j].post_id].add(posts[i].post_id)
+    for start in range(0, n, rows_per_block):
+        stop = min(start + rows_per_block, n)
+        dot = matrix[start:stop] @ matrix.T
+        denom = np.outer(norms[start:stop], norms)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cos = np.where(denom > 0.0, dot / denom, 0.0)
+        # Freed before gap_h is allocated: keeps the live set at ~4 blocks, not 6.
+        del dot, denom
+        gap_h = np.abs(times[start:stop, None] - times[None, :]) / 3600.0
+        gap_ok = (gap_h <= max_gap_h) & (columns[None, :] > columns[start:stop, None])
+        edge = (cos >= threshold) & gap_ok
+        boundary = gap_ok & (np.abs(cos - threshold) <= _COMPONENT_COSINE_EPS)
+
+        # np.nonzero enumerates in row-major order, so pairs arrive as (i asc, j asc) —
+        # exactly the order np.triu_indices yielded for the full matrix.
+        for block_i, block_j in zip(*np.nonzero(edge | boundary)):
+            i = start + int(block_i)
+            j = int(block_j)
+            # Near-threshold pairs: defer to the exact cosine for a decision identical to
+            # _components_py. (gap_ok already holds for every boundary pair.)
+            connected = (
+                _cos(posts[i].vector, posts[j].vector) >= threshold
+                if bool(boundary[block_i, block_j])
+                else True
+            )
+            if connected:
+                graph[posts[i].post_id].add(posts[j].post_id)
+                graph[posts[j].post_id].add(posts[i].post_id)
     return _connected_components(posts, graph)
 
 

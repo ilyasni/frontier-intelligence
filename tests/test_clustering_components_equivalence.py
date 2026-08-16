@@ -84,6 +84,50 @@ def test_components_np_matches_py_with_clustered_structure(seed: int) -> None:
 
 
 @requires_numpy
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("threshold", [0.0, 0.5, 0.8])
+def test_components_np_matches_py_across_block_sizes(
+    monkeypatch: pytest.MonkeyPatch, seed: int, threshold: float
+) -> None:
+    """The partitioning must not depend on how rows are split into blocks.
+
+    `_components_np` processes rows in blocks sized to `_COMPONENT_BLOCK_BYTES`, and at
+    the production budget any test-sized input lands in a single block — so without
+    shrinking the budget here the multi-block path (the entire point of the blocking)
+    would never be exercised. n is deliberately not a multiple of the block sizes so the
+    ragged final block is covered too.
+    """
+    rng = random.Random(seed)
+    posts = _random_posts(rng, n=37, dim=24, span_hours=200.0)
+    max_gap_h = 72
+    expected = _ids(_components_py(posts, threshold, max_gap_h))
+    for rows_per_block in (1, 3, 8, len(posts)):
+        # rows_per_block = budget // (8 * n)  -> budget = 8 * n * rows_per_block
+        monkeypatch.setattr(sc, "_COMPONENT_BLOCK_BYTES", 8 * len(posts) * rows_per_block)
+        assert _ids(_components_np(posts, threshold, max_gap_h)) == expected, (
+            f"mismatch at rows_per_block={rows_per_block}, "
+            f"threshold={threshold}, seed={seed}"
+        )
+
+
+@requires_numpy
+def test_components_np_blocked_matches_py_at_threshold_tie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The near-threshold re-decision reads `boundary` with block-local row indices;
+    # one row per block is where an off-by-one in that indexing would surface.
+    v1 = [1.0, 2.0, 3.0, 4.0]
+    v2 = [4.0, 3.0, 2.0, 1.0]
+    posts = [_post("a", v1), _post("b", v2), _post("c", list(v1)), _post("d", list(v2))]
+    t = cosine(v1, v2)
+    monkeypatch.setattr(sc, "_COMPONENT_BLOCK_BYTES", 8 * len(posts))  # 1 row per block
+    for threshold in (t, t + 1e-12, t - 1e-12):
+        assert _ids(_components_np(posts, threshold, 24)) == _ids(
+            _components_py(posts, threshold, 24)
+        ), f"mismatch at threshold offset {threshold - t:+.0e}"
+
+
+@requires_numpy
 def test_components_np_matches_py_at_exact_threshold_tie() -> None:
     # threshold set exactly to a pair's cosine: the inclusive `>=` must agree.
     v1 = [1.0, 2.0, 3.0, 4.0]
