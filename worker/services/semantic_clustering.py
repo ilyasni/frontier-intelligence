@@ -2127,22 +2127,36 @@ def _metrics(
     emerging: list[dict[str, Any]],
     cluster_cfg: dict[str, Any],
 ) -> dict[str, Any]:
+    """Quality numbers for one run, stored in cluster_runs.metrics.
+
+    A metric earns its place only if some input makes it alarm. Two failed that test
+    and were dropped on 2026-08-16, measured against 9520 live clusters of workspace
+    disruption:
+
+    * ``semantic_cluster_purity`` — mean coherence. A one-post cluster's centroid *is*
+      its only vector, so its coherence is exactly 1.0 (all 7837 singletons measured at
+      1.0000), and multi-post clusters only form above the dedupe threshold, bottoming
+      out at 0.9353. The floor is set by the threshold itself, so the mean cannot go low.
+    * ``over_merge_rate`` — share below ``dedupe_threshold - 0.08`` (0.84). Clusters are
+      built only from pairs at cosine >= 0.92, and 0 of 9520 landed under that line.
+
+    ``singleton_cluster_share`` was named ``over_split_rate`` until the same date. It
+    counts one-post clusters, but the semantic stage is near-duplicate dedup: a post
+    with no near-twin *must* end up alone, so a high value is the design working rather
+    than a fault. It also tracks volume, not quality — the largest workspace scores best
+    (disruption 0.82) and the smallest worst (auto_hmi 0.92, ai_trends 0.97). Measuring
+    real over-splitting needs the trend level plus a labelled set; see _golden_metrics,
+    which returns {} in production because its fixture lives under tests/ and prod
+    images ship no tests/ at all.
+
+    ``empty_low_evidence_cluster_rate`` and ``source_monoculture_rate`` largely restate
+    that same fact: evidence is the cluster's top-5 posts, so a one-post cluster always
+    falls under a threshold of 2, and a one-post cluster is single-source by definition
+    (the two differ by 104 clusters out of 9520). Read them as one signal, not three.
+    """
     semantic_total = max(len(semantic), 1)
     quality = {
-        "semantic_cluster_purity": round(
-            sum(item["coherence_score"] for item in semantic) / semantic_total, 4
-        ),
-        "over_merge_rate": round(
-            sum(
-                1
-                for item in semantic
-                if item["coherence_score"]
-                < float(cluster_cfg["semantic_dedupe_similarity_threshold"]) - 0.08
-            )
-            / semantic_total,
-            4,
-        ),
-        "over_split_rate": round(
+        "singleton_cluster_share": round(
             sum(1 for item in semantic if item["post_count"] == 1) / semantic_total, 4
         ),
         "trend_duplication_rate": round(
