@@ -590,7 +590,10 @@ sources:
         full_content: true
 
   # ВЫКЛЮЧЕН НАМЕРЕННО (2026-08-05): дубль auto_web_ieee_spectrum_autonomous (включён в auto_hmi 05.08).
-
+  # ⚠️ 2026-08-16: конфигурация ниже НЕРАБОЧАЯ — у близнеца она давала published_at = NULL
+  # на всех постах (на странице нет ни <time>, ни [datetime]), а такие посты навсегда
+  # выпадают из кластеризации по `published_at IS NOT NULL`. Не включать как есть:
+  # рабочий вариант — лента, см. auto_web_ieee_spectrum_autonomous.
   - id: web_ieee_spectrum_autonomous
     workspace_id: disruption
     source_type: web
@@ -616,7 +619,8 @@ sources:
         article_selector: "article, main"
 
   # ВЫКЛЮЧЕН НАМЕРЕННО (2026-08-05): дубль auto_web_automotiveworld_sdv (включён в auto_hmi 05.08).
-
+  # ⚠️ 2026-08-16: URL ниже отдаёт 404 (проверено), у близнеца он не принёс ни одной
+  # строки за 92 прогона. Рабочий вариант — лента, см. auto_web_automotiveworld_sdv.
   - id: web_automotiveworld_sdv
     workspace_id: disruption
     source_type: web
@@ -2396,11 +2400,19 @@ sources:
       parse:
         full_content: true
 
+  # 2026-08-16: был web-скрейпом тега /tag/autonomous-vehicles. Отдавал посты, но с
+  # published_at = NULL у ВСЕХ 33 — на странице нет ни одного <time> и ни одного
+  # [datetime] (проверено на живой выдаче), а date_selector: "time" другого и не мог
+  # найти. Цена этой пустоты не косметическая: _fetch_posts отбирает по
+  # `published_at IS NOT NULL`, то есть все посты источника были навсегда исключены из
+  # кластеризации, трендов и сигналов, оставаясь при этом в базе. Ни один алерт этого
+  # не показывал. Вдобавок тег отдавал вечнозелёный архив (май 2025, март 2025), а не
+  # свежее. Переведён на штатную ленту: 30 записей, даты августа 2026.
   - id: auto_web_ieee_spectrum_autonomous
     workspace_id: auto_hmi
-    source_type: web
-    name: IEEE Spectrum — Autonomous Vehicles
-    url: https://spectrum.ieee.org/tag/autonomous-vehicles
+    source_type: rss
+    name: IEEE Spectrum — Transportation
+    url: https://spectrum.ieee.org/feeds/topic/transportation.rss
     schedule_cron: "29 */2 * * *"
     is_enabled: true
     proxy_config:
@@ -2413,18 +2425,19 @@ sources:
       expected_signal_types: [autonomous, robotics, research, engineering]
       source_authority: 0.78
       parse:
-        full_content: false
-        listing_selector: "article, .article-card, li"
-        link_selector: "a[href]"
-        title_selector: "h2, h3"
-        date_selector: "time"
-        article_selector: "article, main"
+        full_content: true
 
+  # 2026-08-16: прежний адрес /software-defined-vehicles/ отдавал 404 на КАЖДОМ из 92
+  # прогонов с 05.08 — источник не принёс ни одной строки за всё время существования.
+  # Правильный раздел называется /topics/software-defined-vehicle/ (найден по ссылкам с
+  # главной), но одной заменой URL не обойтись: на этой странице селекторы листинга
+  # цепляют навигационное меню — двадцать элементов без заголовков и без дат. У раздела
+  # есть штатная лента с теми же материалами: 20 записей, даты, ровно нужная тема.
   - id: auto_web_automotiveworld_sdv
     workspace_id: auto_hmi
-    source_type: web
+    source_type: rss
     name: Automotive World — SDV
-    url: https://www.automotiveworld.com/software-defined-vehicles/
+    url: https://www.automotiveworld.com/topics/software-defined-vehicle/feed/
     schedule_cron: "47 */3 * * *"
     is_enabled: true
     proxy_config:
@@ -2437,12 +2450,7 @@ sources:
       expected_signal_types: [sdv, vehicle_os, adas, cybersecurity]
       source_authority: 0.65
       parse:
-        full_content: false
-        listing_selector: "article, .card, li"
-        link_selector: "a[href]"
-        title_selector: "h2, h3"
-        date_selector: "time"
-        article_selector: "article, main"
+        full_content: true
 
   # 2026-08-03: копия design_rss_insideevs_ux. Фид мёртв у источника (свежайшая статья 2023-02),
   # включать смысла нет — оставлен для полноты набора, живые альтернативы: rss_insideevs_all,
