@@ -694,12 +694,24 @@ async def _mark_run_failed(
 
 
 async def _existing(
-    session: AsyncSession, table: str, workspace_id: str | None, age_hours: int
+    session: AsyncSession,
+    table: str,
+    workspace_id: str | None,
+    age_hours: int,
+    *,
+    columns: str = "*",
 ) -> list[dict[str, Any]]:
+    """Rows of `table` detected within `age_hours`, newest first.
+
+    `columns` exists because the default `*` is expensive where it is not needed: the
+    trend/signal tables carry several wide jsonb columns (evidence, explainability,
+    keywords) and the 30-day window holds ~30k rows, none of whose payload the caller
+    reads. `columns` is a code-supplied SQL fragment, never user input.
+    """
     return await _rows(
         session,
         f"""
-        SELECT * FROM {table}
+        SELECT {columns} FROM {table}
         WHERE detected_at >= NOW() - make_interval(hours => :age_hours)
           AND (CAST(:workspace_id AS text) IS NULL OR workspace_id = CAST(:workspace_id AS text))
         ORDER BY detected_at DESC
@@ -1685,6 +1697,49 @@ def _merge_semantic_candidates(
     return kept, merged_count
 
 
+def _existing_signal_lookup(
+    existing_trends: list[dict[str, Any]],
+    existing_emerging: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[tuple[Any, Any], int]]:
+    """Index prior signals by (workspace_id, doc_id) -> position in scan order.
+
+    Replaces a `next(row for row in [*existing_trends, *existing_emerging] ...)` that
+    sat *inside* the per-group loop: every group rebuilt the concatenated list and a
+    fresh `set()` of each row's doc_ids, i.e. O(groups x rows) with ~30k rows in the
+    30-day window.
+
+    Keeping the FIRST position per key reproduces `next()` exactly — among the rows
+    sharing a doc_id with a group, the earliest in the same scan order wins, trends
+    before emerging signals and newer before older within each.
+    """
+    rows = [*existing_trends, *existing_emerging]
+    first_owner: dict[tuple[Any, Any], int] = {}
+    for position, row in enumerate(rows):
+        workspace_id = row.get("workspace_id")
+        for doc_id in row.get("doc_ids") or []:
+            first_owner.setdefault((workspace_id, doc_id), position)
+    return rows, first_owner
+
+
+def _existing_signal_for(
+    rows: list[dict[str, Any]],
+    first_owner: dict[tuple[Any, Any], int],
+    workspace_id: str,
+    doc_ids: list[str],
+) -> dict[str, Any] | None:
+    """The row the replaced `next()` would have returned, or None.
+
+    `min` — not the first hit while walking doc_ids: the winner is the earliest row in
+    scan order, which need not own the lowest-sorted doc_id.
+    """
+    owners = [
+        position
+        for doc_id in doc_ids
+        if (position := first_owner.get((workspace_id, doc_id))) is not None
+    ]
+    return rows[min(owners)] if owners else None
+
+
 def _signal_results(
     semantic: list[dict[str, Any]],
     existing_trends: list[dict[str, Any]],
@@ -1724,6 +1779,7 @@ def _signal_results(
         float(cluster_cfg["trend_cluster_similarity_threshold"]),
         int(cluster_cfg["trend_cluster_max_gap_hours"]),
     )
+    existing_rows, existing_owner = _existing_signal_lookup(existing_trends, existing_emerging)
     stable, emerging = [], []
     signal_series_by_id = signal_series_by_id or {}
     for group in groups:
@@ -1781,14 +1837,8 @@ def _signal_results(
             + item.source_score
             + _freshness(item.published_at),
         )
-        existing = next(
-            (
-                row
-                for row in [*existing_trends, *existing_emerging]
-                if row.get("workspace_id") == rep.workspace_id
-                and set(row.get("doc_ids") or []) & set(doc_ids)
-            ),
-            None,
+        existing = _existing_signal_for(
+            existing_rows, existing_owner, rep.workspace_id, doc_ids
         )
         signal_key = (
             existing.get("cluster_key")
@@ -2479,11 +2529,21 @@ async def _run_signal_analysis_core(
         entity_kind="semantic",
         entity_ids=[item["cluster_id"] for item in semantic],
     )
+    # Only the four columns _signal_results actually reads: it matches a group to a
+    # prior signal by overlapping doc_ids and then takes the key and the id.
     existing_trends = await _existing(
-        session, "trend_clusters", workspace_id, int(cluster_cfg["trend_cluster_max_gap_hours"])
+        session,
+        "trend_clusters",
+        workspace_id,
+        int(cluster_cfg["trend_cluster_max_gap_hours"]),
+        columns="id, workspace_id, cluster_key, doc_ids",
     )
     existing_emerging = await _existing(
-        session, "emerging_signals", workspace_id, int(cluster_cfg["trend_cluster_max_gap_hours"])
+        session,
+        "emerging_signals",
+        workspace_id,
+        int(cluster_cfg["trend_cluster_max_gap_hours"]),
+        columns="id, workspace_id, signal_key, doc_ids",
     )
     weak_snapshots: list[dict[str, Any]] = []
     stable, emerging = _signal_results(
@@ -2562,11 +2622,15 @@ async def run_semantic_clustering(workspace_id: str | None = None) -> dict[str, 
                     float(cluster_cfg["semantic_dedupe_similarity_threshold"]),
                     int(cluster_cfg["semantic_dedupe_max_gap_hours"]),
                 ),
+                # _semantic_identity reads exactly these five; the rest of the row is
+                # wide jsonb (evidence, explainability, representative_evidence) that
+                # nothing here touches. _load_semantic_state still needs the full row.
                 await _existing(
                     session,
                     "semantic_clusters",
                     workspace_id,
                     int(cluster_cfg["semantic_cluster_archive_hours"]),
+                    columns="id, cluster_key, title, top_concepts, doc_ids",
                 ),
             )
             semantic, merged_semantic = _merge_semantic_candidates(semantic, cluster_cfg)
