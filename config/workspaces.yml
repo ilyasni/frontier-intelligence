@@ -110,8 +110,11 @@ workspaces:
         cluster_min_evidence_count: 3
         signal_velocity_weight: 0.1
         signal_acceleration_weight: 0.08
-        signal_merge_similarity_threshold: 0.58
-        signal_merge_doc_overlap_threshold: 0.12
+        # signal_merge_* убраны 16.08.2026 вместе с самим слиянием сигналов: предикат
+        # был недостижим по построению (кандидаты — связные компоненты, они разбивают
+        # множество, поэтому пересечения документов не бывает никогда). Понижение
+        # порога здесь до 0.58 было попыткой это обойти и тоже не дало ни одного
+        # слияния. Разбор — в комментарии на месте удаления, в _signal_results.
         signal_min_source_count: 2
         persist_weak_signals: false
         weak_signal_min_score: 0.54

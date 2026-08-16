@@ -9,7 +9,6 @@ from worker.services.semantic_clustering import (
     _golden_metrics,
     _merge_cluster_settings,
     _merge_semantic_candidates,
-    _merge_signal_candidates,
     _representative,
     _semantic_identity,
     _signal_results,
@@ -263,8 +262,6 @@ def test_signal_results_produce_stable_and_emerging_layers() -> None:
             "signal_acceleration_weight": 0.1,
             "change_point_min_size": 2,
             "change_point_recent_hours": 48,
-            "signal_merge_similarity_threshold": 0.72,
-            "signal_merge_doc_overlap_threshold": 0.25,
             "signal_min_source_count": 1,
         },
         signal_series_by_id=signal_series_by_id,
@@ -290,8 +287,6 @@ def _weak_cluster_cfg(*, persist_weak_signals: bool) -> dict:
         "signal_acceleration_weight": 0.1,
         "change_point_min_size": 2,
         "change_point_recent_hours": 48,
-        "signal_merge_similarity_threshold": 0.72,
-        "signal_merge_doc_overlap_threshold": 0.25,
         "signal_min_source_count": 1,
         "persist_weak_signals": persist_weak_signals,
         "weak_signal_min_score": 0.99,
@@ -593,47 +588,6 @@ def test_change_point_detector_pins_the_difference_rule() -> None:
     assert _detect_change_points(_series([1, 40, 1]), cfg)["breakpoints"] == []
 
 
-def test_merge_signal_candidates_merges_neighboring_duplicates() -> None:
-    first = {
-        "existing_id": "trend-1",
-        "workspace_id": "ai_trends",
-        "title": "AI browser agent workflow",
-        "doc_ids": ["p1", "p2", "p3"],
-        "semantic_cluster_ids": ["s1", "s2"],
-        "keywords": ["ai", "browser", "agent"],
-        "signal_score": 0.8,
-        "source_ids": ["src1", "src2"],
-        "source_count": 2,
-        "evidence": [{"post_id": "p1"}],
-        "explainability": {},
-    }
-    second = {
-        "existing_id": "trend-2",
-        "workspace_id": "ai_trends",
-        "title": "AI browser agents",
-        "doc_ids": ["p2", "p3", "p4"],
-        "semantic_cluster_ids": ["s2", "s3"],
-        "keywords": ["ai", "browser", "workflow"],
-        "signal_score": 0.7,
-        "source_ids": ["src2", "src3"],
-        "source_count": 2,
-        "evidence": [{"post_id": "p4"}],
-        "explainability": {},
-    }
-
-    merged, merged_count = _merge_signal_candidates(
-        [first, second],
-        {
-            "signal_merge_similarity_threshold": 0.72,
-            "signal_merge_doc_overlap_threshold": 0.25,
-        },
-    )
-
-    assert merged_count == 1
-    assert len(merged) == 1
-    assert set(merged[0]["doc_ids"]) == {"p1", "p2", "p3", "p4"}
-
-
 def test_merge_semantic_candidates_merges_close_ai_clusters() -> None:
     first_posts = [
         _post("a1", "s1", 4, 0.84, 0.7, [1.0, 0.0], title="AI browser agent workflow"),
@@ -772,8 +726,6 @@ def test_signal_results_can_drop_weak_noise_when_disabled() -> None:
             "signal_acceleration_weight": 0.1,
             "change_point_min_size": 2,
             "change_point_recent_hours": 48,
-            "signal_merge_similarity_threshold": 0.72,
-            "signal_merge_doc_overlap_threshold": 0.25,
             "signal_min_source_count": 1,
             "persist_weak_signals": False,
             "weak_signal_min_score": 0.54,
@@ -995,8 +947,6 @@ def test_signal_results_demote_april_fools_cluster_to_weak() -> None:
             "signal_acceleration_weight": 0.1,
             "change_point_min_size": 2,
             "change_point_recent_hours": 48,
-            "signal_merge_similarity_threshold": 0.72,
-            "signal_merge_doc_overlap_threshold": 0.25,
             "signal_min_source_count": 1,
             "april_fools_guard_enabled": True,
             "april_fools_guard_penalty": 0.45,
@@ -1086,8 +1036,6 @@ def test_signal_results_handle_missing_top_terms_in_semantic_payload() -> None:
             "signal_acceleration_weight": 0.1,
             "change_point_min_size": 2,
             "change_point_recent_hours": 48,
-            "signal_merge_similarity_threshold": 0.72,
-            "signal_merge_doc_overlap_threshold": 0.25,
             "signal_min_source_count": 1,
             "april_fools_guard_enabled": True,
             "april_fools_guard_penalty": 0.45,

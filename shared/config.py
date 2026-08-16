@@ -610,8 +610,6 @@ class Settings(BaseSettings):
     # (max(min_size*2, 4) точек), recent_hours — окно свежести для has_recent_change_point.
     change_point_min_size: int = Field(2, alias="CHANGE_POINT_MIN_SIZE")
     change_point_recent_hours: int = Field(48, alias="CHANGE_POINT_RECENT_HOURS")
-    signal_merge_similarity_threshold: float = Field(0.72, alias="SIGNAL_MERGE_SIMILARITY_THRESHOLD")
-    signal_merge_doc_overlap_threshold: float = Field(0.25, alias="SIGNAL_MERGE_DOC_OVERLAP_THRESHOLD")
     persist_weak_signals: bool = Field(True, alias="PERSIST_WEAK_SIGNALS")
     weak_signal_min_score: float = Field(0.42, alias="WEAK_SIGNAL_MIN_SCORE")
     weak_signal_min_confidence: float = Field(0.52, alias="WEAK_SIGNAL_MIN_CONFIDENCE")

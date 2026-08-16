@@ -770,12 +770,6 @@ async def _cluster_settings(session: AsyncSession, workspace_id: str | None) -> 
         "signal_acceleration_weight": float(_cfg(settings.signal_acceleration_weight, 0.1)),
         "change_point_min_size": int(_cfg(settings.change_point_min_size, 2)),
         "change_point_recent_hours": int(_cfg(settings.change_point_recent_hours, 48)),
-        "signal_merge_similarity_threshold": float(
-            _cfg(settings.signal_merge_similarity_threshold, 0.72)
-        ),
-        "signal_merge_doc_overlap_threshold": float(
-            _cfg(settings.signal_merge_doc_overlap_threshold, 0.25)
-        ),
         "persist_weak_signals": bool(_cfg(settings.persist_weak_signals, True)),
         "weak_signal_min_score": float(_cfg(settings.weak_signal_min_score, 0.42)),
         "weak_signal_min_confidence": float(_cfg(settings.weak_signal_min_confidence, 0.52)),
@@ -1313,108 +1307,6 @@ def _temporal_metrics(series: list[dict[str, Any]], cluster_cfg: dict[str, Any])
         "breakpoints": change_points["breakpoints"],
         "last_breakpoint_at": change_points["last_breakpoint_at"],
     }
-
-
-def _merge_signal_candidates(
-    items: list[dict[str, Any]], cluster_cfg: dict[str, Any]
-) -> tuple[list[dict[str, Any]], int]:
-    threshold = float(cluster_cfg["signal_merge_similarity_threshold"])
-    doc_overlap_threshold = float(cluster_cfg["signal_merge_doc_overlap_threshold"])
-    max_gap_hours = int(cluster_cfg.get("trend_cluster_max_gap_hours", 24 * 30))
-    merged_count = 0
-    items = sorted(items, key=lambda item: item["signal_score"], reverse=True)
-    kept: list[dict[str, Any]] = []
-    absorbed_ids: set[str] = set()
-    for idx, current in enumerate(items):
-        if current.get("existing_id") in absorbed_ids or current.get("signal_id") in absorbed_ids:
-            continue
-        current_docs = set(current.get("doc_ids") or [])
-        current_semantic = set(current.get("semantic_cluster_ids") or [])
-        current_terms = set(_terms(current.get("title") or ""))
-        current_concepts = set(current.get("keywords") or [])
-        merged_into_current: list[str] = []
-        for other in items[idx + 1 :]:
-            other_id = other.get("existing_id") or other.get("signal_id")
-            if other_id in absorbed_ids or other.get("workspace_id") != current.get("workspace_id"):
-                continue
-            other_docs = set(other.get("doc_ids") or [])
-            doc_overlap = len(current_docs & other_docs) / max(len(current_docs | other_docs), 1)
-            semantic_overlap = _jaccard(
-                current_semantic, set(other.get("semantic_cluster_ids") or [])
-            )
-            concept_overlap = _jaccard(current_concepts, set(other.get("keywords") or []))
-            title_overlap = _jaccard(current_terms, set(_terms(other.get("title") or "")))
-            current_first = current.get("first_seen_at")
-            current_last = current.get("last_seen_at")
-            other_first = other.get("first_seen_at")
-            other_last = other.get("last_seen_at")
-            temporal_overlap = 0.0
-            if current_first and current_last and other_first and other_last:
-                gap_hours = (
-                    abs(
-                        (
-                            max(current_first, other_first) - min(current_last, other_last)
-                        ).total_seconds()
-                    )
-                    / 3600.0
-                )
-                temporal_overlap = (
-                    1.0
-                    if gap_hours <= max_gap_hours
-                    else max(0.0, 1.0 - (gap_hours / max(max_gap_hours, 1)))
-                )
-            similarity = (
-                doc_overlap * 0.28
-                + semantic_overlap * 0.22
-                + concept_overlap * 0.24
-                + title_overlap * 0.16
-                + temporal_overlap * 0.10
-            )
-            semantic_title_merge = (
-                concept_overlap >= 0.6 and title_overlap >= 0.45 and temporal_overlap >= 0.4
-            )
-            if (
-                doc_overlap >= doc_overlap_threshold
-                or similarity >= threshold
-                or semantic_title_merge
-            ):
-                absorbed_ids.add(other_id)
-                merged_into_current.append(other_id)
-                current_docs.update(other_docs)
-                current_semantic.update(other.get("semantic_cluster_ids") or [])
-                current["source_ids"] = sorted(
-                    set(current.get("source_ids") or []) | set(other.get("source_ids") or [])
-                )
-                current["source_count"] = len(current["source_ids"])
-                current["doc_ids"] = sorted(current_docs)
-                current["semantic_cluster_ids"] = sorted(current_semantic)
-                current["keywords"] = [
-                    name
-                    for name, _ in Counter(
-                        (current.get("keywords") or []) + (other.get("keywords") or [])
-                    ).most_common(8)
-                ]
-                current["evidence"] = (current.get("evidence") or []) + [
-                    item
-                    for item in (other.get("evidence") or [])
-                    if item not in (current.get("evidence") or [])
-                ]
-                current["series_posts"] = (current.get("series_posts") or []) + (
-                    other.get("series_posts") or []
-                )
-                merged_count += 1
-        if merged_into_current:
-            explainability = dict(current.get("explainability") or {})
-            explainability["merged_signal_ids"] = merged_into_current
-            current["explainability"] = explainability
-            _merged_prov = _provenance(current.get("series_posts") or [])
-            current.update(
-                _provenance_fields(
-                    _merged_prov, raw_source_count=int(current.get("source_count") or 0)
-                )
-            )
-        kept.append(current)
-    return kept, merged_count
 
 
 async def _load_semantic_state(
@@ -2072,12 +1964,26 @@ def _signal_results(
             },
         }
         (stable if stage == "stable" else emerging).append(payload)
-    stable, merged_stable = _merge_signal_candidates(stable, cluster_cfg)
-    emerging, merged_emerging = _merge_signal_candidates(emerging, cluster_cfg)
-    for item in stable:
-        item["merged_signal_count"] = merged_stable
-    for item in emerging:
-        item["merged_signal_count"] = merged_emerging
+    # Слияния кандидатов здесь больше нет (удалено 16.08.2026, решение владельца).
+    #
+    # Оно не могло сработать НИ РАЗУ по построению, и это арифметика, а не наблюдение:
+    # `groups` выше — связные компоненты, а компоненты РАЗБИВАЮТ множество кластеров,
+    # поэтому у любых двух кандидатов одного прогона doc_ids и semantic_cluster_ids не
+    # пересекаются никогда. В предикате слияния эти два члена весили 0.28 и 0.22, то
+    # есть ровно половину, и были тождественно нулевыми: потолок 0.50 при пороге 0.72
+    # (0.58 у ai_trends). Единственный достижимый путь — совпадение концептов и
+    # заголовка (0.6/0.45/0.4) — тоже не срабатывал. Факт сходился с формулой:
+    # signals_merged = 0 у всех шести воркспейсов за всю историю наблюдений.
+    #
+    # Цена была не нулевой: цикл O(k²) при k = 5091 emerging у disruption давал ~13 млн
+    # сравнений пар и забирал около 40% времени прогона (профиль 16.08.2026) ради
+    # решения, исход которого предопределён.
+    #
+    # Если слияние понадобится снова, чинить надо не порог, а вход: пока кандидаты
+    # строятся разбиением, любой предикат на пересечении их документов будет
+    # тождественным нулём. Соседний `_merge_semantic_candidates` уровнем ниже работает
+    # именно потому, что у него есть косинус центроидов, а он на дизъюнктных множествах
+    # нулю не равен.
     return stable, emerging
 
 
@@ -2268,8 +2174,6 @@ def _thresholds_from_cfg(cluster_cfg: dict[str, Any]) -> dict[str, Any]:
         # они настраивали, не исполнялась ни разу. См. докстроку _detect_change_points.
         "change_point_min_size": cluster_cfg["change_point_min_size"],
         "change_point_recent_hours": cluster_cfg["change_point_recent_hours"],
-        "signal_merge_similarity_threshold": cluster_cfg["signal_merge_similarity_threshold"],
-        "signal_merge_doc_overlap_threshold": cluster_cfg["signal_merge_doc_overlap_threshold"],
         "persist_weak_signals": cluster_cfg["persist_weak_signals"],
         "weak_signal_min_score": cluster_cfg["weak_signal_min_score"],
         "weak_signal_min_confidence": cluster_cfg["weak_signal_min_confidence"],
@@ -2581,13 +2485,9 @@ async def _run_signal_analysis_core(
         "signals_promoted_to_stable": sum(
             1 for item in stable if item.get("signal_stage") == "stable"
         ),
-        "signals_merged": sum(
-            int(item.get("merged_signal_count") or 0) for item in [*stable, *emerging]
-        ),
         "weak_snapshots_captured": weak_snapshots_captured,
     }
     quality["change_points_detected"] = summary["change_points_detected"]
-    quality["signals_merged"] = summary["signals_merged"]
     return stable, emerging, summary, quality, touched_trends, touched_emerging
 
 
