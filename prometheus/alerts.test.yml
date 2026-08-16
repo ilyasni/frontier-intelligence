@@ -1,0 +1,135 @@
+# Юнит-тесты правил Prometheus (`promtool test rules`).
+#
+# Заведено 16.08.2026 вместе с FrontierSourceDatelessRatioJumped. Причина —
+# правило приёмки, уже принятое в проекте для метрик качества
+# (tests/test_cluster_quality_metrics.py): у любой добавленной проверки обязан
+# существовать вход, при котором она ТРЕВОЖИТ, и вход, при котором МОЛЧИТ.
+#
+# Статические тесты в tests/ проверяют форму правила: что метрику кто-то
+# публикует, что порог не разъехался с текстом, что `for` в границах. Ни один
+# из них не вычисляет выражение — а именно вычисление и разъезжается молча:
+# `- ignoring(window)` без `and on(source_id)` даёт пустой вектор при истинном
+# условии (метки левой и правой части не совпадают), и правило остаётся
+# синтаксически целым, валидным и вечно молчащим. Ровно тот класс, которым
+# 04.08.2026 болел FrontierS3QuotaCritical.
+#
+# Запуск: scripts/verify-alert-rules.sh (промтул живёт в образе prometheus).
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Шесть источников в ОДНОМ прогоне: правило обязано выбрать ровно один.
+  # Раздельные прогоны на каждый случай доказали бы меньше — они не ловят
+  # выражение, которое выбирает всех подряд.
+  - interval: 1m
+    name: "dateless ratio: скачок будит, известное состояние молчит"
+    input_series:
+      # 1. Новый источник, рождённый без дат. Ровно случай
+      #    auto_web_ieee_spectrum_autonomous 05.08.2026: 33 поста подряд,
+      #    published_at NULL у всех, source_runs success. ЕДИНСТВЕННЫЙ, кто
+      #    обязан разбудить. prior=0 — истории у источника нет, и ноль здесь
+      #    утверждение по существу, а не заглушка.
+      - series: 'frontier_source_dateless_ratio{source_id="web_new_scrape",workspace="auto_hmi",source_type="web",window="7d"}'
+        values: '1+0x200'
+      - series: 'frontier_source_dateless_ratio{source_id="web_new_scrape",workspace="auto_hmi",source_type="web",window="prior"}'
+        values: '0+0x200'
+      - series: 'frontier_source_posts_in_window{source_id="web_new_scrape",workspace="auto_hmi",source_type="web",window="7d"}'
+        values: '20+0x200'
+
+      # 2. Известное состояние: источник без дат МЕСЯЦАМИ (web_plusworld — 394
+      #    поста, все без даты, с 29.06). Доля 1.00 и сейчас, и раньше. Это
+      #    открытая развилка пункта 75, а не поломка, и будить по ней нельзя:
+      #    порог на факт держал бы правило firing 46 суток из 46.
+      - series: 'frontier_source_dateless_ratio{source_id="web_grandfathered",workspace="disruption",source_type="web",window="7d"}'
+        values: '1+0x200'
+      - series: 'frontier_source_dateless_ratio{source_id="web_grandfathered",workspace="disruption",source_type="web",window="prior"}'
+        values: '1+0x200'
+      - series: 'frontier_source_posts_in_window{source_id="web_grandfathered",workspace="disruption",source_type="web",window="7d"}'
+        values: '50+0x200'
+
+      # 3. Здоровый источник: даты приходят всегда (rss — 36 пропусков на
+      #    223 899 постов по всей базе).
+      - series: 'frontier_source_dateless_ratio{source_id="rss_healthy",workspace="disruption",source_type="rss",window="7d"}'
+        values: '0+0x200'
+      - series: 'frontier_source_dateless_ratio{source_id="rss_healthy",workspace="disruption",source_type="rss",window="prior"}'
+        values: '0+0x200'
+      - series: 'frontier_source_posts_in_window{source_id="rss_healthy",workspace="disruption",source_type="rss",window="7d"}'
+        values: '500+0x200'
+
+      # 4. Порог знаменателя. Доля 1.00 и скачок с нуля — но постов в окне
+      #    четыре. Без этого условия правило будило бы на одном событии;
+      #    в перемотке за 45 суток такие источники дали бы 11 лишних
+      #    источнико-суток, причём у двух знаменатель — один пост.
+      - series: 'frontier_source_dateless_ratio{source_id="web_tiny",workspace="design",source_type="web",window="7d"}'
+        values: '1+0x200'
+      - series: 'frontier_source_dateless_ratio{source_id="web_tiny",workspace="design",source_type="web",window="prior"}'
+        values: '0+0x200'
+      - series: 'frontier_source_posts_in_window{source_id="web_tiny",workspace="design",source_type="web",window="7d"}'
+        values: '4+0x200'
+
+      # 5. Ворота дельты отдельно от ворот уровня: доля выше половины (0.55),
+      #    но такой она была и раньше (0.50). Это не событие.
+      - series: 'frontier_source_dateless_ratio{source_id="rss_drifting",workspace="ai_trends",source_type="rss",window="7d"}'
+        values: '0.55+0x200'
+      - series: 'frontier_source_dateless_ratio{source_id="rss_drifting",workspace="ai_trends",source_type="rss",window="prior"}'
+        values: '0.5+0x200'
+      - series: 'frontier_source_posts_in_window{source_id="rss_drifting",workspace="ai_trends",source_type="rss",window="7d"}'
+        values: '100+0x200'
+
+      # 6. Ворота уровня отдельно от ворот дельты: скачок большой (0.45 с нуля),
+      #    но половина постов дату всё-таки отдаёт. Селектор жив, ломается что-то
+      #    другое — это не тот отказ, ради которого правило написано.
+      - series: 'frontier_source_dateless_ratio{source_id="web_partial",workspace="design",source_type="web",window="7d"}'
+        values: '0.45+0x200'
+      - series: 'frontier_source_dateless_ratio{source_id="web_partial",workspace="design",source_type="web",window="prior"}'
+        values: '0+0x200'
+      - series: 'frontier_source_posts_in_window{source_id="web_partial",workspace="design",source_type="web",window="7d"}'
+        values: '100+0x200'
+
+    alert_rule_test:
+      # Дебаунс `for: 2h` соблюдается: на 1ч правило ещё pending, ни одного
+      # активного алерта. Проверка не косметическая — она отличает «правило
+      # ждёт» от «правило не сработало вовсе».
+      - eval_time: 1h
+        alertname: FrontierSourceDatelessRatioJumped
+        exp_alerts: []
+
+      # Через 3ч дебаунс пройден. Ровно один алерт из шести источников.
+      - eval_time: 3h
+        alertname: FrontierSourceDatelessRatioJumped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: ingest
+              notify: telegram
+              source_id: web_new_scrape
+              workspace: auto_hmi
+              source_type: web
+            exp_annotations:
+              summary: "Источник web_new_scrape перестал отдавать дату публикации"
+              description: "За последние 7 суток доля постов без published_at у web_new_scrape (auto_hmi, тип web) выше половины, и это скачок на 100% против всей предыдущей истории источника. Такие посты сохраняются и находятся поиском, но выборка кластеризации требует published_at IS NOT NULL — значит весь этот материал не попадёт ни в кластеры, ни в тренды. Проверь date_selector источника в config/sources.yml (перевёрстка сайта ломает селектор молча) либо переведи источник на RSS, как сделано с auto_web_ieee_spectrum_autonomous 16.08.2026."
+
+  # Отдельный прогон на инвариант «ряда prior нет вовсе».
+  #
+  # Экспортёр печатает prior ВСЕГДА, включая ноль. Если эту гарантию потерять
+  # (например «оптимизировать» вывод, пропуская источники без истории), правило
+  # замолчит именно на новом источнике — на том единственном случае, ради
+  # которого оно и написано. Здесь ряда prior нет, и алерта нет: вычитание из
+  # пустого вектора даёт пустоту.
+  #
+  # Проверка нужна затем, чтобы это свойство было записано и видно, а не
+  # обнаружилось через полгода как «алерт был, но не сработал».
+  - interval: 1m
+    name: "без ряда prior правило молчит — гарантия экспортёра обязательна"
+    input_series:
+      - series: 'frontier_source_dateless_ratio{source_id="web_no_prior_series",workspace="auto_hmi",source_type="web",window="7d"}'
+        values: '1+0x200'
+      - series: 'frontier_source_posts_in_window{source_id="web_no_prior_series",workspace="auto_hmi",source_type="web",window="7d"}'
+        values: '20+0x200'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: FrontierSourceDatelessRatioJumped
+        exp_alerts: []

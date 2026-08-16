@@ -128,6 +128,155 @@ emit() {
         printf 'frontier_posts_ingested_7d{workspace="%s"} %s\n' "$ws" "${total:-0}"
     done
 
+    # То же самое по ИСТОЧНИКАМ, долей и в двух окнах (пункт 75 реестра).
+    #
+    # Разбивки по воркспейсу выше недостаточно, и это видно на числах: у
+    # `disruption` без даты 1129 постов из 285 879 — 0.39%, шум. Внутри этих
+    # 0.39% сидят ТРИНАДЦАТЬ источников со 100%: web_plusworld (394 поста, все),
+    # web_ux_journal (252), web_nngroup_articles (103) и далее. Отказ адресный,
+    # значит и метрика обязана быть адресной, иначе он тонет в знаменателе.
+    #
+    # Замер по всей базе 16.08.2026: web 1199 из 1262 (95%), rss 36 из 223 899
+    # (0.02%), api и telegram — ноль. Двадцать один источник даёт хотя бы один
+    # пост без даты, восемнадцать из них — 100%.
+    #
+    # ── Почему два окна, а не порог на факт ──────────────────────────────────
+    # Порог на факт («доля выше половины») сработать-то сработает. Перемотка
+    # предлагаемого условия по реальным данным за 45 суток (created_at как
+    # момент оценки): без сравнения с прошлым правило было бы firing 46 суток
+    # из 46, 116 источнико-суток. Входа, при котором оно молчит, НЕ существует —
+    # ровно болезнь пункта 56, где карантинный алерт OpenRouter висел 6 суток
+    # из 7 на штатном суточном сбросе квоты.
+    #
+    # Поэтому второе окно `prior` — вся история источника ДО начала окна `7d`.
+    # Тревожит не состояние, а СКАЧОК. Та же перемотка того же набора: 18 суток
+    # из 46, 70 источнико-суток, ноль прямо сейчас. Все срабатывания попадают в
+    # два всплеска (02–12.07 и 06–12.08) — обе даты совпадают с включением
+    # партий новых web-источников, то есть правило показывает событие, а не фон.
+    #
+    # ── Два несимметричных решения о нулях ───────────────────────────────────
+    # `prior` печатается ВСЕГДА, и у источника без истории он равен нулю. Иначе
+    # новорождённый источник не даёт пары для вычитания, и правило молчит именно
+    # в том случае, ради которого написано: `auto_web_ieee_spectrum_autonomous`
+    # включили 05.08, он выдал 33 поста подряд без даты, и это ровно тот отказ,
+    # который сейчас разбирается. Ноль здесь — утверждение по существу: «до этой
+    # недели ни одного поста без даты от него не приходило».
+    #
+    # `7d`, наоборот, печатается только при непустом знаменателе. Доля от нуля
+    # постов — не ноль, а отсутствие измерения; напечатанный «0.0» читался бы на
+    # графике как «источник здоров», хотя он просто молчит. Знаменатель при этом
+    # печатается всегда — по нему и отличается «нечего мерить» от «не измеряли».
+    echo '# HELP frontier_source_dateless_ratio Доля постов источника без published_at в окне.'
+    echo '# TYPE frontier_source_dateless_ratio gauge'
+    echo '# HELP frontier_source_posts_in_window Постов источника в окне (знаменатель доли).'
+    echo '# TYPE frontier_source_posts_in_window gauge'
+    docker exec "$PG_CONTAINER" psql -U "${POSTGRES_USER:-frontier}" -d "${POSTGRES_DB:-frontier}" \
+        -At -F'|' -c "
+            WITH src AS (
+                SELECT id, workspace_id, source_type FROM sources WHERE is_enabled
+            ),
+            agg AS (
+                SELECT p.source_id,
+                       count(*) FILTER (WHERE p.created_at >  now() - interval '7 days')
+                           AS recent_n,
+                       count(*) FILTER (WHERE p.created_at >  now() - interval '7 days'
+                                          AND p.published_at IS NULL)
+                           AS recent_null,
+                       count(*) FILTER (WHERE p.created_at <= now() - interval '7 days')
+                           AS prior_n,
+                       count(*) FILTER (WHERE p.created_at <= now() - interval '7 days'
+                                          AND p.published_at IS NULL)
+                           AS prior_null
+                  FROM posts p
+                 GROUP BY p.source_id
+            )
+            SELECT s.id, s.workspace_id, s.source_type,
+                   COALESCE(a.recent_n, 0), COALESCE(a.recent_null, 0),
+                   COALESCE(a.prior_n, 0),  COALESCE(a.prior_null, 0)
+              FROM src s LEFT JOIN agg a ON a.source_id = s.id
+             ORDER BY s.id
+        " </dev/null | while IFS='|' read -r sid ws stype recent_n recent_null prior_n prior_null; do
+        if [ -z "${sid:-}" ]; then
+            continue
+        fi
+        labels="source_id=\"$sid\",workspace=\"$ws\",source_type=\"$stype\""
+        printf 'frontier_source_posts_in_window{%s,window="7d"} %s\n' \
+            "$labels" "${recent_n:-0}"
+        printf 'frontier_source_posts_in_window{%s,window="prior"} %s\n' \
+            "$labels" "${prior_n:-0}"
+        # prior — всегда, включая ноль у источника без истории (см. выше).
+        printf 'frontier_source_dateless_ratio{%s,window="prior"} %s\n' "$labels" \
+            "$(awk -v d="${prior_null:-0}" -v n="${prior_n:-0}" \
+                'BEGIN{printf "%.4f", (n > 0 ? d/n : 0)}')"
+        if [ "${recent_n:-0}" -gt 0 ]; then
+            printf 'frontier_source_dateless_ratio{%s,window="7d"} %s\n' "$labels" \
+                "$(awk -v d="${recent_null:-0}" -v n="$recent_n" 'BEGIN{printf "%.4f", d/n}')"
+        fi
+    done
+
+    # Остальные поля, отсутствие которых так же молча выкидывает пост из аналитики.
+    #
+    # Проверка симметричная к дате публикации: у `_fetch_posts` три предиката, и
+    # спрашивать надо про каждый. Замер по всей базе 16.08.2026 (337 735 постов):
+    #
+    #   • published_at IS NULL ......................... 1235
+    #   • relevance_score IS NULL ......................... 49
+    #   • нет строки в indexing_status ..................... 0
+    #   • embedding_status <> 'done' ПРИ релевантности >=0.6  0 (за 30 суток)
+    #
+    # Последние две строки — важный отрицательный результат. INNER JOIN на
+    # indexing_status выглядит как второй тихий отсев, но не отсеивает ничего:
+    # строка есть у каждого поста. А `embedding_status='dropped'` (20 161 за
+    # 30 суток) совпадает с низкой релевантностью ТОЧНО — ни одного релевантного
+    # поста без эмбеддинга нет. То есть эмбеддинг не самостоятельные ворота, а
+    # следствие релевантности, и отдельная метрика по нему только шумела бы.
+    #
+    # А вот `relevance_score IS NULL` — тот же класс, что пропавшая дата, только
+    # мельче: обогащение упало, оценки нет, `COALESCE(relevance_score,0) >= 0.6`
+    # исключает пост навсегда. Все 49 приходятся на embedding_status error (42)
+    # и pending (7), то есть это осадок неудачных обогащений, а не норма.
+    #
+    # Алерта нет ни на одну из трёх серий, и это осознанно: множества маленькие и
+    # статичные, порог на них был бы выбран из воздуха. Здесь важно, чтобы осадок
+    # был ВИДЕН и рос заметно, а не чтобы будил. Печатается лайфтайм, а не окно:
+    # осадок по построению накапливается, и семисуточное окно показывало бы ноль
+    # ровно тогда, когда накоплено больше всего.
+    echo '# HELP frontier_posts_unanalyzable Посты, навсегда исключённые из выборки кластеризации, по причине.'
+    echo '# TYPE frontier_posts_unanalyzable gauge'
+    docker exec "$PG_CONTAINER" psql -U "${POSTGRES_USER:-frontier}" -d "${POSTGRES_DB:-frontier}" \
+        -At -F'|' -c "
+            WITH ws AS (SELECT id FROM workspaces WHERE is_active),
+            agg AS (
+                SELECT p.workspace_id,
+                       count(*) FILTER (WHERE p.published_at IS NULL)    AS no_date,
+                       count(*) FILTER (WHERE p.relevance_score IS NULL) AS no_relevance,
+                       count(*) FILTER (
+                           WHERE NOT EXISTS (
+                               SELECT 1 FROM indexing_status i WHERE i.post_id = p.id
+                           )
+                       ) AS no_indexing_row
+                  FROM posts p
+                 GROUP BY p.workspace_id
+            )
+            SELECT ws.id, COALESCE(a.no_date, 0), COALESCE(a.no_relevance, 0),
+                   COALESCE(a.no_indexing_row, 0)
+              FROM ws LEFT JOIN agg a ON a.workspace_id = ws.id
+             ORDER BY ws.id
+        " </dev/null | while IFS='|' read -r ws no_date no_relevance no_indexing; do
+        if [ -z "${ws:-}" ]; then
+            continue
+        fi
+        # Ноль печатается ЯВНО по каждой причине: серия, которой нет, неотличима
+        # от «экспортёр до неё не дошёл», а `no_indexing_row` сейчас ноль везде —
+        # и именно его исчезновение из вывода означало бы, что проверять перестали.
+        printf 'frontier_posts_unanalyzable{workspace="%s",reason="no_published_at"} %s\n' \
+            "$ws" "${no_date:-0}"
+        printf 'frontier_posts_unanalyzable{workspace="%s",reason="no_relevance_score"} %s\n' \
+            "$ws" "${no_relevance:-0}"
+        printf 'frontier_posts_unanalyzable{workspace="%s",reason="no_indexing_row"} %s\n' \
+            "$ws" "${no_indexing:-0}"
+    done
+
     # Свежесть ежедневной петли разбора алертов (docs/runbooks/alert-triage-daily.md).
     #
     # Считается по времени записи последнего дайджеста НА СЕРВЕРЕ, а не изнутри самой
