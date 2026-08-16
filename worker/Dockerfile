@@ -21,7 +21,6 @@ RUN pip install --no-cache-dir --timeout 300 \
     boto3==1.34.131 \
     qdrant-client==1.12.0 \
     neo4j==5.23.1 \
-    ruptures==1.1.9 \
     "fastembed==0.8.0" \
     "onnxruntime==1.24.4"
 

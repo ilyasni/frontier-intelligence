@@ -261,10 +261,7 @@ def test_signal_results_produce_stable_and_emerging_layers() -> None:
             "signal_baseline_window_days": 14,
             "signal_velocity_weight": 0.14,
             "signal_acceleration_weight": 0.1,
-            "change_point_method": "window",
-            "change_point_penalty": "auto",
             "change_point_min_size": 2,
-            "change_point_jump": 1,
             "change_point_recent_hours": 48,
             "signal_merge_similarity_threshold": 0.72,
             "signal_merge_doc_overlap_threshold": 0.25,
@@ -291,10 +288,7 @@ def _weak_cluster_cfg(*, persist_weak_signals: bool) -> dict:
         "signal_baseline_window_days": 14,
         "signal_velocity_weight": 0.14,
         "signal_acceleration_weight": 0.1,
-        "change_point_method": "window",
-        "change_point_penalty": "auto",
         "change_point_min_size": 2,
-        "change_point_jump": 1,
         "change_point_recent_hours": 48,
         "signal_merge_similarity_threshold": 0.72,
         "signal_merge_doc_overlap_threshold": 0.25,
@@ -516,10 +510,7 @@ def test_temporal_metrics_capture_recent_rise() -> None:
         {
             "signal_short_window_hours": 24,
             "signal_baseline_window_days": 14,
-            "change_point_method": "window",
-            "change_point_penalty": "auto",
             "change_point_min_size": 2,
-            "change_point_jump": 1,
             "change_point_recent_hours": 48,
         },
     )
@@ -553,16 +544,53 @@ def test_change_point_detector_does_not_false_positive_flat_series() -> None:
     metrics = _detect_change_points(
         series,
         {
-            "change_point_method": "window",
-            "change_point_penalty": "auto",
             "change_point_min_size": 2,
-            "change_point_jump": 1,
             "change_point_recent_hours": 48,
         },
     )
 
     assert metrics["change_point_strength"] == 0.0
     assert metrics["breakpoints"] == []
+
+
+def test_change_point_detector_pins_the_difference_rule() -> None:
+    """Правило детектора закреплено численно, а не «лишь бы не пусто».
+
+    Прежний тест на плоской серии проходил при любом исходе: и когда детектор работал,
+    и когда ветка ruptures падала с AttributeError, и когда её удалили. Поэтому подмена
+    алгоритма три месяца оставалась невидимой. Здесь зафиксировано ровно то, что
+    считает _detect_change_points: |Δdoc_count| >= max(1.5 * mean|Δ|, 1).
+    """
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+    def _series(counts: list[int]) -> list[dict]:
+        span = len(counts)
+        return [
+            {
+                "window_start": now - timedelta(hours=24 * (span - idx)),
+                "window_end": now - timedelta(hours=24 * (span - idx - 1)),
+                "doc_count": count,
+            }
+            for idx, count in enumerate(counts)
+        ]
+
+    cfg = {"change_point_min_size": 2, "change_point_recent_hours": 48}
+
+    # Ступенька: mean|Δ| = 27/5 = 5.4, порог 8.1 — проходит только сам скачок.
+    step = _detect_change_points(_series([3, 3, 3, 30, 30, 30]), cfg)
+    assert step["breakpoints"] == [3]
+    assert step["change_point_strength"] == 0.9
+
+    # Пол в единицу: на почти плоской серии mean|Δ| = 0.25, порог 1.5 * 0.25 = 0.375
+    # проиграл бы константе 1.0 — и движение ровно на один документ становится точкой
+    # разладки. Не выбранное свойство, а унаследованное; при пересмотре порога этот
+    # тест обязан упасть.
+    floor = _detect_change_points(_series([5, 5, 5, 5, 6]), cfg)
+    assert floor["breakpoints"] == [4]
+    assert floor["change_point_strength"] == 0.1667
+
+    # Серия короче max(min_size*2, 4) точек до детектора не доходит вовсе.
+    assert _detect_change_points(_series([1, 40, 1]), cfg)["breakpoints"] == []
 
 
 def test_merge_signal_candidates_merges_neighboring_duplicates() -> None:
@@ -742,10 +770,7 @@ def test_signal_results_can_drop_weak_noise_when_disabled() -> None:
             "signal_baseline_window_days": 14,
             "signal_velocity_weight": 0.14,
             "signal_acceleration_weight": 0.1,
-            "change_point_method": "window",
-            "change_point_penalty": "auto",
             "change_point_min_size": 2,
-            "change_point_jump": 1,
             "change_point_recent_hours": 48,
             "signal_merge_similarity_threshold": 0.72,
             "signal_merge_doc_overlap_threshold": 0.25,
@@ -968,10 +993,7 @@ def test_signal_results_demote_april_fools_cluster_to_weak() -> None:
             "signal_baseline_window_days": 14,
             "signal_velocity_weight": 0.14,
             "signal_acceleration_weight": 0.1,
-            "change_point_method": "window",
-            "change_point_penalty": "auto",
             "change_point_min_size": 2,
-            "change_point_jump": 1,
             "change_point_recent_hours": 48,
             "signal_merge_similarity_threshold": 0.72,
             "signal_merge_doc_overlap_threshold": 0.25,
@@ -1062,10 +1084,7 @@ def test_signal_results_handle_missing_top_terms_in_semantic_payload() -> None:
             "signal_baseline_window_days": 14,
             "signal_velocity_weight": 0.14,
             "signal_acceleration_weight": 0.1,
-            "change_point_method": "window",
-            "change_point_penalty": "auto",
             "change_point_min_size": 2,
-            "change_point_jump": 1,
             "change_point_recent_hours": 48,
             "signal_merge_similarity_threshold": 0.72,
             "signal_merge_doc_overlap_threshold": 0.25,

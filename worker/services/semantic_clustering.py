@@ -34,11 +34,6 @@ from worker.services.clustering_math import (
 from worker.services.missing_signals import run_missing_signals_analysis
 
 try:
-    import ruptures as rpt
-except Exception:  # pragma: no cover - optional local dependency, enabled in worker image
-    rpt = None
-
-try:
     import numpy as np
 except Exception:  # pragma: no cover - provided transitively (fastembed/onnxruntime) in worker/admin images
     np = None
@@ -729,10 +724,7 @@ async def _cluster_settings(session: AsyncSession, workspace_id: str | None) -> 
         "signal_baseline_window_days": int(_cfg(settings.signal_baseline_window_days, 14)),
         "signal_velocity_weight": float(_cfg(settings.signal_velocity_weight, 0.14)),
         "signal_acceleration_weight": float(_cfg(settings.signal_acceleration_weight, 0.1)),
-        "change_point_method": str(_cfg(settings.change_point_method, "window")),
-        "change_point_penalty": _cfg(settings.change_point_penalty, "auto"),
         "change_point_min_size": int(_cfg(settings.change_point_min_size, 2)),
-        "change_point_jump": int(_cfg(settings.change_point_jump, 1)),
         "change_point_recent_hours": int(_cfg(settings.change_point_recent_hours, 48)),
         "signal_merge_similarity_threshold": float(
             _cfg(settings.signal_merge_similarity_threshold, 0.72)
@@ -1179,6 +1171,29 @@ async def _load_series(
 def _detect_change_points(
     series: list[dict[str, Any]], cluster_cfg: dict[str, Any]
 ) -> dict[str, Any]:
+    """Точки разладки по разностям соседних корзин.
+
+    Корзина — точка разладки, если |Δdoc_count| >= max(1.5 * mean|Δ|, 1).
+
+    До 16.08.2026 первой здесь стояла ветка на ruptures (Pelt/Window) с настройками
+    CHANGE_POINT_METHOD / _PENALTY / _JUMP, а этот путь числился запасным. Ветка не
+    исполнилась ни разу — отказов было два, и каждого хватало по отдельности:
+    ruptures ставился только в worker-образ, а обе кластерные задачи идут субпроцессом
+    контейнера admin (scheduler._run_job_subprocess -> admin.backend.manual_jobs), где
+    пакета нет; и даже там, где он есть, rpt.*.fit() получал python-список вместо
+    ndarray и падал с AttributeError — на 282 реальных сериях из 282. Оба отказа молча
+    глотал `except Exception: breakpoints = []`, а _thresholds_from_cfg три месяца писал
+    в cluster_runs.thresholds «window/auto» как параметры прогона.
+
+    Замер перед удалением (16.08.2026): даже если починить и тип, и образ, настроенный
+    метод window нашёл бы точки в 5 сериях из 282 и в 0 из 199 у disruption — состав
+    трендов не изменился бы. Цена была бы +119 МБ (scipy) в admin-образе.
+
+    Порог в один документ не выбирали, он унаследован: на целых doc_count он значит
+    «любое движение на единицу между корзинами — разладка» и срабатывает на 231 серии
+    из 282. Это отдельная развилка (has_recent_change_point гейтит стадию stable и
+    отбор срочных телеграм-алертов), а не то, что чинится сменой библиотеки.
+    """
     if len(series) < max(int(cluster_cfg["change_point_min_size"]) * 2, 4):
         return {
             "breakpoints": [],
@@ -1188,37 +1203,11 @@ def _detect_change_points(
         }
     signal = [float(item["doc_count"]) for item in series]
     breakpoints: list[int] = []
-    if rpt is not None:
-        try:
-            method = str(cluster_cfg["change_point_method"]).lower()
-            min_size = int(cluster_cfg["change_point_min_size"])
-            jump = int(cluster_cfg["change_point_jump"])
-            if method == "pelt":
-                algo = rpt.Pelt(model="l2", min_size=min_size, jump=jump).fit(signal)
-                pen_value = (
-                    max(len(signal) ** 0.5, 2.0)
-                    if str(cluster_cfg["change_point_penalty"]).lower() == "auto"
-                    else float(cluster_cfg["change_point_penalty"])
-                )
-                breakpoints = [idx for idx in algo.predict(pen=pen_value) if idx < len(signal)]
-            else:
-                algo = rpt.Window(width=max(2, min(len(signal) - 1, min_size * 2)), model="l2").fit(
-                    signal
-                )
-                pen_value = (
-                    max(len(signal) ** 0.5, 2.0)
-                    if str(cluster_cfg["change_point_penalty"]).lower() == "auto"
-                    else float(cluster_cfg["change_point_penalty"])
-                )
-                breakpoints = [idx for idx in algo.predict(pen=pen_value) if idx < len(signal)]
-        except Exception:
-            breakpoints = []
-    if not breakpoints:
-        diffs = [signal[idx] - signal[idx - 1] for idx in range(1, len(signal))]
-        if diffs:
-            avg = sum(abs(diff) for diff in diffs) / len(diffs)
-            threshold = max(avg * 1.5, 1.0)
-            breakpoints = [idx for idx, diff in enumerate(diffs, start=1) if abs(diff) >= threshold]
+    diffs = [signal[idx] - signal[idx - 1] for idx in range(1, len(signal))]
+    if diffs:
+        avg = sum(abs(diff) for diff in diffs) / len(diffs)
+        threshold = max(avg * 1.5, 1.0)
+        breakpoints = [idx for idx, diff in enumerate(diffs, start=1) if abs(diff) >= threshold]
     last_breakpoint_at = series[breakpoints[-1]]["window_end"] if breakpoints else None
     prev = signal[breakpoints[-1] - 1] if breakpoints and breakpoints[-1] - 1 >= 0 else signal[0]
     current = signal[breakpoints[-1]] if breakpoints else signal[-1]
@@ -2178,8 +2167,10 @@ def _thresholds_from_cfg(cluster_cfg: dict[str, Any]) -> dict[str, Any]:
         "signal_baseline_window_days": cluster_cfg["signal_baseline_window_days"],
         "signal_velocity_weight": cluster_cfg["signal_velocity_weight"],
         "signal_acceleration_weight": cluster_cfg["signal_acceleration_weight"],
-        "change_point_method": cluster_cfg["change_point_method"],
-        "change_point_penalty": cluster_cfg["change_point_penalty"],
+        # change_point_method / _penalty отсюда убраны 16.08.2026: они записывались в
+        # cluster_runs.thresholds как параметры прогона, хотя ветка ruptures, которую
+        # они настраивали, не исполнялась ни разу. См. докстроку _detect_change_points.
+        "change_point_min_size": cluster_cfg["change_point_min_size"],
         "change_point_recent_hours": cluster_cfg["change_point_recent_hours"],
         "signal_merge_similarity_threshold": cluster_cfg["signal_merge_similarity_threshold"],
         "signal_merge_doc_overlap_threshold": cluster_cfg["signal_merge_doc_overlap_threshold"],

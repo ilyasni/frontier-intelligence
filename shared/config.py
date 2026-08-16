@@ -597,10 +597,18 @@ class Settings(BaseSettings):
     signal_baseline_window_days: int = Field(14, alias="SIGNAL_BASELINE_WINDOW_DAYS")
     signal_velocity_weight: float = Field(0.14, alias="SIGNAL_VELOCITY_WEIGHT")
     signal_acceleration_weight: float = Field(0.1, alias="SIGNAL_ACCELERATION_WEIGHT")
-    change_point_method: str = Field("window", alias="CHANGE_POINT_METHOD")
-    change_point_penalty: str = Field("auto", alias="CHANGE_POINT_PENALTY")
+    # Точки разладки. CHANGE_POINT_METHOD / _PENALTY / _JUMP отсюда убраны 16.08.2026:
+    # они кормили ветку ruptures, которая не исполнилась ни разу ни в одном образе.
+    # Отказов было два, и каждого хватало по отдельности — ruptures стоял только в
+    # worker-образе, а задачи идут субпроцессом admin; и даже там rpt.*.fit() получал
+    # python-список вместо ndarray и падал с AttributeError на всех 282 реальных сериях.
+    # `except Exception` глотал это молча, а _thresholds_from_cfg три месяца писал в
+    # cluster_runs.thresholds «window/auto» как параметры прогона. Детектор всегда был
+    # один — _detect_change_points, разностный. См. его докстроку.
+    #
+    # Оставшиеся две настройки живые: min_size задаёт минимальную длину серии
+    # (max(min_size*2, 4) точек), recent_hours — окно свежести для has_recent_change_point.
     change_point_min_size: int = Field(2, alias="CHANGE_POINT_MIN_SIZE")
-    change_point_jump: int = Field(1, alias="CHANGE_POINT_JUMP")
     change_point_recent_hours: int = Field(48, alias="CHANGE_POINT_RECENT_HOURS")
     signal_merge_similarity_threshold: float = Field(0.72, alias="SIGNAL_MERGE_SIMILARITY_THRESHOLD")
     signal_merge_doc_overlap_threshold: float = Field(0.25, alias="SIGNAL_MERGE_DOC_OVERLAP_THRESHOLD")
