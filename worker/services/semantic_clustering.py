@@ -18,6 +18,7 @@ from shared.provenance import (
     ProvenancePost,
     compute_independence_score,
     echo_edges,
+    exact_artifact_groups,
     independence_metrics,
 )
 from worker.integrations.qdrant_client import QdrantFrontierClient
@@ -53,6 +54,13 @@ _COMPONENT_COSINE_EPS = 1e-9
 # materialized ~8 dense n×n arrays and memcg-OOM-killed signal analysis on the largest
 # workspace once n crossed a few thousand semantic clusters.
 _COMPONENT_BLOCK_BYTES = 32 * 1024 * 1024
+
+# Smallest labelled category that may produce an accuracy. The shipped set until
+# 2026-08-16 held ONE pair per category, so each accuracy could only ever read 0.0 or
+# 1.0 — a number with no middle is not a measurement. Below this floor the pair count
+# is still recorded (so the gap is visible) but no accuracy is emitted: a 95% interval
+# on a rate from n<30 is wider than ±18pp, which no threshold could act on.
+_GOLDEN_MIN_PAIRS = 30
 
 
 @dataclass
@@ -1323,27 +1331,47 @@ def _merge_signal_candidates(
     max_gap_hours = int(cluster_cfg.get("trend_cluster_max_gap_hours", 24 * 30))
     merged_count = 0
     items = sorted(items, key=lambda item: item["signal_score"], reverse=True)
+
+    # Per-item views built once. The inner loop below is O(k²) — k was 5091 emerging
+    # signals on workspace disruption, i.e. ~13M pairs — and it used to rebuild all four
+    # of these on every pair, re-tokenizing the same titles with a regex 13M times. That
+    # is the bulk of a 20-minute run. Hoisting is exact, not an approximation: each view
+    # depends only on its own item, and an item is never mutated before it is read as
+    # `other` (mutations happen to `current`, which always sits left of the inner range).
+    views = [
+        {
+            "docs": set(item.get("doc_ids") or []),
+            "semantic": set(item.get("semantic_cluster_ids") or []),
+            "concepts": set(item.get("keywords") or []),
+            "terms": set(_terms(item.get("title") or "")),
+        }
+        for item in items
+    ]
+
     kept: list[dict[str, Any]] = []
     absorbed_ids: set[str] = set()
     for idx, current in enumerate(items):
         if current.get("existing_id") in absorbed_ids or current.get("signal_id") in absorbed_ids:
             continue
-        current_docs = set(current.get("doc_ids") or [])
-        current_semantic = set(current.get("semantic_cluster_ids") or [])
-        current_terms = set(_terms(current.get("title") or ""))
-        current_concepts = set(current.get("keywords") or [])
+        current_view = views[idx]
+        current_docs = current_view["docs"]
+        current_semantic = current_view["semantic"]
+        current_terms = current_view["terms"]
+        current_concepts = current_view["concepts"]
         merged_into_current: list[str] = []
-        for other in items[idx + 1 :]:
+        # Indexed rather than sliced: `items[idx + 1:]` copied the tail on every outer
+        # iteration, another ~13M element copies on top of the comparisons.
+        for other_idx in range(idx + 1, len(items)):
+            other = items[other_idx]
             other_id = other.get("existing_id") or other.get("signal_id")
             if other_id in absorbed_ids or other.get("workspace_id") != current.get("workspace_id"):
                 continue
-            other_docs = set(other.get("doc_ids") or [])
+            other_view = views[other_idx]
+            other_docs = other_view["docs"]
             doc_overlap = len(current_docs & other_docs) / max(len(current_docs | other_docs), 1)
-            semantic_overlap = _jaccard(
-                current_semantic, set(other.get("semantic_cluster_ids") or [])
-            )
-            concept_overlap = _jaccard(current_concepts, set(other.get("keywords") or []))
-            title_overlap = _jaccard(current_terms, set(_terms(other.get("title") or "")))
+            semantic_overlap = _jaccard(current_semantic, other_view["semantic"])
+            concept_overlap = _jaccard(current_concepts, other_view["concepts"])
+            title_overlap = _jaccard(current_terms, other_view["terms"])
             current_first = current.get("first_seen_at")
             current_last = current.get("last_seen_at")
             other_first = other.get("first_seen_at")
@@ -2137,37 +2165,162 @@ async def _lifecycle_updates(
 
 
 def _golden_metrics(semantic_map: dict[str, str], trend_map: dict[str, str]) -> dict[str, Any]:
+    """Accuracies against the labelled set, or nothing at all if it is unreadable.
+
+    The default path moved out of ``tests/`` on 2026-08-16. Prod images ship no tests/
+    directory — ``/app/tests`` does not exist in the admin image at all — so the old
+    default made ``path.exists()`` False on every production run and this function
+    returned ``{}`` silently. The three accuracies were therefore absent from every row
+    of ``cluster_runs.metrics`` ever written, and nothing said so. ``config/`` is copied
+    into both the admin and the worker image, so the set now ships with the code.
+
+    Every failure below is logged. A metric that cannot be computed must say so — a
+    silent ``{}`` is indistinguishable from a healthy run, which is how this went
+    unnoticed for months.
+    """
     path = Path(
         _cfg(
             get_settings().cluster_evaluation_fixture_path,
-            "tests/fixtures/cluster_analysis_golden_set.json",
+            "config/cluster_golden_set.json",
         )
     )
     if not path.exists():
+        logger.warning(
+            "golden set not found at %s; same_story/different_story/same_trend "
+            "accuracies will be absent from cluster_runs.metrics",
+            path,
+        )
         return {}
     try:
         fixture = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        logger.exception("golden set at %s is unreadable; accuracies will be absent", path)
         return {}
-    same_story = fixture.get("same_story", [])
-    different_story = fixture.get("different_story", [])
-    same_trend = fixture.get("same_trend", [])
+    # A pair counts only when BOTH of its ids exist in this run's map. Without that
+    # guard the set silently scores itself: the labelled ids belong to one workspace,
+    # every other workspace resolves both sides to None, and `None == None` is True —
+    # so a design run would have reported 100% on disruption's pairs while measuring
+    # nothing at all. different_story fails the same way in the opposite direction
+    # (None != None is False, so every unrelated pair reads as an error).
+    scored = {
+        "same_story_accuracy": (
+            fixture.get("same_story", []),
+            semantic_map,
+            lambda x, y: x == y,
+        ),
+        "different_story_accuracy": (
+            fixture.get("different_story", []),
+            semantic_map,
+            lambda x, y: x != y,
+        ),
+        "same_trend_accuracy": (
+            fixture.get("same_trend", []),
+            trend_map,
+            lambda x, y: x == y,
+        ),
+    }
+    out: dict[str, Any] = {}
+    for name, (pairs, lookup, correct) in scored.items():
+        resolved = [(lookup[a], lookup[b]) for a, b in pairs if a in lookup and b in lookup]
+        out[f"{name.removesuffix('_accuracy')}_pairs"] = len(resolved)
+        if len(resolved) < _GOLDEN_MIN_PAIRS:
+            logger.warning(
+                "golden set category for %s resolves to %d of %d pairs in this run "
+                "(< %d); accuracy not emitted",
+                name,
+                len(resolved),
+                len(pairs),
+                _GOLDEN_MIN_PAIRS,
+            )
+            continue
+        out[name] = round(sum(1 for x, y in resolved if correct(x, y)) / len(resolved), 4)
+    return out
+
+
+def _artifact_split_metrics(
+    semantic: list[dict[str, Any]],
+    stable: list[dict[str, Any]],
+    emerging: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Over-splitting, measured against provenance instead of against a threshold.
+
+    The question "was one story torn apart?" needs a definition of *one story* that
+    does not come from the clustering itself, or the metric only restates its own
+    input. Provenance supplies one: posts sharing a canonical URL, or an identical
+    headline within 72h, are the same underlying artifact — established by identity,
+    not by cosine. So if they land in two clusters, that is over-splitting by
+    construction, with no labelled set required.
+
+    Why this is not the trap ``over_merge_rate`` fell into. At the trend stage the
+    grouping is the transitive closure of "cosine >= threshold" (``_components``), and
+    its only escape hatch — ``trend_cluster_max_gap_hours`` — is 336-720h against an
+    archive window of 96-336h, so it can never bind. Any metric phrased in terms of
+    that same cosine is therefore pinned at a constant. Artifact identity is
+    independent of it, and can move.
+
+    Measured 2026-08-16 over 6204 real artifact groups (73172 clustered posts):
+    cluster-level 0.1122 overall, ranging 0.0413 (ai_trends) to 0.5072
+    (ai_products_media); trend-level 0.0761, ranging 0.0 (ai_research) to 0.2600
+    (design). Both vary by a factor of ten across workspaces, which is what a
+    quality metric has to do to be worth reading.
+
+    The counts ship alongside the rates on purpose: a rate of 0.0 over an empty
+    denominator means "nothing to measure", not "nothing is broken", and the whole
+    class of bug being fixed here is the two being indistinguishable.
+    """
+    posts = [
+        ProvenancePost(
+            post_id=post.post_id,
+            source_id=post.source_id,
+            published_at=post.published_at,
+            url=post.url,
+            title=post.title,
+        )
+        for item in semantic
+        for post in (item.get("posts") or [])
+    ]
+    groups = exact_artifact_groups(posts)
+
+    cluster_of = {
+        post_id: item["cluster_id"]
+        for item in semantic
+        for post_id in item.get("doc_ids") or []
+    }
+    signal_of = {
+        semantic_id: item.get("signal_id") or ""
+        for item in [*stable, *emerging]
+        for semantic_id in item.get("semantic_cluster_ids") or []
+    }
+
+    split_clusters = 0
+    trend_eligible = 0
+    split_trends = 0
+    for group in groups:
+        clusters = {cluster_of.get(post.post_id) for post in group}
+        clusters.discard(None)
+        if len(clusters) > 1:
+            split_clusters += 1
+        # Only artifacts with at least two posts actually promoted into a signal can
+        # show trend-level fragmentation; the rest would count un-promoted posts as
+        # splits, which is coverage, not splitting.
+        signals = {signal_of.get(cluster) for cluster in clusters}
+        signals.discard(None)
+        signals.discard("")
+        promoted = sum(
+            1
+            for post in group
+            if signal_of.get(cluster_of.get(post.post_id) or "")
+        )
+        if promoted >= 2:
+            trend_eligible += 1
+            if len(signals) > 1:
+                split_trends += 1
+
     return {
-        "same_story_accuracy": round(
-            sum(1 for a, b in same_story if semantic_map.get(a) == semantic_map.get(b))
-            / max(len(same_story), 1),
-            4,
-        ),
-        "different_story_accuracy": round(
-            sum(1 for a, b in different_story if semantic_map.get(a) != semantic_map.get(b))
-            / max(len(different_story), 1),
-            4,
-        ),
-        "same_trend_accuracy": round(
-            sum(1 for a, b in same_trend if trend_map.get(a) == trend_map.get(b))
-            / max(len(same_trend), 1),
-            4,
-        ),
+        "same_artifact_groups": len(groups),
+        "same_artifact_cluster_split_rate": round(split_clusters / max(len(groups), 1), 4),
+        "same_artifact_trend_groups": trend_eligible,
+        "same_artifact_trend_split_rate": round(split_trends / max(trend_eligible, 1), 4),
     }
 
 
@@ -2179,9 +2332,9 @@ def _metrics(
 ) -> dict[str, Any]:
     """Quality numbers for one run, stored in cluster_runs.metrics.
 
-    A metric earns its place only if some input makes it alarm. Two failed that test
-    and were dropped on 2026-08-16, measured against 9520 live clusters of workspace
-    disruption:
+    A metric earns its place only if some input makes it alarm. Three failed that test
+    and were dropped on 2026-08-16, measured against live clusters of all six
+    workspaces:
 
     * ``semantic_cluster_purity`` — mean coherence. A one-post cluster's centroid *is*
       its only vector, so its coherence is exactly 1.0 (all 7837 singletons measured at
@@ -2189,22 +2342,33 @@ def _metrics(
       out at 0.9353. The floor is set by the threshold itself, so the mean cannot go low.
     * ``over_merge_rate`` — share below ``dedupe_threshold - 0.08`` (0.84). Clusters are
       built only from pairs at cosine >= 0.92, and 0 of 9520 landed under that line.
+    * ``empty_low_evidence_cluster_rate`` — failed the mirror-image test: it could never
+      read calm. Evidence is capped by construction (top-5 per cluster, [:2] per member,
+      [:6] per signal) while most groups are two singleton clusters, so it measured
+      0.83-0.99 across every workspace at both levels — 0.8696 over semantic clusters
+      and 0.8335 over emerging signals for disruption, 0.9972/0.9851 for ai_trends.
+      Restricting it to signals, the one scope where it is not a restatement of
+      ``singleton_cluster_share``, left it just as saturated. A number pinned near 1.0
+      carries no more information than one pinned at 0.0.
 
     ``singleton_cluster_share`` was named ``over_split_rate`` until the same date. It
     counts one-post clusters, but the semantic stage is near-duplicate dedup: a post
     with no near-twin *must* end up alone, so a high value is the design working rather
     than a fault. It also tracks volume, not quality — the largest workspace scores best
-    (disruption 0.82) and the smallest worst (auto_hmi 0.92, ai_trends 0.97). Measuring
-    real over-splitting needs the trend level plus a labelled set; see _golden_metrics,
-    which returns {} in production because its fixture lives under tests/ and prod
-    images ship no tests/ at all.
+    (disruption 0.87) and the smallest worst (ai_trends 0.96, ai_products_media 0.98).
+    Real over-splitting is measured by the two ``same_artifact_*_split_rate`` metrics
+    instead; see _artifact_split_metrics.
 
-    ``empty_low_evidence_cluster_rate`` and ``source_monoculture_rate`` largely restate
-    that same fact: evidence is the cluster's top-5 posts, so a one-post cluster always
-    falls under a threshold of 2, and a one-post cluster is single-source by definition
-    (the two differ by 104 clusters out of 9520). Read them as one signal, not three.
+    ``source_monoculture_rate`` used to run over every cluster, where it was the same
+    fact a third time: a one-post cluster is single-source by definition, so it tracked
+    ``singleton_cluster_share`` to within 104 clusters out of 9520. Its denominator is
+    now multi-post clusters only, which turns it into the question actually worth
+    asking — of the clusters that did gather several posts, how many are still one
+    outlet talking to itself. That version ranges 0.0651 (disruption) to 0.8190
+    (design) instead of sitting flat at 0.87-0.99.
     """
     semantic_total = max(len(semantic), 1)
+    multi_post = [item for item in semantic if item["post_count"] > 1]
     quality = {
         "singleton_cluster_share": round(
             sum(1 for item in semantic if item["post_count"] == 1) / semantic_total, 4
@@ -2217,18 +2381,12 @@ def _metrics(
             / max(len(stable), 1),
             4,
         ),
-        "empty_low_evidence_cluster_rate": round(
-            sum(
-                1
-                for item in [*semantic, *stable, *emerging]
-                if len(item["evidence"]) < int(cluster_cfg["cluster_min_evidence_count"])
-            )
-            / max(len(semantic) + len(stable) + len(emerging), 1),
+        "multi_post_clusters": len(multi_post),
+        "source_monoculture_rate": round(
+            sum(1 for item in multi_post if item["source_count"] <= 1) / max(len(multi_post), 1),
             4,
         ),
-        "source_monoculture_rate": round(
-            sum(1 for item in semantic if item["source_count"] <= 1) / semantic_total, 4
-        ),
+        **_artifact_split_metrics(semantic, stable, emerging),
     }
     semantic_map = {doc_id: item["cluster_id"] for item in semantic for doc_id in item["doc_ids"]}
     trend_map = {

@@ -42,6 +42,17 @@ try:
         "Neo4j concept-graph health metrics (RSI contour D).",
         ["service", "workspace", "metric"],
     )
+    # Качество кластеризации из cluster_runs.metrics. До 16.08.2026 НИ ОДНА метрика
+    # качества не покидала PostgreSQL: ни одного ряда в Prometheus, ни одного алерта
+    # (поиск по .yml/.yaml/.json давал ноль совпадений), поэтому деградация разбора
+    # была видна только тому, кто вручную читал JSON последнего прогона.
+    # Одно имя с меткой `metric` — как у двух гейджей выше: ~6 воркспейсов x ~10
+    # метрик = 60 рядов, а новая метрика не требует нового имени.
+    CLUSTER_QUALITY_GAUGE = Gauge(
+        "frontier_cluster_quality",
+        "Cluster-quality metrics of the last clustering run per workspace.",
+        ["service", "workspace", "metric"],
+    )
     # Исход каждого прогона джоба планировщика. Три метрики выше выставляются
     # ВНУТРИ дочернего процесса (admin.backend.manual_jobs), у которого свой
     # REGISTRY и никакого HTTP-сервера, — поэтому в экспозиции admin они
@@ -449,6 +460,7 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     NOVELTY_JUDGE_TOTAL = None
     RELEVANCE_AUDIT_GAUGE = None
     GRAPH_HEALTH_GAUGE = None
+    CLUSTER_QUALITY_GAUGE = None
     ADMIN_JOB_RUNS_TOTAL = None
     PIPELINE_STAGE_TOTAL = None
     CRAWL_OUTCOMES_TOTAL = None
@@ -564,6 +576,11 @@ def set_relevance_audit_metric(service: str, workspace: str, metric: str, value:
 def set_graph_health_metric(service: str, workspace: str, metric: str, value: float) -> None:
     if GRAPH_HEALTH_GAUGE is not None:
         GRAPH_HEALTH_GAUGE.labels(service=service, workspace=workspace, metric=metric).set(value)
+
+
+def set_cluster_quality_metric(service: str, workspace: str, metric: str, value: float) -> None:
+    if CLUSTER_QUALITY_GAUGE is not None:
+        CLUSTER_QUALITY_GAUGE.labels(service=service, workspace=workspace, metric=metric).set(value)
 
 
 def note_admin_job_run(job: str, outcome: str, *, service: str = "admin") -> None:
