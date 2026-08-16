@@ -578,11 +578,15 @@ async def _create_run(
     stage: str = "full",
 ) -> str:
     run_id = _digest(f"{workspace_id or 'all'}|{datetime.now(UTC).isoformat()}", "cluster-run")
+    # clock_timestamp(), а не NOW(): оба конца замера обязаны быть временем
+    # ВЫПОЛНЕНИЯ оператора. Полное объяснение — в докстроке _finish_run.
     await session.execute(
         text(
             """
             INSERT INTO cluster_runs (id, workspace_id, stage, status, thresholds, summary, metrics, started_at, created_at, updated_at)
-            VALUES (:id, :workspace_id, :stage, 'running', CAST(:thresholds AS jsonb), '{}'::jsonb, '{}'::jsonb, NOW(), NOW(), NOW())
+            VALUES (:id, :workspace_id, :stage, 'running',
+                    CAST(:thresholds AS jsonb), '{}'::jsonb, '{}'::jsonb,
+                    clock_timestamp(), clock_timestamp(), clock_timestamp())
             """
         ),
         {
@@ -602,12 +606,40 @@ async def _finish_run(
     summary: dict[str, Any],
     metrics: dict[str, Any],
 ) -> None:
+    """Закрыть строку прогона. Время — clock_timestamp(), а не NOW().
+
+    NOW() в PostgreSQL — синоним transaction_timestamp(): он возвращает момент
+    НАЧАЛА транзакции и не меняется до её конца, сколько бы та ни длилась.
+    Прогон делает всю работу внутри одной длинной транзакции (для
+    signal-analysis она открывается на первом запросе _load_semantic_state,
+    сразу после commit'а _create_run), поэтому finished_at = NOW() записывал
+    время, когда транзакция ТОЛЬКО открылась, — то есть почти started_at.
+
+    Замер 16.08.2026: прогон signal-analysis у disruption шёл ~13 минут
+    (процесс в контейнере admin: 13:27 → ~13:40), а в таблице
+    finished_at - started_at = 00:00:00.009907. У пяти последних успешных
+    прогонов — 0.0099 / 0.0134 / 0.0117 / 0.0090 / 0.0065 с. updated_at
+    обходным путём не был: он писался тем же NOW() в том же UPDATE и совпадал
+    с finished_at до микросекунды.
+
+    У stage='full' цифра была не нелепой, а правдоподобной (например 00:09:28)
+    и оттого опаснее: там есть промежуточный commit после _replace_signal_series,
+    транзакция с _finish_run открывалась позже, и в замер попадала только фаза
+    семантической кластеризации — ровно без той фазы signal-analysis, которая
+    и падала по OOM.
+
+    Что считается теперь: от INSERT'а строки до этого UPDATE'а. Индексация
+    трендов в Qdrant идёт уже после commit'а и в длительность не входит.
+
+    Строки, закрытые до 16.08.2026, неисправимы — они помечены
+    summary.duration_unmeasured (миграция 20260816_cluster_runs_duration.sql).
+    """
     await session.execute(
         text(
             """
             UPDATE cluster_runs
             SET status = :status, summary = CAST(:summary AS jsonb), metrics = CAST(:metrics AS jsonb),
-                finished_at = NOW(), updated_at = NOW()
+                finished_at = clock_timestamp(), updated_at = clock_timestamp()
             WHERE id = :id
             """
         ),

@@ -385,13 +385,18 @@ async def _claim_alert(
 
 
 async def _mark_alert_sent(session: AsyncSession, alert_id: str) -> None:
+    # sent_at — момент отправки, поэтому clock_timestamp(), а не NOW(). Сегодня
+    # они совпали бы: между commit'ом после _claim_alert и этим UPDATE'ом запросов
+    # к БД нет, значит транзакция открывается на нём же. Но это свойство вызывающего
+    # цикла, а не оператора: один SELECT, вставленный перед отправкой, сдвинул бы
+    # sent_at на время самой отправки назад — молча.
     await session.execute(
         text(
             """
             UPDATE trend_alerts
             SET status = 'sent',
-                sent_at = NOW(),
-                updated_at = NOW(),
+                sent_at = clock_timestamp(),
+                updated_at = clock_timestamp(),
                 last_error = NULL
             WHERE id = :id
             """

@@ -394,8 +394,8 @@ async def reconcile_running_manual_jobs() -> None:
                 UPDATE admin_manual_jobs
                 SET status = 'error',
                     error = COALESCE(error, 'interrupted_by_admin_restart'),
-                    finished_at = NOW(),
-                    updated_at = NOW()
+                    finished_at = clock_timestamp(),
+                    updated_at = clock_timestamp()
                 WHERE status = 'running'
                 """
             )
@@ -637,8 +637,8 @@ async def launch_manual_job(
                         SET status = :status,
                             summary = CAST(:summary AS jsonb),
                             result = CAST(:result AS jsonb),
-                            finished_at = NOW(),
-                            updated_at = NOW()
+                            finished_at = clock_timestamp(),
+                            updated_at = clock_timestamp()
                         WHERE id = :id
                         """
                     ),
@@ -664,8 +664,8 @@ async def launch_manual_job(
                         SET status = 'error',
                             error = :error,
                             summary = CAST(:summary AS jsonb),
-                            finished_at = NOW(),
-                            updated_at = NOW()
+                            finished_at = clock_timestamp(),
+                            updated_at = clock_timestamp()
                         WHERE id = :id
                         """
                     ),

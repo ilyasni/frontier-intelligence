@@ -261,6 +261,10 @@ CREATE TABLE IF NOT EXISTS signal_time_series (
 CREATE INDEX IF NOT EXISTS idx_signal_time_series_entity
     ON signal_time_series(workspace_id, entity_kind, entity_id, window_start DESC);
 
+-- started_at/finished_at — clock_timestamp(), а не NOW(). NOW() = момент начала
+-- транзакции, а прогон делает всю работу внутри одной длинной транзакции, поэтому
+-- на NOW() разность этих колонок была не длительностью, а нулём (16.08.2026:
+-- 13 минут работы против 0.0099 с в таблице). См. 20260816_cluster_runs_duration.sql.
 CREATE TABLE IF NOT EXISTS cluster_runs (
     id TEXT PRIMARY KEY,
     workspace_id TEXT,
@@ -269,7 +273,7 @@ CREATE TABLE IF NOT EXISTS cluster_runs (
     thresholds JSONB DEFAULT '{}',
     summary JSONB DEFAULT '{}',
     metrics JSONB DEFAULT '{}',
-    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()

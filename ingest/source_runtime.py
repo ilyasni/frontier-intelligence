@@ -89,13 +89,19 @@ class SourceRuntimeStore:
             )
 
     async def start_run(self, source_id: str) -> str:
+        # Времена прогона пишутся clock_timestamp(), а не NOW(). Сейчас разницы нет:
+        # asyncpg-вызовы ниже идут в autocommit, каждый оператор — своя транзакция,
+        # и NOW() совпал бы с моментом выполнения. Но эта правильность держится на
+        # неявном свойстве вызывающего кода: стоит обернуть пару операторов в одну
+        # транзакцию — и NOW() молча замрёт на её начале. Ровно так длительность
+        # cluster_runs оказалась нулевой (worker/services/semantic_clustering.py:_finish_run).
         run_id = str(uuid.uuid4())
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE source_runs
-                SET finished_at = NOW(),
+                SET finished_at = clock_timestamp(),
                     status = 'error',
                     error_text = COALESCE(
                         NULLIF(error_text, ''),
@@ -111,7 +117,7 @@ class SourceRuntimeStore:
                 INSERT INTO source_runs (
                     id, source_id, started_at, status, fetched_count, emitted_count
                 )
-                VALUES ($1, $2, NOW(), 'running', 0, 0)
+                VALUES ($1, $2, clock_timestamp(), 'running', 0, 0)
                 """,
                 run_id,
                 source_id,
@@ -124,7 +130,7 @@ class SourceRuntimeStore:
             return await conn.execute(
                 """
                 UPDATE source_runs
-                SET finished_at = NOW(),
+                SET finished_at = clock_timestamp(),
                     status = 'error',
                     error_text = COALESCE(
                         NULLIF(error_text, ''),
@@ -150,7 +156,7 @@ class SourceRuntimeStore:
             await conn.execute(
                 """
                 UPDATE source_runs
-                SET finished_at = NOW(),
+                SET finished_at = clock_timestamp(),
                     status = $2,
                     fetched_count = $3,
                     emitted_count = $4,
