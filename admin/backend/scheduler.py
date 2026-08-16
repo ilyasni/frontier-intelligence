@@ -30,6 +30,7 @@ from shared.config import get_settings
 from shared.metrics import (
     note_admin_job_run,
     note_novelty_judge,
+    set_cluster_quality_metric,
     set_graph_health_metric,
     set_relevance_audit_metric,
 )
@@ -251,11 +252,31 @@ def _republish_graph_health(item: dict[str, Any]) -> None:
             logger.debug("graph_health metric %s is not numeric: %r", metric, value)
 
 
+def _republish_cluster_quality(item: dict[str, Any]) -> None:
+    """Вынести cluster_runs.metrics последнего прогона в экспозицию admin.
+
+    До 16.08.2026 качество кластеризации жило только в JSONB-колонке: ни метрик, ни
+    алертов. Оба джоба возвращают `quality_metrics` в том же виде, в каком он лёг в
+    базу, поэтому перепубликация — это просто раскладка словаря по меткам.
+    """
+    workspace = str(item.get("workspace_id") or "")
+    quality = item.get("quality_metrics")
+    if not workspace or not isinstance(quality, dict):
+        return
+    for metric, value in quality.items():
+        try:
+            set_cluster_quality_metric("admin", workspace, str(metric), float(value))
+        except (TypeError, ValueError):
+            logger.debug("cluster_quality metric %s is not numeric: %r", metric, value)
+
+
 _CHILD_METRIC_REPUBLISHERS = {
     "run_novelty_judge": _republish_novelty_judge,
     "run_relevance_audit": _republish_relevance_audit,
     "run_graph_maintenance": _republish_graph_health,
     "run_graph_resolution": _republish_graph_health,
+    "run_semantic_clusters": _republish_cluster_quality,
+    "run_signal_analysis": _republish_cluster_quality,
 }
 
 

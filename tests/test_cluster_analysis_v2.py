@@ -1,5 +1,9 @@
+import json
+import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+from worker.services import semantic_clustering as cluster_module
 from worker.services.semantic_clustering import (
     ClusterPost,
     _april_fools_penalty,
@@ -454,15 +458,101 @@ def test_trend_cluster_index_points_are_qdrant_payload_ready() -> None:
     assert "AI browser agent" in payload["index_text"]
 
 
-def test_golden_metrics_reads_fixture() -> None:
-    metrics = _golden_metrics(
-        {"post-1": "cluster-a", "post-2": "cluster-a", "post-3": "cluster-b"},
-        {"semantic-1": "trend-a", "semantic-2": "trend-a"},
+def _write_golden_set(tmp_path, monkeypatch, pairs_per_category: int):
+    """Point _golden_metrics at a generated set of a chosen size."""
+    fixture = {
+        "same_story": [[f"s{i}a", f"s{i}b"] for i in range(pairs_per_category)],
+        "different_story": [[f"d{i}a", f"d{i}b"] for i in range(pairs_per_category)],
+        "same_trend": [[f"t{i}a", f"t{i}b"] for i in range(pairs_per_category)],
+    }
+    path = tmp_path / "golden.json"
+    path.write_text(json.dumps(fixture), encoding="utf-8")
+    monkeypatch.setattr(
+        cluster_module,
+        "get_settings",
+        lambda: SimpleNamespace(cluster_evaluation_fixture_path=str(path)),
     )
+    return fixture
+
+
+def test_golden_metrics_scores_a_set_that_is_large_enough(tmp_path, monkeypatch) -> None:
+    fixture = _write_golden_set(tmp_path, monkeypatch, pairs_per_category=30)
+    # Every same_story pair clustered together, every different_story pair apart,
+    # every same_trend pair in one trend => all three accuracies are 1.0.
+    semantic_map = {}
+    for a, b in fixture["same_story"]:
+        semantic_map[a] = semantic_map[b] = f"cluster-{a}"
+    for i, (a, b) in enumerate(fixture["different_story"]):
+        semantic_map[a], semantic_map[b] = f"cluster-{i}-a", f"cluster-{i}-b"
+    trend_map = {}
+    for a, b in fixture["same_trend"]:
+        trend_map[a] = trend_map[b] = f"trend-{a}"
+
+    metrics = _golden_metrics(semantic_map, trend_map)
 
     assert metrics["same_story_accuracy"] == 1.0
     assert metrics["different_story_accuracy"] == 1.0
     assert metrics["same_trend_accuracy"] == 1.0
+    assert metrics["same_story_pairs"] == 30
+
+
+def test_golden_metrics_skips_pairs_this_run_cannot_resolve(tmp_path, monkeypatch) -> None:
+    """Pairs whose ids are absent must not be scored — in either direction.
+
+    The set is labelled against one workspace, but every workspace runs the same
+    file. Looking an absent id up yields None on both sides, so an unguarded
+    `==` scores same_story/same_trend as CORRECT for every foreign pair (a design
+    run would have read 100% on disruption's labels while measuring nothing), and
+    `!=` scores different_story as WRONG for every one of them.
+    """
+    fixture = _write_golden_set(tmp_path, monkeypatch, pairs_per_category=30)
+    # Only the first same_trend pair belongs to this run.
+    a, b = fixture["same_trend"][0]
+
+    metrics = _golden_metrics({}, {a: "trend-1", b: "trend-1"})
+
+    assert metrics["same_trend_pairs"] == 1, "foreign pairs must not pad the denominator"
+    assert "same_trend_accuracy" not in metrics
+    assert metrics["same_story_pairs"] == 0
+    assert metrics["different_story_pairs"] == 0
+
+
+def test_golden_metrics_refuses_to_score_a_set_that_is_too_small(tmp_path, monkeypatch) -> None:
+    """A one-pair category can only read 0.0 or 1.0 — that is not a measurement.
+
+    The set shipped until 2026-08-16 held exactly one pair per category (160 bytes),
+    so had the path bug been fixed alone, the accuracies would have gone from absent
+    to meaningless. The pair count is still reported, so the gap stays visible.
+    """
+    fixture = _write_golden_set(tmp_path, monkeypatch, pairs_per_category=1)
+    # The pair resolves — the set is refused for being small, not for being foreign.
+    semantic_map = {post: "cluster-a" for pair in fixture["same_story"] for post in pair}
+    trend_map = {sem: "trend-a" for pair in fixture["same_trend"] for sem in pair}
+
+    metrics = _golden_metrics(semantic_map, trend_map)
+
+    assert metrics["same_story_pairs"] == 1
+    assert "same_story_accuracy" not in metrics
+    assert "different_story_accuracy" not in metrics
+    assert "same_trend_accuracy" not in metrics
+
+
+def test_golden_metrics_reports_a_missing_set_instead_of_returning_nothing(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(
+        cluster_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            cluster_evaluation_fixture_path=str(tmp_path / "absent.json")
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        metrics = _golden_metrics({}, {})
+
+    assert metrics == {}
+    assert "golden set not found" in caplog.text
 
 
 def test_merge_cluster_settings_applies_workspace_overrides() -> None:

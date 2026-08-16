@@ -619,8 +619,11 @@ class Settings(BaseSettings):
     april_fools_guard_enabled: bool = Field(True, alias="APRIL_FOOLS_GUARD_ENABLED")
     april_fools_guard_penalty: float = Field(0.45, alias="APRIL_FOOLS_GUARD_PENALTY")
     april_fools_guard_stage_block_ratio: float = Field(0.34, alias="APRIL_FOOLS_GUARD_STAGE_BLOCK_RATIO")
+    # config/, not tests/: prod images ship no tests/ directory, so the old default
+    # never resolved and the golden-set accuracies were absent from every production
+    # run. See worker/services/semantic_clustering.py::_golden_metrics.
     cluster_evaluation_fixture_path: str = Field(
-        "tests/fixtures/cluster_analysis_golden_set.json",
+        "config/cluster_golden_set.json",
         alias="CLUSTER_EVALUATION_FIXTURE_PATH",
     )
 
