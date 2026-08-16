@@ -27,6 +27,10 @@ RUN pip install --no-cache-dir --timeout 300 \
 COPY shared/ /app/shared/
 COPY worker/ /app/worker/
 COPY admin/ /app/admin/
+# config/ carries the cluster golden set (config/cluster_golden_set.json). The admin
+# image already copied it; the worker image did not, so a clustering run here would
+# have silently skipped the golden-set accuracies exactly as prod did before 16.08.
+COPY config/ /app/config/
 RUN mkdir -p /app/scripts
 COPY scripts/ /app/scripts/
 ENV PYTHONPATH=/app
