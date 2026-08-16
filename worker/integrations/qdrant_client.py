@@ -80,6 +80,13 @@ _OWN_CORPUS_PAYLOAD_INDEXES = [
 # уехал бы в общий индекс.
 _DEFAULT_OWN_CORPUS_COLLECTION = "own_corpus"
 
+# Max doc_ids per `retrieve` in fetch_documents. Dense vectors come back inline, so
+# one call covering a whole 14-day archive window returned a single ~185 MB body
+# (measured on workspace disruption: 5.6k docs × 2560 dims), and its parsed form
+# briefly coexists with the copies the caller makes. Chunking bounds that spike;
+# callers already treat the result as unordered and tolerate missing points.
+_FETCH_DOCUMENTS_CHUNK = 512
+
 
 def _freshness_boost(published_at: str | None) -> float:
     if not published_at:
@@ -622,30 +629,36 @@ class QdrantFrontierClient:
         return len(points)
 
     async def fetch_documents(self, doc_ids: list[str]) -> list[dict[str, Any]]:
-        """Return vectors and payloads for a batch of doc_ids."""
+        """Return vectors and payloads for a batch of doc_ids (order not preserved).
+
+        Retrieval is chunked at _FETCH_DOCUMENTS_CHUNK so a large doc_id list cannot
+        turn into one enormous response body. Points Qdrant does not know are skipped
+        silently, as before.
+        """
         if not doc_ids:
             return []
         await self._ensure_documents_runtime_ready()
-        point_ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, doc_id)) for doc_id in doc_ids]
-        records = await self.client.retrieve(
-            collection_name=self.collection,
-            ids=point_ids,
-            with_payload=True,
-            with_vectors=True,
-        )
         documents = []
-        for record in records:
-            dense = None
-            vectors = getattr(record, "vector", None)
-            if isinstance(vectors, dict):
-                dense = vectors.get("dense")
-            documents.append(
-                {
-                    "id": str(record.id),
-                    "payload": getattr(record, "payload", {}) or {},
-                    "vector": dense,
-                }
+        for start in range(0, len(doc_ids), _FETCH_DOCUMENTS_CHUNK):
+            chunk = doc_ids[start : start + _FETCH_DOCUMENTS_CHUNK]
+            records = await self.client.retrieve(
+                collection_name=self.collection,
+                ids=[str(uuid.uuid5(uuid.NAMESPACE_URL, doc_id)) for doc_id in chunk],
+                with_payload=True,
+                with_vectors=True,
             )
+            for record in records:
+                dense = None
+                vectors = getattr(record, "vector", None)
+                if isinstance(vectors, dict):
+                    dense = vectors.get("dense")
+                documents.append(
+                    {
+                        "id": str(record.id),
+                        "payload": getattr(record, "payload", {}) or {},
+                        "vector": dense,
+                    }
+                )
         return documents
 
     async def upsert_own_corpus_chunk(
