@@ -24,11 +24,19 @@ distinct-originator (named-actor) count is for.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+try:
+    import numpy as np
+except Exception:  # pragma: no cover - transitive (fastembed/onnxruntime) in worker/admin
+    np = None
+
+logger = logging.getLogger(__name__)
 
 # Query-param prefixes dropped when canonicalizing (superset of ingest.sources.base
 # _TRACKED_QUERY_PREFIXES; kept in sync intentionally).
@@ -41,6 +49,45 @@ _WS = re.compile(r"\s+")
 
 NEAR_DUP_THRESHOLD = 0.97
 NEAR_DUP_MAX_GAP_HOURS = 72.0
+
+# Width of the band around near_dup_threshold within which the vectorized (matmul)
+# cosine is re-decided with the exact pure-Python `_cosine`. A matmul sums in a
+# different order than the sequential Python loop, and normalizes as
+# sqrt(na)*sqrt(nb) rather than sqrt(na*nb), so the two can differ by ~1e-13 at
+# 2560 dims. This band is orders of magnitude wider than that error and orders of
+# magnitude narrower than any real gap between cosines, so re-deciding inside it
+# makes the vectorized edge set identical to the pure-Python one. Mirrors
+# `_COMPONENT_COSINE_EPS` in worker.services.semantic_clustering.
+_NEAR_DUP_COSINE_EPS = 1e-9
+
+# Byte budget for one B×N intermediate in the blocked cosine pass. The pass keeps a
+# few such arrays alive at once, so the real peak is a small multiple of this — but
+# constant in n, never quadratic. That is the whole point: a full n×n similarity
+# matrix is what OOM-killed signal analysis on the largest workspace, and a memcg
+# SIGKILL raises no MemoryError, so no `except` below could catch it. Smaller than
+# the clustering budget because this runs per cluster, inside a pass that is already
+# holding every member post's vector.
+_NEAR_DUP_BLOCK_BYTES = 8 * 1024 * 1024
+
+# Below this member count the pure-Python path wins: laying a float64 matrix out of
+# Python lists costs more than the single cosine it saves. Measured at the production
+# embedding width (2560), best-of-N ms per call — the crossover is sharp and early:
+#   n=2   py 0.235   np 0.259   -> py
+#   n=3   py 0.736   np 0.329   -> np, 2.2x
+#   n=8   py 7.44    np 0.94    -> np, 8x
+#   n=150 py 2543    np 17.9    -> np, 142x
+_NEAR_DUP_MIN_VECTORIZED = 3
+
+_ONE_MICROSECOND = timedelta(microseconds=1)
+
+
+def _rows_per_block(m: int) -> int:
+    """Rows per matmul block: the widest B keeping one B×m float64 inside the budget.
+
+    Clamped to at least one row, so a single row wider than the budget still runs
+    (one row is O(m), never O(m²) — the shape that OOM-killed the job).
+    """
+    return max(1, min(m, int(_NEAR_DUP_BLOCK_BYTES // (8 * max(m, 1)))))
 
 
 @dataclass(frozen=True)
@@ -153,18 +200,148 @@ class _DSU:
             self.parent[max(ra, rb)] = min(ra, rb)
 
 
-def same_artifact_groups(
+def _groups_from_dsu(posts: list[ProvenancePost], dsu: _DSU) -> list[list[ProvenancePost]]:
+    """Materialize the partition. Depends on the components alone, not on edge order.
+
+    ``_DSU.union`` always attaches the larger root to the smaller, so a component's
+    root is its minimum index no matter which edges were fed in or when. Bucket
+    insertion order therefore follows ascending index, and both sorts below are
+    stable — so any two edge sets with the same transitive closure produce a
+    byte-identical result here. That is what lets the vectorized path skip the
+    pure-Python path's incremental `dsu.find` short-circuit.
+    """
+    buckets: dict[int, list[ProvenancePost]] = {}
+    for i, post in enumerate(posts):
+        buckets.setdefault(dsu.find(i), []).append(post)
+    groups = [sorted(g, key=lambda p: p.published_at) for g in buckets.values()]
+    groups.sort(key=lambda g: g[0].published_at)
+    return groups
+
+
+def _same_artifact_groups_py(
     posts: list[ProvenancePost],
     *,
     near_dup_threshold: float = NEAR_DUP_THRESHOLD,
     max_gap_hours: float = NEAR_DUP_MAX_GAP_HOURS,
 ) -> list[list[ProvenancePost]]:
-    """Group posts that are the same underlying material (one "voice" each).
+    """Pure-Python O(n²) grouping. Reference implementation for the vectorized path."""
+    n = len(posts)
+    if n <= 1:
+        return [list(posts)] if posts else []
 
-    Union of: same canonical URL (any time gap), near-identical text within the gap,
-    identical normalized non-empty title within the gap. Groups are returned sorted
-    by earliest ``published_at``; members within a group are sorted the same way, so
-    ``group[0]`` is the candidate origin.
+    dsu = _DSU(n)
+
+    # 1. exact canonical-URL match (transitive via a bucket)
+    by_url: dict[str, int] = {}
+    for i, post in enumerate(posts):
+        cu = canonical_url(post.url)
+        if not cu:
+            continue
+        if cu in by_url:
+            dsu.union(by_url[cu], i)
+        else:
+            by_url[cu] = i
+
+    # 2/3. pairwise near-text and same-title, gated by time gap.
+    norm_titles = [_norm_title(p.title) for p in posts]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if dsu.find(i) == dsu.find(j):
+                continue
+            gap = _hours_between(posts[i].published_at, posts[j].published_at)
+            if gap > max_gap_hours:
+                continue
+            if norm_titles[i] and norm_titles[i] == norm_titles[j]:
+                dsu.union(i, j)
+                continue
+            if posts[i].vector and posts[j].vector:
+                if _cosine(posts[i].vector, posts[j].vector) >= near_dup_threshold:
+                    dsu.union(i, j)
+
+    return _groups_from_dsu(posts, dsu)
+
+
+def _near_dup_pairs_np(
+    posts: list[ProvenancePost], threshold: float, max_gap_hours: float
+) -> list[tuple[int, int]]:
+    """Index pairs (i < j) whose vectors are near-identical within the time gap.
+
+    Blocked matmul instead of a 2560-dim cosine per pair. Only *edges* are ever
+    needed, never the whole similarity matrix, so rows are processed in blocks sized
+    to ``_NEAR_DUP_BLOCK_BYTES``: peak memory is constant in n.
+
+    Two things make the result exactly equal to the pure-Python predicate:
+
+    * the time gap is computed from integer microsecond offsets, so
+      ``|u_i - u_j| / 1e6 / 3600`` is the same float64 ``_hours_between`` produces —
+      identical operands, identical operations, no tolerance needed;
+    * cosines landing within ``_NEAR_DUP_COSINE_EPS`` of the threshold are re-decided
+      with the exact ``_cosine``, so matmul's differing summation order can never flip
+      an edge. float64 is load-bearing here: a float32 matmul errs by ~1e-6, which
+      dwarfs the band and would silently break that guarantee.
+
+    Callers guarantee a uniform vector width (see ``same_artifact_groups``).
+    """
+    idx = [i for i, post in enumerate(posts) if post.vector]
+    m = len(idx)
+    if m < 2:
+        return []
+
+    ref = posts[idx[0]].published_at
+    matrix = np.asarray([posts[i].vector for i in idx], dtype=np.float64)
+    norms = np.sqrt((matrix * matrix).sum(axis=1))
+    micros = np.array(
+        [(posts[i].published_at - ref) // _ONE_MICROSECOND for i in idx], dtype=np.int64
+    )
+    positions = np.arange(m)
+    rows_per_block = _rows_per_block(m)
+
+    pairs: list[tuple[int, int]] = []
+    for start in range(0, m, rows_per_block):
+        stop = min(start + rows_per_block, m)
+        dot = matrix[start:stop] @ matrix.T
+        denom = np.outer(norms[start:stop], norms)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cos = np.where(denom > 0.0, dot / denom, 0.0)
+        # Freed before the gap arrays are allocated: keeps the live set at ~3 blocks.
+        del dot, denom
+        # Two divisions, not one by 3.6e9: `_hours_between` rounds twice and this must
+        # round the same way to stay bit-for-bit identical to it.
+        gap_h = np.abs(micros[start:stop, None] - micros[None, :]) / 1e6 / 3600.0
+        gap_ok = (gap_h <= max_gap_hours) & (positions[None, :] > positions[start:stop, None])
+        del gap_h
+        # `edge` only has to be right away from the band: an exact tie has
+        # |cos - threshold| = 0 <= eps, so it lands in `boundary` and is settled by
+        # `_cosine` below regardless of whether this reads >= or >. Both arrays feed one
+        # candidate set; neither decides alone.
+        edge = (cos >= threshold) & gap_ok
+        boundary = gap_ok & (np.abs(cos - threshold) <= _NEAR_DUP_COSINE_EPS)
+        for block_i, block_j in zip(*np.nonzero(edge | boundary)):
+            i, j = idx[start + int(block_i)], idx[int(block_j)]
+            # Near-threshold pairs defer to the exact cosine; the gap already holds.
+            if bool(boundary[block_i, block_j]) and (
+                _cosine(posts[i].vector, posts[j].vector) < threshold
+            ):
+                continue
+            pairs.append((i, j))
+    return pairs
+
+
+def _same_artifact_groups_np(
+    posts: list[ProvenancePost],
+    *,
+    near_dup_threshold: float = NEAR_DUP_THRESHOLD,
+    max_gap_hours: float = NEAR_DUP_MAX_GAP_HOURS,
+) -> list[list[ProvenancePost]]:
+    """Vectorized equivalent of ``_same_artifact_groups_py``.
+
+    Same three legs, same partition — only the near-text leg is computed differently.
+    The pure-Python path interleaves the legs and short-circuits on pairs already
+    united, so it evaluates strictly fewer cosines; this path evaluates them all at
+    once in a matmul. The extra pairs it decides are, by construction, either already
+    united (the short-circuit) or united by the title leg anyway, so they add edges
+    only *inside* existing components and leave the transitive closure — and hence
+    ``_groups_from_dsu`` — untouched.
     """
     n = len(posts)
     if n <= 1:
@@ -183,27 +360,129 @@ def same_artifact_groups(
         else:
             by_url[cu] = i
 
-    # 2/3. pairwise near-text and same-title, gated by time gap. Clusters are small
-    # (member posts), so O(n^2) is fine and avoids a corpus-scale index here.
-    norm_titles = [_norm_title(p.title) for p in posts]
-    for i in range(n):
-        for j in range(i + 1, n):
-            if dsu.find(i) == dsu.find(j):
-                continue
-            gap = _hours_between(posts[i].published_at, posts[j].published_at)
-            if gap > max_gap_hours:
-                continue
-            if norm_titles[i] and norm_titles[i] == norm_titles[j]:
-                dsu.union(i, j)
-                continue
-            if posts[i].vector and posts[j].vector:
-                if _cosine(posts[i].vector, posts[j].vector) >= near_dup_threshold:
-                    dsu.union(i, j)
+    # 2. identical normalized title within the gap. Bucketing by title turns the
+    # pairwise scan into one pass per bucket; sorting lets it stop at the first pair
+    # beyond the gap instead of scanning the bucket's tail.
+    by_title: dict[str, list[int]] = {}
+    for i, post in enumerate(posts):
+        norm = _norm_title(post.title)
+        if norm:
+            by_title.setdefault(norm, []).append(i)
+    for bucket in by_title.values():
+        if len(bucket) < 2:
+            continue
+        bucket.sort(key=lambda i: posts[i].published_at)
+        for offset, earlier in enumerate(bucket):
+            for later in bucket[offset + 1 :]:
+                if (
+                    _hours_between(posts[later].published_at, posts[earlier].published_at)
+                    > max_gap_hours
+                ):
+                    break
+                dsu.union(earlier, later)
+
+    # 3. near-identical text within the gap
+    for i, j in _near_dup_pairs_np(posts, near_dup_threshold, max_gap_hours):
+        dsu.union(i, j)
+
+    return _groups_from_dsu(posts, dsu)
+
+
+def same_artifact_groups(
+    posts: list[ProvenancePost],
+    *,
+    near_dup_threshold: float = NEAR_DUP_THRESHOLD,
+    max_gap_hours: float = NEAR_DUP_MAX_GAP_HOURS,
+) -> list[list[ProvenancePost]]:
+    """Group posts that are the same underlying material (one "voice" each).
+
+    Union of: same canonical URL (any time gap), near-identical text within the gap,
+    identical normalized non-empty title within the gap. Groups are returned sorted
+    by earliest ``published_at``; members within a group are sorted the same way, so
+    ``group[0]`` is the candidate origin.
+
+    Dispatches to the vectorized path when it can pay off. Mixed vector widths go to
+    the reference: ``_cosine`` short-circuits those pairs to 0.0, which one matrix
+    cannot express, and no production workspace mixes embedding models anyway.
+    """
+    if np is None or len(posts) < _NEAR_DUP_MIN_VECTORIZED:
+        return _same_artifact_groups_py(
+            posts, near_dup_threshold=near_dup_threshold, max_gap_hours=max_gap_hours
+        )
+    if len({len(post.vector) for post in posts if post.vector}) > 1:
+        return _same_artifact_groups_py(
+            posts, near_dup_threshold=near_dup_threshold, max_gap_hours=max_gap_hours
+        )
+    try:
+        return _same_artifact_groups_np(
+            posts, near_dup_threshold=near_dup_threshold, max_gap_hours=max_gap_hours
+        )
+    except Exception:
+        logger.exception("vectorized same_artifact_groups failed; falling back to pure-Python")
+        return _same_artifact_groups_py(
+            posts, near_dup_threshold=near_dup_threshold, max_gap_hours=max_gap_hours
+        )
+
+
+def exact_artifact_groups(
+    posts: list[ProvenancePost],
+    *,
+    max_gap_hours: float = NEAR_DUP_MAX_GAP_HOURS,
+) -> list[list[ProvenancePost]]:
+    """Same-artifact groups over a whole run, using only the two EXACT legs.
+
+    ``same_artifact_groups`` still compares every pair — vectorized now, but O(n^2)
+    all the same, and at a run's whole post population (n ~ 2-6k) that is tens of
+    billions of multiply-adds. Fine for one cluster's members, not for this. So this
+    variant keeps the identical canonicalization and drops the near-text leg, leaving
+    O(n) hashing plus a bounded pass inside each equal-title bucket.
+
+    Dropping that leg costs recall, never precision: every group here is also a group
+    under ``same_artifact_groups``. That direction is the safe one for a quality
+    metric — a missed echo understates fragmentation, it cannot invent it.
+
+    Groups of one are omitted: a lone artifact cannot be split across clusters, so it
+    carries no information for the split-rate metrics and would only pad denominators.
+    """
+    if len(posts) < 2:
+        return []
+
+    index = {id(post): i for i, post in enumerate(posts)}
+    dsu = _DSU(len(posts))
+
+    # 1. exact canonical-URL match — any time gap, transitive via one bucket per URL.
+    by_url: dict[str, int] = {}
+    for i, post in enumerate(posts):
+        cu = canonical_url(post.url)
+        if not cu:
+            continue
+        if cu in by_url:
+            dsu.union(by_url[cu], i)
+        else:
+            by_url[cu] = i
+
+    # 2. identical normalized title within the gap. Bucketing by title first turns the
+    # pairwise scan into one pass per bucket; sorting lets it stop at the first pair
+    # beyond the gap instead of scanning the bucket's tail.
+    by_title: dict[str, list[ProvenancePost]] = {}
+    for post in posts:
+        norm = _norm_title(post.title)
+        if norm:
+            by_title.setdefault(norm, []).append(post)
+    for bucket in by_title.values():
+        if len(bucket) < 2:
+            continue
+        bucket.sort(key=lambda p: p.published_at)
+        for offset, earlier in enumerate(bucket):
+            for later in bucket[offset + 1 :]:
+                if _hours_between(later.published_at, earlier.published_at) > max_gap_hours:
+                    break
+                dsu.union(index[id(earlier)], index[id(later)])
 
     buckets: dict[int, list[ProvenancePost]] = {}
     for i, post in enumerate(posts):
         buckets.setdefault(dsu.find(i), []).append(post)
-    groups = [sorted(g, key=lambda p: p.published_at) for g in buckets.values()]
+    groups = [sorted(g, key=lambda p: p.published_at) for g in buckets.values() if len(g) >= 2]
     groups.sort(key=lambda g: g[0].published_at)
     return groups
 
