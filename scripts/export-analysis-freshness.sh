@@ -295,6 +295,50 @@ emit() {
         printf 'frontier_alert_triage_last_digest_timestamp_seconds %s\n' "$newest_digest"
     fi
 
+    # Исход последнего прогона петли НА РАБОЧЕЙ МАШИНЕ. Свежести дайджеста мало.
+    # 07.08–17.08.2026 петля запускалась исправно каждое утро (LastRunTime свежий,
+    # пропусков ноль) и падала за ТРИ СЕКУНДЫ на `Not logged in`. Увидели на
+    # одиннадцатые сутки: единственным сигналом был возраст дайджеста с порогом 26ч,
+    # а он отвечает «результата давно нет» и не отличает «не запускалась» от
+    # «запустилась и умерла». Причины разные, и действия разные: первая лечится
+    # командой /login за минуту, вторая — разбором лога.
+    #
+    # Отчёт кладёт сам раннер (.claude/run-alert-triage.ps1) по ssh после КАЖДОГО
+    # прогона, удачного или нет. Раннер живёт вне репозитория (`.claude/` в
+    # .gitignore и .rsync-exclude), поэтому метрику эмитим здесь — иначе её имя
+    # пришлось бы объявлять внешним в tests/test_alert_rules_contract.py и потерять
+    # ту самую защиту от опечатки в имени.
+    #
+    # Значения проверяем на целочисленность перед печатью: битая строка в textfile
+    # роняет разбор ВСЕГО файла, то есть унесла бы с собой и все метрики свежести.
+    run_report="$PROJECT_DIR/runtime/alert-triage-last-run"
+    if [ -f "$run_report" ]; then
+        report_field() {
+            local key="$1" val
+            val=$(grep -m1 "^${key}=" "$run_report" 2>/dev/null | cut -d= -f2- | tr -d '[:space:]')
+            case "$val" in
+                ''|*[!0-9]*) return 1 ;;
+                *) printf '%s' "$val" ;;
+            esac
+        }
+
+        if exit_code=$(report_field exit_code); then
+            echo '# HELP frontier_alert_triage_last_exit_code Exit code of the last alert-triage run on the workstation.'
+            echo '# TYPE frontier_alert_triage_last_exit_code gauge'
+            printf 'frontier_alert_triage_last_exit_code %s\n' "$exit_code"
+        fi
+        if run_seconds=$(report_field duration_seconds); then
+            echo '# HELP frontier_alert_triage_last_duration_seconds Wall-clock seconds the last alert-triage run took.'
+            echo '# TYPE frontier_alert_triage_last_duration_seconds gauge'
+            printf 'frontier_alert_triage_last_duration_seconds %s\n' "$run_seconds"
+        fi
+        if finished_at=$(report_field finished_at); then
+            echo '# HELP frontier_alert_triage_last_run_timestamp_seconds Unix time the last alert-triage run finished.'
+            echo '# TYPE frontier_alert_triage_last_run_timestamp_seconds gauge'
+            printf 'frontier_alert_triage_last_run_timestamp_seconds %s\n' "$finished_at"
+        fi
+    fi
+
     # Покрытие кластеризации: какая доля ПОДХОДЯЩИХ постов в окне вообще попала
     # в семантический кластер. Свежести мало — она отвечает на вопрос «слой
     # шевелится?», но не на «сколько корпуса он видит». 04.08.2026 у disruption
