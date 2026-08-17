@@ -832,6 +832,84 @@ async def scheduled_entity_resolution() -> dict[str, Any]:
     )
 
 
+# Джобы, чей исход пишет `_run_job_subprocess` — по одному разу НА ВОРКСПЕЙС, а не на
+# прогон. Список явный: тест `test_scheduler_job_outcomes` требует, чтобы каждая
+# зарегистрированная джоба либо стояла здесь, либо несла обёртку `_records_run_outcome`.
+# Без такой развилки семнадцатая джоба молча появилась бы без исхода — ровно так и
+# возникли те восемь, что молчали до 17.08.2026.
+_PER_WORKSPACE_OUTCOME_JOBS: frozenset[str] = frozenset(
+    {
+        "refresh_source_scores",
+        "run_semantic_clusters",
+        "run_signal_analysis",
+        "run_retrospective_review",
+        "run_novelty_judge",
+        "run_relevance_audit",
+        "run_graph_maintenance",
+        "run_entity_resolution",
+    }
+)
+
+_OUTCOME_MARKER = "__frontier_run_outcome_job__"
+
+# Что джоба вернула, переложенное в метку исхода. "error" превращаем в "failed",
+# потому что правила FrontierAdminJobFailing и …Daily ищут именно `failed|timeout`:
+# джоба, вернувшая ошибку СТАТУСОМ вместо исключения, иначе не считалась бы отказом.
+# "skipped" пишем как есть и намеренно — джоба, пропускающая КАЖДЫЙ прогон (нет ключа
+# провайдера, не поднят сервис), выглядит здоровой ровно до тех пор, пока этого не видно.
+_RESULT_STATUS_TO_OUTCOME: dict[str, str] = {
+    "ok": "ok",
+    "skipped": "skipped",
+    "error": "failed",
+    "failed": "failed",
+}
+
+
+def _outcome_from_result(result: Any) -> str:
+    """Метка исхода по возвращённому значению; всё нераспознанное считаем «ok»."""
+    if isinstance(result, dict):
+        status = result.get("status")
+        if isinstance(status, str):
+            return _RESULT_STATUS_TO_OUTCOME.get(status, "ok")
+    return "ok"
+
+
+def _records_run_outcome(job_name: str):
+    """Записать исход прогона лёгкой джобы в `frontier_admin_job_runs_total`.
+
+    Восемь джоб (балансы провайдеров, каталог и ключ OpenRouter, здоровье xray,
+    срочные тренды) исполняются прямо в event loop и не проходят через
+    `_run_job_subprocess`, поэтому до 17.08.2026 не оставляли в метриках НИЧЕГО:
+    падение улетало в APScheduler, попадало в лог и на этом заканчивалось. Замер:
+    из 16 зарегистрированных джоб исход отдавали ровно 8.
+
+    Новых правил под это не нужно. `FrontierAdminJobFailing` и `…Daily` фильтруют по
+    `outcome`, а не по имени джобы, то есть покрывали эти восемь с самого начала —
+    им просто нечего было считать.
+
+    Исключение пробрасываем дальше: APScheduler обязан залогировать его как прежде.
+    Метрика тут дополнение к логу, а не замена ему.
+    """
+
+    def _decorate(func):
+        async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = await func(*args, **kwargs)
+            except Exception:
+                note_admin_job_run(job_name, "failed")
+                raise
+            note_admin_job_run(job_name, _outcome_from_result(result))
+            return result
+
+        _wrapped.__name__ = func.__name__
+        _wrapped.__doc__ = func.__doc__
+        setattr(_wrapped, _OUTCOME_MARKER, job_name)
+        return _wrapped
+
+    return _decorate
+
+
+@_records_run_outcome("refresh_gigachat_balance")
 async def scheduled_refresh_gigachat_balance() -> dict[str, Any]:
     if _gigachat_balance_lock.locked():
         logger.warning("Skipping refresh_gigachat_balance: previous run is still in progress")
@@ -856,6 +934,7 @@ async def scheduled_refresh_gigachat_balance() -> dict[str, Any]:
         }
 
 
+@_records_run_outcome("refresh_wormsoft_limits")
 async def scheduled_refresh_wormsoft_limits() -> dict[str, Any]:
     if _wormsoft_limits_lock.locked():
         logger.warning("Skipping refresh_wormsoft_limits: previous run is still in progress")
@@ -881,6 +960,7 @@ async def scheduled_refresh_wormsoft_limits() -> dict[str, Any]:
         }
 
 
+@_records_run_outcome("refresh_openrouter_catalog")
 async def scheduled_refresh_openrouter_catalog() -> dict[str, Any]:
     if _openrouter_catalog_lock.locked():
         logger.warning("Skipping refresh_openrouter_catalog: previous run is still in progress")
@@ -904,6 +984,7 @@ async def scheduled_refresh_openrouter_catalog() -> dict[str, Any]:
         }
 
 
+@_records_run_outcome("refresh_openrouter_key")
 async def scheduled_refresh_openrouter_key() -> dict[str, Any]:
     if _openrouter_key_lock.locked():
         logger.warning("Skipping refresh_openrouter_key: previous run is still in progress")
@@ -928,6 +1009,7 @@ async def scheduled_refresh_openrouter_key() -> dict[str, Any]:
         }
 
 
+@_records_run_outcome("probe_openrouter_health")
 async def scheduled_probe_openrouter_health() -> dict[str, Any]:
     if _openrouter_health_lock.locked():
         logger.warning("Skipping probe_openrouter_health: previous run is still in progress")
@@ -953,6 +1035,7 @@ async def scheduled_probe_openrouter_health() -> dict[str, Any]:
         }
 
 
+@_records_run_outcome("reconcile_openrouter_state")
 async def scheduled_reconcile_openrouter_state() -> dict[str, Any]:
     if _openrouter_reconcile_lock.locked():
         logger.warning("Skipping reconcile_openrouter_state: previous run is still in progress")
@@ -977,6 +1060,7 @@ async def scheduled_reconcile_openrouter_state() -> dict[str, Any]:
         }
 
 
+@_records_run_outcome("urgent_trend_alerts")
 async def scheduled_urgent_trend_alerts() -> dict[str, Any]:
     if _trend_alert_lock.locked():
         logger.warning("Skipping urgent_trend_alerts: previous run is still in progress")
@@ -998,6 +1082,7 @@ async def scheduled_urgent_trend_alerts() -> dict[str, Any]:
         return result
 
 
+@_records_run_outcome("xray_health_check")
 async def scheduled_xray_health_check() -> dict[str, Any]:
     if _xray_health_lock.locked():
         logger.warning("Skipping xray_health_check: previous run is still in progress")
