@@ -133,3 +133,103 @@ tests:
       - eval_time: 3h
         alertname: FrontierSourceDatelessRatioJumped
         exp_alerts: []
+
+  # FrontierS3QuotaCritical после перекалибровки 19.08.2026 (нижняя точка → пик).
+  #
+  # Главный вход здесь — НЕ тот, на котором правило тревожит, а тот, на котором
+  # оно обязано молчать: установившееся состояние 19.08. Прежняя редакция на нём
+  # уходила в pending при полностью успешном ночном прогоне, потому что
+  # «свободно меньше одного комплекта» описывало норму, а не отказ. Инструмент,
+  # который прав каждый день, не сообщает ничего; тест держит именно это
+  # свойство, а не порог сам по себе.
+  #
+  # Оба состояния поданы ОДНИМ прогоном и различаются меткой instance. Так
+  # заодно закреплено совпадение меток в делении: `bucket / quota` обязано
+  # спариваться поинстансно. 04.08.2026 это же правило молчало вечно ровно
+  # потому, что пары не находилось.
+  - interval: 5m
+    name: "s3-квота, оба порога: пик у потолка будит, установившаяся норма 19.08 молчит"
+    input_series:
+      # A. Реальное состояние 19.08: пик 12.68 из 15.00 ГиБ (84.5%), прочее 2.99 +
+      #    вчерашний 4.84 + сегодняшний 4.85. Ночной прогон прошёл, следующий
+      #    тоже пройдёт — уборка освободит место раньше заливки.
+      #    Комплект подан намеренно: на этих же числах ПРЕЖНЕЕ выражение
+      #    тревожило (свободно 2.32 ГиБ против комплекта 4.85 ГиБ).
+      - series: 'frontier_s3_bucket_bytes{instance="steady",job="node-exporter"}'
+        values: '13615152709+0x200'
+      - series: 'frontier_s3_quota_bytes{instance="steady",job="node-exporter"}'
+        values: '16106127360+0x200'
+      - series: 'frontier_s3_bucket_measured_timestamp_seconds{instance="steady",job="node-exporter"}'
+        values: '0+300x200'
+      - series: 'frontier_backup_artifact_bytes{instance="steady",job="node-exporter",artifact="daily_set"}'
+        values: '5206035860+0x200'
+      # B. Пик подошёл к потолку: 13.97 из 15.00 ГиБ. Запас 1.03 ГиБ — меньше
+      #    одного рваного суточного скачка (17.08 neo4j за ночь дал +0.65 ГиБ),
+      #    то есть предупреждать уже пора.
+      - series: 'frontier_s3_bucket_bytes{instance="tight",job="node-exporter"}'
+        values: '15000000000+0x200'
+      - series: 'frontier_s3_quota_bytes{instance="tight",job="node-exporter"}'
+        values: '16106127360+0x200'
+      - series: 'frontier_s3_bucket_measured_timestamp_seconds{instance="tight",job="node-exporter"}'
+        values: '0+300x200'
+    alert_rule_test:
+      # Дебаунс `for: 1h` соблюдается: на 30 минутах алертов нет ни у кого.
+      # Проверка отличает «правило ждёт» от «правило не сработало вовсе».
+      - eval_time: 30m
+        alertname: FrontierS3QuotaCritical
+        exp_alerts: []
+      # Через 2 часа дебаунс пройден. Ровно ОДИН алерт из двух состояний.
+      - eval_time: 2h
+        alertname: FrontierS3QuotaCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: backup
+              notify: telegram
+              instance: tight
+              job: node-exporter
+            exp_annotations:
+              summary: "Ночной пик занятости бакета подошёл к квоте"
+              description: "Пик за сутки 93.13% квоты. Отказ наступит в момент ночной заливки, когда прочее + вчерашний + сегодняшний комплект перерастут квоту, — запас до 100% и есть оставшееся время. Разбор наполнения: docker run --rm --env-file .env <worker-образ> python /scripts/s3_bucket_usage.py. Уменьшить комплект: снимать снапшот dense_2560 реже ежедневного (он 55% веса) либо поднять квоту бакета. Результат проверять только через S3_POLL_MIN_INTERVAL=0 bash scripts/export-backup-metrics.sh — иначе 6-часовой кэш покажет старое число."
+      # То же самое для предупредительного порога. 84.53% против 0.85 — это
+      # граница на волосок: если порог или знаменатель поедут, тест покраснеет
+      # раньше, чем правило начнёт будить каждую ночь.
+      - eval_time: 30m
+        alertname: FrontierS3QuotaHigh
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: FrontierS3QuotaHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: backup
+              notify: telegram
+              instance: tight
+              job: node-exporter
+            exp_annotations:
+              summary: "Бакет заполнен более чем на 85%"
+              description: "Занятость по нижней точке суток 93.13% квоты. 02.08.2026 бакет уже упирался в потолок, и из-за этого не доезжал самый важный файл. Учти: при опросе S3 раз в 6 часов нижняя точка почти не наблюдается, поэтому цифра сейчас близка к ночному пику. Разбор наполнения: docker run --rm --env-file .env <worker-образ> python /scripts/s3_bucket_usage.py"
+
+  # Страж свежести отдельным прогоном: занятость заведомо над порогом, но
+  # измерению больше 12 часов. Опрос S3 троттлится шестью часами, и 07.08.2026
+  # алерт уже горел на числе, которого в реальности давно не существовало.
+  # Условие живёт в правиле с тех пор — пусть его отсутствие ломает тест, а не
+  # ночь дежурного.
+  - interval: 5m
+    name: "s3-квота: стухшее измерение молчит даже при пике над потолком"
+    input_series:
+      - series: 'frontier_s3_bucket_bytes{instance="stale",job="node-exporter"}'
+        values: '15500000000+0x200'
+      - series: 'frontier_s3_quota_bytes{instance="stale",job="node-exporter"}'
+        values: '16106127360+0x200'
+      # Значение застыло в нуле: к 13 часам прогона возраст замера 46800 с > 43200.
+      - series: 'frontier_s3_bucket_measured_timestamp_seconds{instance="stale",job="node-exporter"}'
+        values: '0+0x200'
+    alert_rule_test:
+      - eval_time: 13h
+        alertname: FrontierS3QuotaCritical
+        exp_alerts: []
+      # Страж свежести общий у обоих правил — значит и проверяется у обоих.
+      - eval_time: 13h
+        alertname: FrontierS3QuotaHigh
+        exp_alerts: []
