@@ -233,3 +233,169 @@ tests:
       - eval_time: 13h
         alertname: FrontierS3QuotaHigh
         exp_alerts: []
+
+  - interval: 1m
+    name: "wormsoft soft cap: diagnostic only and missing outage denominator is vector-safe"
+    input_series:
+      - series: 'frontier_llm_throttle_events_total{service="worker",provider="wormsoft",reason="wormsoft_credit_soft_cap"}'
+        values: '0+2x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FrontierWormsoftLocalThrottleBurst
+        exp_alerts:
+          - exp_labels:
+              reason: wormsoft_credit_soft_cap
+              severity: info
+              service: worker
+              notify: never
+            exp_annotations:
+              summary: "Wormsoft local throttle diagnostic is elevated"
+              description: "Wormsoft local guard repeatedly rejected candidates (reason=wormsoft_credit_soft_cap). This is a diagnostic pacing signal, not evidence of lost requests or a provider outage; correlate it with backlog, terminal failures, and unused credits."
+      - eval_time: 30m
+        alertname: FrontierLocalThrottleVsOutageMismatch
+        exp_alerts: []
+
+  - interval: 1m
+    name: "wormsoft non-credit local throttle with no outage series is vector-safe"
+    input_series:
+      - series: 'frontier_llm_throttle_events_total{service="worker",provider="wormsoft",reason="guard_interval"}'
+        values: '0+2x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FrontierLocalThrottleVsOutageMismatch
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: worker
+              notify: telegram
+            exp_annotations:
+              summary: "Local throttle dominates outage-like fallback profile"
+              description: "Throttle events are much higher than outage-like fallback events for worker. Re-check classification (`throttled_local` vs upstream outage), pacing, and circuit policy."
+
+  - interval: 1m
+    name: "wormsoft real outage reason contributes to mismatch denominator"
+    input_series:
+      - series: 'frontier_llm_throttle_events_total{service="worker",provider="wormsoft",reason="guard_interval"}'
+        values: '0+2x60'
+      - series: 'frontier_llm_fallbacks_total{service="worker",reason="wormsoft_5xx"}'
+        values: '0+2x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FrontierLocalThrottleVsOutageMismatch
+        exp_alerts: []
+
+  - interval: 1m
+    name: "wormsoft credit accounting failure is visible with enforcement disabled"
+    input_series:
+      - series: 'frontier_llm_throttle_events_total{service="worker",provider="wormsoft",reason="wormsoft_credit_read_failed"}'
+        values: '0+1x30'
+      - series: 'frontier_wormsoft_credit_accounting_errors_total{service="worker",operation="read",reason="redis_error"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FrontierLocalThrottleVsOutageMismatch
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditAccountingFailure
+        exp_alerts:
+          - exp_labels:
+              operation: read
+              reason: redis_error
+              severity: warning
+              service: worker
+              notify: telegram
+            exp_annotations:
+              summary: "Wormsoft credit accounting is failing"
+              description: "Wormsoft credit accounting failed during read (reason=redis_error). This is visible even with enforcement disabled; check Redis health or the pricing table before trusting utilization."
+
+  - interval: 1m
+    name: "wormsoft account utilization warning is based on a fresh credit gauge"
+    input_series:
+      - series: 'frontier_wormsoft_credit_utilization_ratio{service="worker"}'
+        values: '0.85+0x60'
+      - series: 'frontier_wormsoft_credit_window_refresh_timestamp_seconds{service="worker"}'
+        values: '0+60x60'
+      - series: 'frontier_wormsoft_credit_soft_cap_ratio{service="worker"}'
+        values: '0.8+0x60'
+      - series: 'frontier_wormsoft_credit_hard_cap_ratio{service="worker"}'
+        values: '0.95+0x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditUtilizationHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: worker
+              notify: telegram
+            exp_annotations:
+              summary: "Wormsoft account reached its credit warning threshold"
+              description: "Account-wide Wormsoft usage stayed above the configured soft warning threshold for 15 minutes (ratio=0.85). Check remaining credits and the time until reset before increasing pacing."
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditUtilizationCritical
+        exp_alerts: []
+
+  - interval: 1m
+    name: "wormsoft account utilization critical replaces warning above 95 percent"
+    input_series:
+      - series: 'frontier_wormsoft_credit_utilization_ratio{service="worker"}'
+        values: '0.96+0x60'
+      - series: 'frontier_wormsoft_credit_window_refresh_timestamp_seconds{service="worker"}'
+        values: '0+60x60'
+      - series: 'frontier_wormsoft_credit_soft_cap_ratio{service="worker"}'
+        values: '0.8+0x60'
+      - series: 'frontier_wormsoft_credit_hard_cap_ratio{service="worker"}'
+        values: '0.95+0x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditUtilizationHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditUtilizationCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: worker
+              notify: telegram
+            exp_annotations:
+              summary: "Wormsoft account reached its credit hard threshold"
+              description: "Account-wide Wormsoft usage stayed above the configured hard threshold for 10 minutes (ratio=0.96). Expect local throttling or fallback unless the credit window resets soon."
+
+  - interval: 1m
+    name: "stale high source cannot page while fresh account snapshot is below 80 percent"
+    input_series:
+      - series: 'frontier_wormsoft_credit_utilization_ratio{service="worker"}'
+        values: '0.79+0x60'
+      - series: 'frontier_wormsoft_credit_window_refresh_timestamp_seconds{service="worker"}'
+        values: '0+60x60'
+      - series: 'frontier_wormsoft_credit_soft_cap_ratio{service="worker"}'
+        values: '0.8+0x60'
+      - series: 'frontier_wormsoft_credit_hard_cap_ratio{service="worker"}'
+        values: '0.95+0x60'
+      - series: 'frontier_wormsoft_credit_utilization_ratio{service="mcp"}'
+        values: '0.99+0x60'
+      - series: 'frontier_wormsoft_credit_window_refresh_timestamp_seconds{service="mcp"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditUtilizationHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditUtilizationCritical
+        exp_alerts: []
+
+  - interval: 1m
+    name: "wormsoft traffic without a credit-window refresh alerts"
+    input_series:
+      - series: 'frontier_llm_requests_total{service="worker",provider="wormsoft",status="ok"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FrontierWormsoftCreditWindowStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: worker
+              notify: telegram
+            exp_annotations:
+              summary: "Wormsoft credit-window telemetry is stale"
+              description: "Successful Wormsoft traffic is present, but no service refreshed the account-wide credit-window gauge for more than 10 minutes. Check the credit accounting path before enabling enforcement."

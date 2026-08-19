@@ -13,8 +13,10 @@ from admin.backend.services.openrouter_picker import (
     fetch_openrouter_runtime_state,
     pick_model,
     record_call_result,
-    task_family_for_task as openrouter_task_family_for_task,
     task_family_for_vision,
+)
+from admin.backend.services.openrouter_picker import (
+    task_family_for_task as openrouter_task_family_for_task,
 )
 from admin.backend.services.wormsoft_models import fetch_wormsoft_models
 from shared.config import get_settings
@@ -58,6 +60,7 @@ from worker.openrouter_text_client import OpenRouterTextClient
 from worker.polza_client import PolzaVisionClient, PolzaVisionError
 from worker.polza_text_client import PolzaTextClient
 from worker.wormsoft_client import WormsoftTextClient, WormsoftTextError
+from worker.wormsoft_credit_estimator import WormsoftCreditEstimator
 from worker.wormsoft_guard import WormsoftSharedGuard
 
 logger = logging.getLogger(__name__)
@@ -157,6 +160,7 @@ class WormsoftAdapter:
         self._settings = settings or get_settings()
         self._guard = WormsoftSharedGuard(redis=redis, service_name=service_name, settings=self._settings)
         self._text = text_client
+        self._credit_estimator = WormsoftCreditEstimator()
 
     async def discover_models(self) -> ModelCatalogSnapshot:
         payload = await fetch_wormsoft_models()
@@ -257,8 +261,16 @@ class WormsoftAdapter:
         requested_model: str,
         actual_model: str,
     ) -> float | None:
-        del requested_model, actual_model
-        return _usage_cost_estimate(response)
+        del actual_model
+        if response is None:
+            return None
+        estimate = self._credit_estimator.try_estimate(
+            requested_model=requested_model or response.requested_model,
+            prompt_tokens=response.usage.prompt_tokens,
+            completion_tokens=response.usage.completion_tokens,
+            cached_prompt_tokens=response.usage.precached_prompt_tokens,
+        )
+        return estimate.total_credits if estimate is not None else None
 
 
 class OpenRouterAdapter:

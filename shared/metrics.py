@@ -1,4 +1,5 @@
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,11 @@ try:
         "Total billable tokens reported by LLM providers.",
         ["service", "task", "provider", "requested_model", "actual_model"],
     )
+    LLM_CACHED_PROMPT_TOKENS_TOTAL = Counter(
+        "frontier_llm_cached_prompt_tokens_total",
+        "Total cached prompt tokens reported by LLM providers.",
+        ["service", "task", "provider", "requested_model", "actual_model"],
+    )
     LLM_REQUESTS_TOTAL = Counter(
         "frontier_llm_requests_total",
         "Total LLM requests across providers.",
@@ -156,6 +162,53 @@ try:
         "frontier_llm_throttle_events_total",
         "Total local runtime throttle events by provider and reason.",
         ["service", "provider", "reason"],
+    )
+    WORMSOFT_CREDITS_ESTIMATED_TOTAL = Counter(
+        "frontier_wormsoft_credits_estimated_total",
+        "Pricing-weighted Wormsoft credits estimated from response usage.",
+        [
+            "service",
+            "task",
+            "requested_model",
+            "actual_model",
+            "execution_role",
+            "kind",
+        ],
+    )
+    WORMSOFT_CREDIT_WINDOW_USAGE = Gauge(
+        "frontier_wormsoft_credit_window_usage",
+        "Pricing-weighted Wormsoft credits in the configured trailing window.",
+        ["service"],
+    )
+    WORMSOFT_CREDIT_WINDOW_LIMIT = Gauge(
+        "frontier_wormsoft_credit_window_limit",
+        "Configured Wormsoft credit limit for the trailing window.",
+        ["service"],
+    )
+    WORMSOFT_CREDIT_UTILIZATION_RATIO = Gauge(
+        "frontier_wormsoft_credit_utilization_ratio",
+        "Account-wide pricing-weighted Wormsoft trailing-window usage divided by its limit.",
+        ["service"],
+    )
+    WORMSOFT_CREDIT_WINDOW_REFRESH_TIMESTAMP = Gauge(
+        "frontier_wormsoft_credit_window_refresh_timestamp_seconds",
+        "Unix timestamp when a service last read or updated the Wormsoft credit window.",
+        ["service"],
+    )
+    WORMSOFT_CREDIT_SOFT_CAP_RATIO = Gauge(
+        "frontier_wormsoft_credit_soft_cap_ratio",
+        "Configured account-wide Wormsoft utilization ratio for early warning.",
+        ["service"],
+    )
+    WORMSOFT_CREDIT_HARD_CAP_RATIO = Gauge(
+        "frontier_wormsoft_credit_hard_cap_ratio",
+        "Configured account-wide Wormsoft utilization ratio that blocks primary traffic.",
+        ["service"],
+    )
+    WORMSOFT_CREDIT_ACCOUNTING_ERRORS_TOTAL = Counter(
+        "frontier_wormsoft_credit_accounting_errors_total",
+        "Wormsoft credit accounting errors independent of enforcement mode.",
+        ["service", "operation", "reason"],
     )
     LLM_COST_ESTIMATE_TOTAL = Counter(
         "frontier_llm_cost_estimate_total",
@@ -469,9 +522,18 @@ except Exception:  # pragma: no cover - fallback for environments without depend
     LLM_PROMPT_TOKENS_TOTAL = None
     LLM_COMPLETION_TOKENS_TOTAL = None
     LLM_BILLABLE_TOKENS_TOTAL = None
+    LLM_CACHED_PROMPT_TOKENS_TOTAL = None
     LLM_REQUESTS_TOTAL = None
     LLM_FALLBACKS_TOTAL = None
     LLM_THROTTLE_EVENTS_TOTAL = None
+    WORMSOFT_CREDITS_ESTIMATED_TOTAL = None
+    WORMSOFT_CREDIT_WINDOW_USAGE = None
+    WORMSOFT_CREDIT_WINDOW_LIMIT = None
+    WORMSOFT_CREDIT_UTILIZATION_RATIO = None
+    WORMSOFT_CREDIT_WINDOW_REFRESH_TIMESTAMP = None
+    WORMSOFT_CREDIT_SOFT_CAP_RATIO = None
+    WORMSOFT_CREDIT_HARD_CAP_RATIO = None
+    WORMSOFT_CREDIT_ACCOUNTING_ERRORS_TOTAL = None
     LLM_COST_ESTIMATE_TOTAL = None
     LLM_COST_ACTUAL_TOTAL = None
     LLM_COST_DRIFT_TOTAL = None
@@ -670,6 +732,7 @@ def note_llm_usage(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     billable_tokens: int = 0,
+    cached_prompt_tokens: int = 0,
 ) -> None:
     if LLM_PROMPT_TOKENS_TOTAL is None:
         return
@@ -683,6 +746,8 @@ def note_llm_usage(
     LLM_PROMPT_TOKENS_TOTAL.labels(**labels).inc(prompt_tokens)
     LLM_COMPLETION_TOKENS_TOTAL.labels(**labels).inc(completion_tokens)
     LLM_BILLABLE_TOKENS_TOTAL.labels(**labels).inc(billable_tokens)
+    if LLM_CACHED_PROMPT_TOKENS_TOTAL is not None:
+        LLM_CACHED_PROMPT_TOKENS_TOTAL.labels(**labels).inc(cached_prompt_tokens)
 
 
 def note_llm_request(
@@ -734,6 +799,72 @@ def note_llm_throttle_event(service: str, provider: str, reason: str) -> None:
             service=service,
             provider=provider,
             reason=str(reason or "unknown"),
+        ).inc()
+
+
+def note_wormsoft_credit_estimate(
+    service: str,
+    task: str,
+    requested_model: str,
+    actual_model: str,
+    execution_role: str,
+    *,
+    input_credits: float,
+    output_credits: float,
+    cache_credits: float,
+    total_credits: float,
+) -> None:
+    if WORMSOFT_CREDITS_ESTIMATED_TOTAL is None:
+        return
+    labels = {
+        "service": service,
+        "task": task,
+        "requested_model": requested_model,
+        "actual_model": actual_model,
+        "execution_role": execution_role,
+    }
+    for kind, value in (
+        ("input", input_credits),
+        ("output", output_credits),
+        ("cache", cache_credits),
+        ("total", total_credits),
+    ):
+        WORMSOFT_CREDITS_ESTIMATED_TOTAL.labels(**labels, kind=kind).inc(float(value))
+
+
+def set_wormsoft_credit_window(
+    service: str,
+    *,
+    used: float,
+    limit: float,
+    soft_cap_ratio: float,
+    hard_cap_ratio: float,
+) -> None:
+    if WORMSOFT_CREDIT_WINDOW_USAGE is not None:
+        WORMSOFT_CREDIT_WINDOW_USAGE.labels(service=service).set(float(used))
+    if WORMSOFT_CREDIT_WINDOW_LIMIT is not None:
+        WORMSOFT_CREDIT_WINDOW_LIMIT.labels(service=service).set(float(limit))
+    if WORMSOFT_CREDIT_UTILIZATION_RATIO is not None:
+        ratio = float(used) / float(limit) if float(limit) > 0.0 else 0.0
+        WORMSOFT_CREDIT_UTILIZATION_RATIO.labels(service=service).set(ratio)
+    if WORMSOFT_CREDIT_WINDOW_REFRESH_TIMESTAMP is not None:
+        WORMSOFT_CREDIT_WINDOW_REFRESH_TIMESTAMP.labels(service=service).set(time.time())
+    if WORMSOFT_CREDIT_SOFT_CAP_RATIO is not None:
+        WORMSOFT_CREDIT_SOFT_CAP_RATIO.labels(service=service).set(float(soft_cap_ratio))
+    if WORMSOFT_CREDIT_HARD_CAP_RATIO is not None:
+        WORMSOFT_CREDIT_HARD_CAP_RATIO.labels(service=service).set(float(hard_cap_ratio))
+
+
+def note_wormsoft_credit_accounting_error(
+    service: str,
+    operation: str,
+    reason: str,
+) -> None:
+    if WORMSOFT_CREDIT_ACCOUNTING_ERRORS_TOTAL is not None:
+        WORMSOFT_CREDIT_ACCOUNTING_ERRORS_TOTAL.labels(
+            service=service,
+            operation=operation,
+            reason=reason,
         ).inc()
 
 

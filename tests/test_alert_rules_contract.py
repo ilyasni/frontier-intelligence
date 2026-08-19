@@ -221,6 +221,64 @@ def test_every_alert_metric_has_a_producer() -> None:
     )
 
 
+def test_wormsoft_soft_cap_burst_is_non_paging_diagnostic() -> None:
+    """A bare local soft-cap burst must not be presented as an outage page."""
+    rule = _rule("FrontierWormsoftLocalThrottleBurst")
+    labels = rule.get("labels") or {}
+
+    assert labels.get("severity") == "info"
+    assert labels.get("notify") == "never"
+
+
+def test_wormsoft_throttle_outage_mismatch_uses_real_reasons_and_zero_fallback() -> None:
+    """The mismatch remains evaluable when no outage fallback series exists."""
+    rule = _rule("FrontierLocalThrottleVsOutageMismatch")
+    expr = str(rule.get("expr") or "")
+
+    assert ".*_(timeout|connection|5xx|unavailable)" in expr
+
+    credit_reason_exclusion = (
+        'reason!~"wormsoft_credit_soft_cap|wormsoft_credit_hard_cap|'
+        'wormsoft_credit_read_failed|wormsoft_credit_pricing_unknown"'
+    )
+    assert expr.count(credit_reason_exclusion) == 2
+
+    assert re.search(r"\bor\s+on\s*\(\s*service\s*\)", expr)
+    assert re.search(
+        r"0\s*\*\s*sum\s+by\s*\(\s*service\s*\).*"
+        r"frontier_llm_throttle_events_total",
+        expr,
+        flags=re.DOTALL,
+    )
+
+    accounting_failure = _rule("FrontierWormsoftCreditAccountingFailure")
+    assert "frontier_wormsoft_credit_accounting_errors_total" in str(
+        accounting_failure.get("expr") or ""
+    )
+    assert (accounting_failure.get("labels") or {}).get("severity") == "warning"
+
+
+def test_wormsoft_credit_utilization_alerts_use_fresh_account_window() -> None:
+    """Credit pages use the shared account window and reject stale process gauges."""
+    high = _rule("FrontierWormsoftCreditUtilizationHigh")
+    critical = _rule("FrontierWormsoftCreditUtilizationCritical")
+
+    for rule in (high, critical):
+        expr = str(rule.get("expr") or "")
+        assert "frontier_wormsoft_credit_utilization_ratio" in expr
+        assert "frontier_wormsoft_credit_window_refresh_timestamp_seconds" in expr
+        assert "execution_role" not in expr
+        assert "frontier_llm_throttle_events_total" not in expr
+
+    assert (high.get("labels") or {}).get("severity") == "warning"
+    assert (critical.get("labels") or {}).get("severity") == "critical"
+    assert "frontier_wormsoft_credit_soft_cap_ratio" in str(high.get("expr") or "")
+    assert "frontier_wormsoft_credit_hard_cap_ratio" in str(high.get("expr") or "")
+    assert "frontier_wormsoft_credit_hard_cap_ratio" in str(
+        critical.get("expr") or ""
+    )
+
+
 def test_external_metrics_registry_is_used() -> None:
     """Мёртвая строка в реестре внешних метрик разрешает опечатку в своей."""
     referenced: set[str] = set()

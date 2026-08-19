@@ -353,7 +353,7 @@ groups:
           description: "Admin could not fetch Wormsoft limits/pricing for more than 15 minutes. Check DNS, outbound access, API key validity, and Wormsoft control endpoints."
 
       - alert: FrontierWormsoftFallbackBurst
-        expr: sum by (service, task, reason) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason=~"API.*|model_not_found|provider_unavailable"}[15m])) >= 3
+        expr: sum by (service, task, reason) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason=~"API.*|model_not_found|provider_unavailable|upstream_5xx|timeout|connection|wormsoft_(timeout|connection|5xx|unavailable|model_not_found)"}[15m])) >= 3
         for: 5m
         labels:
           severity: warning
@@ -384,19 +384,104 @@ groups:
           summary: "Wormsoft relevance gray-zone escalations are spiking"
           description: "Quality escalations from Wormsoft for {{ $labels.service }}/{{ $labels.task }} exceeded 30% with at least 30 events in 1 hour and persisted for 15 minutes. This usually means sustained gray-zone or ambiguous relevance cases and can materially raise Giga spend."
 
-      - alert: FrontierWormsoftLocalThrottleBurst
-        expr: sum by (service, reason) (increase(frontier_llm_throttle_events_total{service="worker",provider="wormsoft"}[15m])) >= 20
-        for: 10m
+      - alert: FrontierWormsoftCreditUtilizationHigh
+        expr: |
+          max(
+            frontier_wormsoft_credit_utilization_ratio
+            and on (service)
+            (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)
+          )
+          >=
+          max(
+            frontier_wormsoft_credit_soft_cap_ratio
+            and on (service)
+            (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)
+          )
+          and
+          max(
+            frontier_wormsoft_credit_utilization_ratio
+            and on (service)
+            (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)
+          )
+          <
+          max(
+            frontier_wormsoft_credit_hard_cap_ratio
+            and on (service)
+            (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)
+          )
+        for: 15m
         labels:
           severity: warning
           service: worker
           notify: telegram
         annotations:
-          summary: "Wormsoft local throttle events are spiking"
-          description: "Local throttle events for Wormsoft (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Check pacing, guard settings, and credit-window caps."
+          summary: "Wormsoft account reached its credit warning threshold"
+          description: "Account-wide Wormsoft usage stayed above the configured soft warning threshold for 15 minutes (ratio={{ $value }}). Check remaining credits and the time until reset before increasing pacing."
+
+      - alert: FrontierWormsoftCreditUtilizationCritical
+        expr: |
+          max(
+            frontier_wormsoft_credit_utilization_ratio
+            and on (service)
+            (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)
+          )
+          >=
+          max(
+            frontier_wormsoft_credit_hard_cap_ratio
+            and on (service)
+            (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)
+          )
+        for: 10m
+        labels:
+          severity: critical
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Wormsoft account reached its credit hard threshold"
+          description: "Account-wide Wormsoft usage stayed above the configured hard threshold for 10 minutes (ratio={{ $value }}). Expect local throttling or fallback unless the credit window resets soon."
+
+      - alert: FrontierWormsoftLocalThrottleBurst
+        expr: sum by (service, reason) (increase(frontier_llm_throttle_events_total{service="worker",provider="wormsoft"}[15m])) >= 20
+        for: 10m
+        labels:
+          severity: info
+          service: worker
+          notify: never
+        annotations:
+          summary: "Wormsoft local throttle diagnostic is elevated"
+          description: "Wormsoft local guard repeatedly rejected candidates (reason={{ $labels.reason }}). This is a diagnostic pacing signal, not evidence of lost requests or a provider outage; correlate it with backlog, terminal failures, and unused credits."
+
+      - alert: FrontierWormsoftCreditAccountingFailure
+        expr: sum by (service, operation, reason) (increase(frontier_wormsoft_credit_accounting_errors_total[15m])) >= 1
+        for: 5m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Wormsoft credit accounting is failing"
+          description: "Wormsoft credit accounting failed during {{ $labels.operation }} (reason={{ $labels.reason }}). This is visible even with enforcement disabled; check Redis health or the pricing table before trusting utilization."
+
+      - alert: FrontierWormsoftCreditWindowStale
+        expr: |
+          (
+            min(time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds) > 600
+            or on ()
+            absent(frontier_wormsoft_credit_window_refresh_timestamp_seconds)
+          )
+          and on ()
+          sum(increase(frontier_llm_requests_total{provider="wormsoft",status="ok"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: worker
+          notify: telegram
+        annotations:
+          summary: "Wormsoft credit-window telemetry is stale"
+          description: "Successful Wormsoft traffic is present, but no service refreshed the account-wide credit-window gauge for more than 10 minutes. Check the credit accounting path before enabling enforcement."
 
       - alert: FrontierProviderOutageFallbackBurst
-        expr: sum by (service, from_provider, task, reason) (increase(frontier_llm_fallbacks_total{service="worker",reason=~"provider_unavailable|upstream_5xx|timeout|connection"}[15m])) >= 10
+        expr: sum by (service, from_provider, task, reason) (increase(frontier_llm_fallbacks_total{service="worker",reason=~"provider_unavailable|upstream_5xx|timeout|connection|.*_(timeout|connection|5xx|unavailable)"}[15m])) >= 10
         for: 10m
         labels:
           severity: warning
@@ -409,9 +494,24 @@ groups:
       - alert: FrontierLocalThrottleVsOutageMismatch
         expr: |
           (
-            sum by (service) (increase(frontier_llm_throttle_events_total{service="worker"}[15m]))
+            sum by (service) (
+              increase(frontier_llm_throttle_events_total{service="worker",reason!~"wormsoft_credit_soft_cap|wormsoft_credit_hard_cap|wormsoft_credit_read_failed|wormsoft_credit_pricing_unknown"}[15m])
+            )
             /
-            clamp_min(sum by (service) (increase(frontier_llm_fallbacks_total{service="worker",reason=~"provider_unavailable|upstream_5xx"}[15m])), 1)
+            clamp_min(
+              (
+                sum by (service) (
+                  increase(frontier_llm_fallbacks_total{service="worker",reason=~"provider_unavailable|upstream_5xx|timeout|connection|.*_(timeout|connection|5xx|unavailable)"}[15m])
+                )
+                or on (service)
+                (
+                  0 * sum by (service) (
+                    increase(frontier_llm_throttle_events_total{service="worker",reason!~"wormsoft_credit_soft_cap|wormsoft_credit_hard_cap|wormsoft_credit_read_failed|wormsoft_credit_pricing_unknown"}[15m])
+                  )
+                )
+              ),
+              1
+            )
           ) >= 5
         for: 10m
         labels:

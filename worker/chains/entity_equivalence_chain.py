@@ -60,32 +60,60 @@ class EntityEquivalenceChain:
         model: str,
         fallback_model: str,
         token_budget: int = 2000,
+        router_client: Any | None = None,
     ) -> None:
         self.wormsoft = wormsoft_client
         self.polza = polza_client
+        self.router = router_client
         self.model = model
         self.fallback_model = fallback_model
         self.token_budget = token_budget
 
     async def run(self, name_a: str, name_b: str) -> dict[str, Any] | None:
         prompt = build_prompt(name_a, name_b)
-        if getattr(self.wormsoft, "is_available", False) and self.model:
+        if (self.router is not None or getattr(self.wormsoft, "is_available", False)) and self.model:
             try:
-                resp = await self.wormsoft.chat(
-                    system=SYSTEM_PROMPT, user=prompt, task="entity_equivalence",
-                    model_override=self.model, max_tokens=self.token_budget,
-                )
+                if self.router is not None:
+                    resp = await self.router.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="entity_equivalence",
+                        provider_override="wormsoft",
+                        model_override=self.model,
+                        max_tokens=self.token_budget,
+                    )
+                else:
+                    resp = await self.wormsoft.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="entity_equivalence",
+                        model_override=self.model,
+                        max_tokens=self.token_budget,
+                    )
                 v = normalize_verdict(parse_llm_json_object(resp.content))
                 v["_provider"] = "wormsoft"
                 return v
             except Exception as exc:
                 logger.info("entity_equivalence wormsoft failed, fallback to polza: %s", exc)
-        if getattr(self.polza, "is_available", False) and self.fallback_model:
+        if (self.router is not None or getattr(self.polza, "is_available", False)) and self.fallback_model:
             try:
-                resp = await self.polza.chat(
-                    system=SYSTEM_PROMPT, user=prompt, task="entity_equivalence",
-                    model_override=self.fallback_model, max_tokens=self.token_budget,
-                )
+                if self.router is not None:
+                    resp = await self.router.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="entity_equivalence",
+                        provider_override="polza",
+                        model_override=self.fallback_model,
+                        max_tokens=self.token_budget,
+                    )
+                else:
+                    resp = await self.polza.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="entity_equivalence",
+                        model_override=self.fallback_model,
+                        max_tokens=self.token_budget,
+                    )
                 v = normalize_verdict(parse_llm_json_object(resp.content))
                 v["_provider"] = "polza"
                 return v

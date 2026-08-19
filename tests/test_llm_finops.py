@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ class _FakeRedis:
     def __init__(self):
         self.data = {}
         self.values = {}
+        self.zsets = {}
 
     async def hgetall(self, key):
         return dict(self.data.get(key, {}))
@@ -36,6 +38,47 @@ class _FakeRedis:
     async def expire(self, key, ttl):
         return True
 
+    @staticmethod
+    def _score(value):
+        if value == "-inf":
+            return float("-inf"), False
+        if value == "+inf":
+            return float("inf"), False
+        raw = str(value)
+        exclusive = raw.startswith("(")
+        return float(raw[1:] if exclusive else raw), exclusive
+
+    async def zadd(self, key, mapping):
+        bucket = self.zsets.setdefault(key, {})
+        bucket.update({str(member): float(score) for member, score in mapping.items()})
+        return len(mapping)
+
+    async def zremrangebyscore(self, key, minimum, maximum):
+        bucket = self.zsets.setdefault(key, {})
+        lower, lower_exclusive = self._score(minimum)
+        upper, upper_exclusive = self._score(maximum)
+        removed = []
+        for member, score in bucket.items():
+            lower_match = score > lower if lower_exclusive else score >= lower
+            upper_match = score < upper if upper_exclusive else score <= upper
+            if lower_match and upper_match:
+                removed.append(member)
+        for member in removed:
+            del bucket[member]
+        return len(removed)
+
+    async def zrangebyscore(self, key, minimum, maximum):
+        bucket = self.zsets.setdefault(key, {})
+        lower, lower_exclusive = self._score(minimum)
+        upper, upper_exclusive = self._score(maximum)
+        rows = []
+        for member, score in bucket.items():
+            lower_match = score > lower if lower_exclusive else score >= lower
+            upper_match = score < upper if upper_exclusive else score <= upper
+            if lower_match and upper_match:
+                rows.append((score, member))
+        return [member for _, member in sorted(rows)]
+
     async def get(self, key):
         return self.values.get(key)
 
@@ -54,6 +97,10 @@ class _FakeRedis:
 @pytest.mark.asyncio
 async def test_fetch_llm_finops_snapshot_reconciles_openrouter_gap(monkeypatch) -> None:
     redis = _FakeRedis()
+    settings = SimpleNamespace(
+        wormsoft_credit_window_limit=3_000_000.0,
+        wormsoft_credit_window_seconds=14_400,
+    )
     manager = ProviderBudgetManager(redis=redis)
     await manager.record_execution_receipt(
         ExecutionReceipt(
@@ -83,6 +130,7 @@ async def test_fetch_llm_finops_snapshot_reconciles_openrouter_gap(monkeypatch) 
         ),
     )
     monkeypatch.setattr("admin.backend.services.llm_finops.get_client", lambda: redis)
+    monkeypatch.setattr("admin.backend.services.llm_finops.get_settings", lambda: settings)
 
     payload = await fetch_llm_finops_snapshot()
 
@@ -94,3 +142,45 @@ async def test_fetch_llm_finops_snapshot_reconciles_openrouter_gap(monkeypatch) 
     assert openrouter["published_limit"] == 50.0
     assert openrouter["published_usage"] == 20.0
     assert openrouter["published_remaining"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_llm_finops_uses_configured_wormsoft_plan_and_local_window(
+    monkeypatch,
+) -> None:
+    redis = _FakeRedis()
+    settings = SimpleNamespace(
+        wormsoft_credit_window_limit=3_000_000.0,
+        wormsoft_credit_window_seconds=14_400,
+    )
+    manager = ProviderBudgetManager(redis=redis, settings=settings)
+    await manager.add_credit_usage(
+        provider="wormsoft",
+        credits=600_000.0,
+        window_seconds=14_400,
+    )
+    await redis.set(
+        "admin:wormsoft_limits:last_ok",
+        json.dumps(
+            {
+                "status": "ok",
+                "plans": [
+                    {"id": "Simple", "amount": 500_000, "seconds": 18_000},
+                    {"id": "Payed", "amount": 3_000_000, "seconds": 14_400},
+                ],
+                "fetched_at": 123.0,
+            }
+        ),
+    )
+    monkeypatch.setattr("admin.backend.services.llm_finops.get_client", lambda: redis)
+    monkeypatch.setattr("admin.backend.services.llm_finops.get_settings", lambda: settings)
+
+    payload = await fetch_llm_finops_snapshot()
+
+    wormsoft = next(
+        item for item in payload["reconciliations"] if item["provider"] == "wormsoft"
+    )
+    assert wormsoft["published_limit"] == 3_000_000.0
+    assert wormsoft["published_usage"] == pytest.approx(600_000.0)
+    assert wormsoft["published_remaining"] == pytest.approx(2_400_000.0)
+    assert wormsoft["metadata"]["matched_active_plan"]["id"] == "Payed"

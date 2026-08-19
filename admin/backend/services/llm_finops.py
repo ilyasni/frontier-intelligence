@@ -2,16 +2,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
 
 from admin.backend.services.gigachat_balance import _BALANCE_CACHE_KEY
 from admin.backend.services.openrouter_key import _CACHE_KEY as OPENROUTER_KEY_CACHE_KEY
 from admin.backend.services.wormsoft_limits import _CACHE_KEY as WORMSOFT_LIMITS_CACHE_KEY
+from shared.config import get_settings
 from shared.llm_control_plane import CostAggregateState, FinopsReconciliationState
-from shared.llm_routing import PROVIDER_GIGACHAT, PROVIDER_OPENROUTER, PROVIDER_POLZA, PROVIDER_WORMSOFT
+from shared.llm_routing import (
+    PROVIDER_GIGACHAT,
+    PROVIDER_OPENROUTER,
+    PROVIDER_POLZA,
+    PROVIDER_WORMSOFT,
+)
 from shared.redis_client import get_client
 from worker.provider_budget_manager import ProviderBudgetManager
+
+logger = logging.getLogger(__name__)
 
 
 async def _load_cached_json(key: str) -> dict[str, Any] | None:
@@ -47,13 +56,23 @@ def _openrouter_free_requests(costs: list[CostAggregateState]) -> int:
 
 async def fetch_llm_finops_snapshot() -> dict[str, Any]:
     providers = [PROVIDER_WORMSOFT, PROVIDER_OPENROUTER, PROVIDER_POLZA, PROVIDER_GIGACHAT]
-    budget_manager = ProviderBudgetManager(redis=get_client())
+    settings = get_settings()
+    budget_manager = ProviderBudgetManager(redis=get_client(), settings=settings)
+    wormsoft_window_usage: float | None = None
     try:
         cost_windows = await budget_manager.snapshot_costs(
             providers,
             task_families=["text_generation", "vision_generation", "embeddings"],
             execution_roles=["primary", "shadow"],
         )
+        try:
+            wormsoft_window_usage = await budget_manager.credit_window_usage(
+                provider=PROVIDER_WORMSOFT,
+                window_seconds=int(settings.wormsoft_credit_window_seconds),
+            )
+        except Exception:
+            logger.warning("wormsoft_finops_credit_window_read_failed", exc_info=True)
+            wormsoft_window_usage = None
     finally:
         await budget_manager.close()
 
@@ -141,16 +160,52 @@ async def fetch_llm_finops_snapshot() -> dict[str, Any]:
             )
         elif provider == PROVIDER_WORMSOFT:
             plans = list(wormsoft_limits.get("plans") or [])
-            published_limit = float(sum(int(item.get("amount") or 0) for item in plans))
+            published_limit = float(settings.wormsoft_credit_window_limit or 0.0)
+            window_seconds = int(settings.wormsoft_credit_window_seconds or 0)
+            active_plan = next(
+                (
+                    item
+                    for item in plans
+                    if int(item.get("amount") or 0) == int(published_limit)
+                    and int(item.get("seconds") or 0) == window_seconds
+                ),
+                None,
+            )
+            estimated_usage = (
+                float(wormsoft_window_usage) if wormsoft_window_usage is not None else None
+            )
+            utilization = (
+                estimated_usage / published_limit
+                if estimated_usage is not None and published_limit > 0.0
+                else None
+            )
+            status = "stale" if wormsoft_limits.get("stale") else "ok"
+            if published_limit <= 0.0 or estimated_usage is None:
+                status = "unknown" if status == "ok" else status
+            elif utilization is not None and utilization >= 0.98:
+                status = "quota_exhausted"
+            elif utilization is not None and utilization >= 0.8:
+                status = "near_cap"
             reconciliation = reconciliation.model_copy(
                 update={
-                    "status": "stale" if wormsoft_limits.get("stale") else ("ok" if published_limit > 0 else "unknown"),
+                    "status": status,
                     "published_limit": published_limit or None,
-                    "gap_kind": "wormsoft_plan_credits",
+                    "published_usage": estimated_usage,
+                    "published_remaining": max(0.0, published_limit - estimated_usage)
+                    if estimated_usage is not None and published_limit > 0.0
+                    else None,
+                    "gap_kind": "wormsoft_estimated_window_credits",
                     "unit": "credits",
-                    "note": "Wormsoft publishes plan allowances but not live remaining credits; runtime totals are informational until a live usage endpoint exists.",
+                    "note": (
+                        "Wormsoft does not publish live remaining credits; usage and remaining "
+                        "are pricing-weighted estimates from the local trailing window."
+                    ),
                     "metadata": {
                         "plans": plans,
+                        "configured_window_seconds": window_seconds,
+                        "configured_limit": published_limit,
+                        "matched_active_plan": active_plan,
+                        "estimated_utilization": utilization,
                         "snapshot_status": str(wormsoft_limits.get("status") or ""),
                     },
                     "refreshed_at": float(wormsoft_limits.get("fetched_at") or reconciliation.refreshed_at or time.time()),

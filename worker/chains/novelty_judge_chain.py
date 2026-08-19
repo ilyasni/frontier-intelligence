@@ -72,9 +72,11 @@ class NoveltyJudgeChain:
         model: str,
         fallback_model: str,
         token_budget: int = 1200,
+        router_client: Any | None = None,
     ) -> None:
         self.wormsoft = wormsoft_client
         self.polza = polza_client
+        self.router = router_client
         self.model = model
         self.fallback_model = fallback_model
         self.token_budget = token_budget
@@ -84,15 +86,25 @@ class NoveltyJudgeChain:
         prompt = build_prompt(candidate)
 
         # Primary: wormsoft / DeepSeek-v4-pro.
-        if getattr(self.wormsoft, "is_available", False) and self.model:
+        if (self.router is not None or getattr(self.wormsoft, "is_available", False)) and self.model:
             try:
-                resp = await self.wormsoft.chat(
-                    system=SYSTEM_PROMPT,
-                    user=prompt,
-                    task="novelty_judge",
-                    model_override=self.model,
-                    max_tokens=self.token_budget,
-                )
+                if self.router is not None:
+                    resp = await self.router.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="novelty_judge",
+                        provider_override="wormsoft",
+                        model_override=self.model,
+                        max_tokens=self.token_budget,
+                    )
+                else:
+                    resp = await self.wormsoft.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="novelty_judge",
+                        model_override=self.model,
+                        max_tokens=self.token_budget,
+                    )
                 verdict = normalize_verdict(parse_llm_json_object(resp.content))
                 verdict["_provider"] = "wormsoft"
                 verdict["_model"] = getattr(resp, "actual_model", self.model) or self.model
@@ -102,15 +114,25 @@ class NoveltyJudgeChain:
                 logger.info("novelty_judge wormsoft failed, falling back to polza: %s", exc)
 
         # Fallback: polza / DeepSeek-v3.2.
-        if getattr(self.polza, "is_available", False) and self.fallback_model:
+        if (self.router is not None or getattr(self.polza, "is_available", False)) and self.fallback_model:
             try:
-                resp = await self.polza.chat(
-                    system=SYSTEM_PROMPT,
-                    user=prompt,
-                    task="novelty_judge",
-                    model_override=self.fallback_model,
-                    max_tokens=self.token_budget,
-                )
+                if self.router is not None:
+                    resp = await self.router.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="novelty_judge",
+                        provider_override="polza",
+                        model_override=self.fallback_model,
+                        max_tokens=self.token_budget,
+                    )
+                else:
+                    resp = await self.polza.chat(
+                        system=SYSTEM_PROMPT,
+                        user=prompt,
+                        task="novelty_judge",
+                        model_override=self.fallback_model,
+                        max_tokens=self.token_budget,
+                    )
                 verdict = normalize_verdict(parse_llm_json_object(resp.content))
                 verdict["_provider"] = "polza"
                 verdict["_model"] = getattr(resp, "actual_model", self.fallback_model) or self.fallback_model

@@ -72,6 +72,54 @@ def test_chain_falls_back_to_polza_on_wormsoft_error() -> None:
     assert v["novelty_score"] == 0.5
 
 
+class _RoutingClient:
+    def __init__(self, *, fail_wormsoft: bool = False) -> None:
+        self.fail_wormsoft = fail_wormsoft
+        self.calls: list[dict] = []
+
+    async def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs["provider_override"] == "wormsoft" and self.fail_wormsoft:
+            raise RuntimeError("wormsoft failed")
+        score = 0.7 if kwargs["provider_override"] == "wormsoft" else 0.4
+        return _Resp(
+            f'{{"novelty_score":{score},"out_of_distribution":false,"reasoning":"ok"}}'
+        )
+
+
+def test_chain_routes_wormsoft_through_control_plane() -> None:
+    router = _RoutingClient()
+    chain = NoveltyJudgeChain(
+        None,
+        None,
+        model="deepseek-ai/deepseek-v4-pro",
+        fallback_model="deepseek/deepseek-v3.2",
+        router_client=router,
+    )
+
+    verdict = _run(chain.run({"title": "x", "keywords": []}))
+
+    assert verdict is not None and verdict["_provider"] == "wormsoft"
+    assert router.calls[0]["provider_override"] == "wormsoft"
+    assert router.calls[0]["model_override"] == "deepseek-ai/deepseek-v4-pro"
+
+
+def test_chain_router_fallback_pins_polza() -> None:
+    router = _RoutingClient(fail_wormsoft=True)
+    chain = NoveltyJudgeChain(
+        None,
+        None,
+        model="deepseek-ai/deepseek-v4-pro",
+        fallback_model="deepseek/deepseek-v3.2",
+        router_client=router,
+    )
+
+    verdict = _run(chain.run({"title": "x", "keywords": []}))
+
+    assert verdict is not None and verdict["_provider"] == "polza"
+    assert [call["provider_override"] for call in router.calls] == ["wormsoft", "polza"]
+
+
 def test_chain_returns_none_when_both_unavailable() -> None:
     chain = NoveltyJudgeChain(_Client(False), _Client(False), model="m1", fallback_model="m2")
     assert _run(chain.run({"title": "x", "keywords": []})) is None
@@ -241,18 +289,12 @@ def _patch_service(monkeypatch, *, settings, rows, chain_run, session=None):
 
     clients = {}
 
-    def _make_wormsoft(*a, **k):
+    def _make_router(*a, **k):
         c = _RecordingClient()
-        clients["wormsoft"] = c
+        clients["router"] = c
         return c
 
-    def _make_polza(*a, **k):
-        c = _RecordingClient()
-        clients["polza"] = c
-        return c
-
-    monkeypatch.setattr(nj_module, "WormsoftTextClient", _make_wormsoft)
-    monkeypatch.setattr(nj_module, "PolzaTextClient", _make_polza)
+    monkeypatch.setattr(nj_module, "LLMRouterClient", _make_router)
 
     class _Chain:
         def __init__(self, *a, **k) -> None:
@@ -357,6 +399,5 @@ def test_run_novelty_judge_closes_clients_on_exception(monkeypatch) -> None:
     with pytest.raises(RuntimeError):
         _run(nj_module.run_novelty_judge("disruption"))
 
-    # finally должен закрыть оба клиента несмотря на исключение в цикле.
-    assert clients["wormsoft"].closed is True
-    assert clients["polza"].closed is True
+    # finally должен закрыть router несмотря на исключение в цикле.
+    assert clients["router"].closed is True

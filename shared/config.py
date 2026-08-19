@@ -247,11 +247,11 @@ class Settings(BaseSettings):
         alias="WORMSOFT_CREDIT_THROTTLE_ENABLED",
     )
     wormsoft_credit_window_seconds: int = Field(
-        18000,
+        14400,
         alias="WORMSOFT_CREDIT_WINDOW_SECONDS",
     )
     wormsoft_credit_window_limit: float = Field(
-        500000.0,
+        3000000.0,
         alias="WORMSOFT_CREDIT_WINDOW_LIMIT",
     )
     wormsoft_credit_soft_cap_ratio: float = Field(
@@ -259,12 +259,16 @@ class Settings(BaseSettings):
         alias="WORMSOFT_CREDIT_SOFT_CAP_RATIO",
     )
     wormsoft_credit_hard_cap_ratio: float = Field(
-        0.98,
+        0.95,
         alias="WORMSOFT_CREDIT_HARD_CAP_RATIO",
     )
     wormsoft_credit_soft_cap_shadow_ratio: float = Field(
         0.7,
         alias="WORMSOFT_CREDIT_SOFT_CAP_SHADOW_RATIO",
+    )
+    wormsoft_credit_fail_closed: bool = Field(
+        False,
+        alias="WORMSOFT_CREDIT_FAIL_CLOSED",
     )
     polza_api_key: str = Field("", alias="POLZA_API_KEY")
     polza_base_url: str = Field("https://polza.ai/api/v1", alias="POLZA_BASE_URL")

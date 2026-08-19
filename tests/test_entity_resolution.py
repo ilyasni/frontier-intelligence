@@ -146,6 +146,17 @@ class _FakeLLMClient:
         return SimpleNamespace(content=self._content)
 
 
+class _FakeRouter:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def chat(self, **kwargs) -> SimpleNamespace:  # noqa: ANN003
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            content='{"equivalent": true, "canonical": "b", "confidence": 0.8}'
+        )
+
+
 def _make_chain(wormsoft: _FakeLLMClient, polza: _FakeLLMClient):
     from worker.chains.entity_equivalence_chain import EntityEquivalenceChain
 
@@ -171,6 +182,26 @@ async def test_chain_run_wormsoft_success() -> None:
     assert verdict["confidence"] == 0.9
     assert wormsoft.called is True
     assert polza.called is False  # fallback не вызывается при успехе
+
+
+@pytest.mark.asyncio
+async def test_chain_routes_entity_judge_through_control_plane() -> None:
+    from worker.chains.entity_equivalence_chain import EntityEquivalenceChain
+
+    router = _FakeRouter()
+    chain = EntityEquivalenceChain(
+        None,
+        None,
+        model="deepseek-ai/deepseek-v4-pro",
+        fallback_model="deepseek/deepseek-v3.2",
+        router_client=router,
+    )
+
+    verdict = await chain.run("LLM", "Large Language Model")
+
+    assert verdict is not None and verdict["_provider"] == "wormsoft"
+    assert router.calls[0]["provider_override"] == "wormsoft"
+    assert router.calls[0]["model_override"] == "deepseek-ai/deepseek-v4-pro"
 
 
 @pytest.mark.asyncio

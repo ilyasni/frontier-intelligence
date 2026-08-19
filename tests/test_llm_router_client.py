@@ -374,6 +374,7 @@ class _FakeRedis:
         self.hashes = {}
         self.values = {}
         self.lists = {}
+        self.zsets = {}
 
     async def hgetall(self, key):
         return dict(self.hashes.get(key, {}))
@@ -399,6 +400,47 @@ class _FakeRedis:
     async def expire(self, key, ttl):
         return True
 
+    @staticmethod
+    def _score(value):
+        if value == "-inf":
+            return float("-inf"), False
+        if value == "+inf":
+            return float("inf"), False
+        raw = str(value)
+        exclusive = raw.startswith("(")
+        return float(raw[1:] if exclusive else raw), exclusive
+
+    async def zadd(self, key, mapping):
+        bucket = self.zsets.setdefault(key, {})
+        bucket.update({str(member): float(score) for member, score in mapping.items()})
+        return len(mapping)
+
+    async def zremrangebyscore(self, key, minimum, maximum):
+        bucket = self.zsets.setdefault(key, {})
+        lower, lower_exclusive = self._score(minimum)
+        upper, upper_exclusive = self._score(maximum)
+        removed = []
+        for member, score in bucket.items():
+            lower_match = score > lower if lower_exclusive else score >= lower
+            upper_match = score < upper if upper_exclusive else score <= upper
+            if lower_match and upper_match:
+                removed.append(member)
+        for member in removed:
+            del bucket[member]
+        return len(removed)
+
+    async def zrangebyscore(self, key, minimum, maximum):
+        bucket = self.zsets.setdefault(key, {})
+        lower, lower_exclusive = self._score(minimum)
+        upper, upper_exclusive = self._score(maximum)
+        rows = []
+        for member, score in bucket.items():
+            lower_match = score > lower if lower_exclusive else score >= lower
+            upper_match = score < upper if upper_exclusive else score <= upper
+            if lower_match and upper_match:
+                rows.append((score, member))
+        return [member for _, member in sorted(rows)]
+
     async def get(self, key):
         return self.values.get(key)
 
@@ -409,6 +451,7 @@ class _FakeRedis:
     async def delete(self, key):
         self.values.pop(key, None)
         self.hashes.pop(key, None)
+        self.zsets.pop(key, None)
         return 1
 
     async def incr(self, key):
@@ -432,7 +475,7 @@ class _FakeRedis:
 
 def _settings(embed_dim: int = 2560, **overrides):
     values = dict(
-        redis_url="redis://redis:6379",
+        redis_url="",
         embed_dim=embed_dim,
         gigachat_model="GigaChat-2",
         gigachat_model_lite="GigaChat-2",
@@ -465,10 +508,10 @@ def _settings(embed_dim: int = 2560, **overrides):
         llm_runtime_provider_gigachat_daily_request_soft_cap=0,
         llm_runtime_provider_gigachat_daily_request_limit=0,
         wormsoft_credit_throttle_enabled=False,
-        wormsoft_credit_window_seconds=18000,
+        wormsoft_credit_window_seconds=14400,
         wormsoft_credit_window_limit=500000.0,
         wormsoft_credit_soft_cap_ratio=0.8,
-        wormsoft_credit_hard_cap_ratio=0.98,
+        wormsoft_credit_hard_cap_ratio=0.95,
         wormsoft_credit_soft_cap_shadow_ratio=0.7,
     )
     values.update(overrides)
@@ -873,8 +916,8 @@ async def test_llm_router_records_finops_receipt_and_cost_aggregate(monkeypatch)
 
     assert response.provider == "wormsoft"
     assert client.last_execution_receipt is not None
-    assert client.last_execution_receipt.cost_estimate == 3.0
-    assert client.last_execution_receipt.actual_cost == 3.0
+    assert client.last_execution_receipt.cost_estimate == pytest.approx(1.06)
+    assert client.last_execution_receipt.actual_cost == pytest.approx(1.06)
     assert client.last_execution_receipt.cost_drift == 0.0
 
     manager = ProviderBudgetManager(redis=redis, settings=_settings())
@@ -887,7 +930,12 @@ async def test_llm_router_records_finops_receipt_and_cost_aggregate(monkeypatch)
     provider_window = next(item for item in cost_windows if item.scope == "cost_provider")
 
     assert provider_window.request_count == 1
-    assert provider_window.actual_cost_total == 3.0
+    assert provider_window.actual_cost_total == pytest.approx(1.06)
+    credit_usage = await manager.credit_window_usage(
+        provider="wormsoft",
+        window_seconds=14400,
+    )
+    assert credit_usage == pytest.approx(1.06)
 
 
 @pytest.mark.asyncio
@@ -1027,10 +1075,11 @@ async def test_llm_router_skips_openrouter_when_published_free_daily_cap_reached
 
 
 @pytest.mark.asyncio
-async def test_llm_router_skips_wormsoft_on_credit_soft_cap(monkeypatch) -> None:
+async def test_llm_router_skips_wormsoft_on_credit_hard_cap(monkeypatch) -> None:
     redis = _FakeRedis()
     settings = _settings(
         wormsoft_credit_throttle_enabled=True,
+        wormsoft_credit_window_seconds=14400,
         wormsoft_credit_window_limit=500000.0,
         wormsoft_credit_soft_cap_ratio=0.8,
     )
@@ -1039,8 +1088,8 @@ async def test_llm_router_skips_wormsoft_on_credit_soft_cap(monkeypatch) -> None
     manager = ProviderBudgetManager(redis=redis, settings=settings)
     await manager.add_credit_usage(
         provider="wormsoft",
-        credits=410000.0,
-        window_seconds=18000,
+        credits=495000.0,
+        window_seconds=14400,
     )
     client = LLMRouterClient(
         redis=redis,
@@ -1058,6 +1107,6 @@ async def test_llm_router_skips_wormsoft_on_credit_soft_cap(monkeypatch) -> None
 
     assert response.provider == "polza"
     assert any(
-        item.get("reason") == "wormsoft_credit_soft_cap"
+        item.get("reason") == "wormsoft_credit_hard_cap"
         for item in client.last_routing_decision.skipped_candidates
     )

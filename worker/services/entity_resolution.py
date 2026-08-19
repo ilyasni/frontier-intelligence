@@ -118,16 +118,13 @@ async def _aclose(client: Any) -> None:
 
 async def run_entity_resolution(workspace_id: str, cap: int | None = None) -> dict[str, Any]:
     """Прогон: кандидаты-акронимы → фильтр со-встречаемости → LLM-судья → pending-предложения."""
-    import json
-
     from sqlalchemy import text
 
     from shared.config import get_settings
     from worker.chains.entity_equivalence_chain import EntityEquivalenceChain
     from worker.integrations.neo4j_client import Neo4jFrontierClient
-    from worker.polza_text_client import PolzaTextClient
+    from worker.llm_router_client import LLMRouterClient
     from worker.services.clustering_math import digest
-    from worker.wormsoft_client import WormsoftTextClient
 
     settings = get_settings()
     if not bool(getattr(settings, "entity_resolution_enabled", True)):
@@ -141,13 +138,14 @@ async def run_entity_resolution(workspace_id: str, cap: int | None = None) -> di
     from shared.db import get_session_factory
 
     neo = Neo4jFrontierClient()
-    wormsoft = WormsoftTextClient(service_name="worker")
-    polza = PolzaTextClient(service_name="worker")
+    router = LLMRouterClient(service_name="worker")
     chain = EntityEquivalenceChain(
-        wormsoft, polza,
+        None,
+        None,
         model=settings.novelty_judge_model,
         fallback_model=settings.novelty_judge_fallback_model,
         token_budget=int(settings.novelty_judge_token_budget),
+        router_client=router,
     )
 
     proposals = judged = candidates_n = 0
@@ -226,8 +224,7 @@ async def run_entity_resolution(workspace_id: str, cap: int | None = None) -> di
             await session.commit()
     finally:
         await _aclose(neo)
-        await _aclose(wormsoft)
-        await _aclose(polza)
+        await _aclose(router)
 
     logger.info(
         "entity_resolution workspace=%s candidates=%d judged=%d proposals=%d",

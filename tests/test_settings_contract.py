@@ -73,6 +73,26 @@ OWN_STAKE_ALIASES: tuple[str, ...] = (
     "RELEVANCE_HIGH",
 )
 
+# Wormsoft credit enforcement is shared by every service that can initiate an
+# LLM call. Keep the list explicit: a missing compose passthrough otherwise
+# silently leaves that service on the Settings default.
+WORMSOFT_CREDIT_ALIASES: tuple[str, ...] = (
+    "WORMSOFT_CREDIT_THROTTLE_ENABLED",
+    "WORMSOFT_CREDIT_WINDOW_SECONDS",
+    "WORMSOFT_CREDIT_WINDOW_LIMIT",
+    "WORMSOFT_CREDIT_SOFT_CAP_RATIO",
+    "WORMSOFT_CREDIT_HARD_CAP_RATIO",
+    "WORMSOFT_CREDIT_SOFT_CAP_SHADOW_RATIO",
+    "WORMSOFT_CREDIT_FAIL_CLOSED",
+)
+WORMSOFT_CREDIT_SERVICES: tuple[str, ...] = ("admin", "mcp", "worker")
+NOVELTY_JUDGE_SERVICES: tuple[str, ...] = ("admin", "worker")
+WORMSOFT_PAYED_COMPOSE_DEFAULTS: dict[str, str] = {
+    "WORMSOFT_CREDIT_WINDOW_SECONDS": "${WORMSOFT_CREDIT_WINDOW_SECONDS:-14400}",
+    "WORMSOFT_CREDIT_WINDOW_LIMIT": "${WORMSOFT_CREDIT_WINDOW_LIMIT:-3000000}",
+    "WORMSOFT_CREDIT_HARD_CAP_RATIO": "${WORMSOFT_CREDIT_HARD_CAP_RATIO:-0.95}",
+}
+
 # Префиксы фич, документированных в .env.example.
 DOCUMENTED_PREFIXES: tuple[str, ...] = (
     "OWN_STAKE",
@@ -80,6 +100,7 @@ DOCUMENTED_PREFIXES: tuple[str, ...] = (
     "RELEVANCE_HIGH",
     "MISSING_SIGNALS",
     "SEARXNG",
+    "WORMSOFT_CREDIT",
 )
 
 # Строка вида `KEY=value`, в том числе закомментированная (`# KEY=value`).
@@ -288,3 +309,34 @@ def test_own_stake_aliases_present_by_exact_name() -> None:
     aliases = _settings_aliases()
     missing = [alias for alias in OWN_STAKE_ALIASES if alias not in aliases]
     assert not missing, f"own_stake aliases missing from shared/config.py: {missing}"
+
+
+def test_wormsoft_credit_aliases_present_by_exact_name() -> None:
+    aliases = _settings_aliases()
+    missing = [alias for alias in WORMSOFT_CREDIT_ALIASES if alias not in aliases]
+    assert not missing, f"Wormsoft credit aliases missing from shared/config.py: {missing}"
+
+
+def test_wormsoft_credit_settings_reach_every_llm_service() -> None:
+    compose = dict(_compose_environment())
+    for service in WORMSOFT_CREDIT_SERVICES:
+        missing = sorted(set(WORMSOFT_CREDIT_ALIASES) - set(compose.get(service, ())))
+        assert not missing, f"{service} does not receive Wormsoft credit settings: {missing}"
+
+
+def test_model_aware_judge_settings_reach_scheduled_job_services() -> None:
+    compose = dict(_compose_environment())
+    for service in NOVELTY_JUDGE_SERVICES:
+        assert "NOVELTY_JUDGE_MODEL" in compose.get(service, ())
+        assert "NOVELTY_JUDGE_FALLBACK_MODEL" in compose.get(service, ())
+
+
+def test_wormsoft_compose_defaults_match_payed_window() -> None:
+    data = yaml.safe_load(COMPOSE_YML.read_text(encoding="utf-8")) or {}
+    services = data.get("services") or {}
+    for service in WORMSOFT_CREDIT_SERVICES:
+        environment = (services.get(service) or {}).get("environment") or {}
+        actual = {key: environment.get(key) for key in WORMSOFT_PAYED_COMPOSE_DEFAULTS}
+        assert actual == WORMSOFT_PAYED_COMPOSE_DEFAULTS, (
+            f"{service} Wormsoft defaults do not match the Payed 3M/4h window: {actual}"
+        )

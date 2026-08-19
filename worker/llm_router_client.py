@@ -119,7 +119,11 @@ class LLMRouterClient:
             settings=self._settings,
         )
         self._budget_manager = ProviderBudgetManager(redis=redis, settings=self._settings)
-        self._wormsoft_credit_guard = WormsoftCreditGuard(self._budget_manager, settings=self._settings)
+        self._wormsoft_credit_guard = WormsoftCreditGuard(
+            self._budget_manager,
+            settings=self._settings,
+            service_name=service_name,
+        )
         self._published_quota_guard = ProviderPublishedQuotaGuard(
             redis=redis,
             settings=self._settings,
@@ -1038,6 +1042,7 @@ class LLMRouterClient:
                     actual_units=cost_estimate if cost_estimate is not None else 1.0,
                     prompt_tokens=response.usage.prompt_tokens,
                     completion_tokens=response.usage.completion_tokens,
+                    cached_prompt_tokens=response.usage.precached_prompt_tokens,
                     billable_tokens=response.usage.billable_tokens,
                 )
                 receipt = ExecutionReceipt(
@@ -1728,6 +1733,7 @@ class LLMRouterClient:
                         actual_units=cost_estimate if cost_estimate is not None else 1.0,
                         prompt_tokens=response.usage.prompt_tokens,
                         completion_tokens=response.usage.completion_tokens,
+                        cached_prompt_tokens=response.usage.precached_prompt_tokens,
                         billable_tokens=response.usage.billable_tokens,
                     )
                     attempt_outcomes.append(
@@ -1814,6 +1820,7 @@ class LLMRouterClient:
                         actual_units=cost_estimate if cost_estimate is not None else 1.0,
                         prompt_tokens=response.usage.prompt_tokens,
                         completion_tokens=response.usage.completion_tokens,
+                        cached_prompt_tokens=response.usage.precached_prompt_tokens,
                         billable_tokens=response.usage.billable_tokens,
                     )
                     attempt_outcomes.append(
@@ -2038,6 +2045,7 @@ class LLMRouterClient:
         wormsoft_allowed, wormsoft_reason = await self._wormsoft_credit_guard.allow(
             provider=provider,
             execution_role=execution_role,
+            requested_model=model,
         )
         if not wormsoft_allowed:
             note_llm_throttle_event(self._service_name, normalize_provider(provider), wormsoft_reason)
@@ -2508,6 +2516,7 @@ class LLMRouterClient:
                     actual_units=cost_estimate if cost_estimate is not None else 1.0,
                     prompt_tokens=response.usage.prompt_tokens,
                     completion_tokens=response.usage.completion_tokens,
+                    cached_prompt_tokens=response.usage.precached_prompt_tokens,
                     billable_tokens=response.usage.billable_tokens,
                 )
                 receipt = ExecutionReceipt(

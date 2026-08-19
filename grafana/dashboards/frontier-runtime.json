@@ -1442,18 +1442,207 @@
       "pluginVersion": "11.2.2",
       "targets": [
         {
-          "expr": "sum(increase(frontier_llm_fallbacks_total{service=\"worker\",reason=~\"provider_unavailable|upstream_5xx|timeout|connection\"}[15m])) / clamp_min(sum(increase(frontier_llm_fallbacks_total{service=\"worker\"}[15m])), 1)",
+          "expr": "sum(increase(frontier_llm_fallbacks_total{service=\"worker\",reason=~\"provider_unavailable|upstream_5xx|timeout|connection|.*_(timeout|connection|5xx|unavailable)\"}[15m])) / clamp_min(sum(increase(frontier_llm_fallbacks_total{service=\"worker\"}[15m])), 1)",
           "legendFormat": "outage_like_share",
           "refId": "A"
         },
         {
-          "expr": "sum(increase(frontier_llm_throttle_events_total{service=\"worker\"}[15m])) / clamp_min(sum(increase(frontier_llm_fallbacks_total{service=\"worker\"}[15m])), 1)",
-          "legendFormat": "local_throttle_share",
+          "expr": "sum(increase(frontier_llm_fallbacks_total{service=\"worker\",reason=~\"wormsoft_credit_soft_cap|wormsoft_credit_hard_cap|runtime_soft_cap.*|runtime_hard_cap.*\"}[15m])) / clamp_min(sum(increase(frontier_llm_fallbacks_total{service=\"worker\"}[15m])), 1)",
+          "legendFormat": "local_policy_fallback_share",
           "refId": "B"
         }
       ],
       "title": "Fallback Cause Share (15m)",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.8
+              },
+              {
+                "color": "red",
+                "value": 0.95
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 64
+      },
+      "id": 20,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "11.2.2",
+      "targets": [
+        {
+          "expr": "max(frontier_wormsoft_credit_utilization_ratio and on(service) (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300))",
+          "legendFormat": "account utilization",
+          "refId": "A"
+        }
+      ],
+      "title": "Wormsoft Credit Utilization",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 64
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "11.2.2",
+      "targets": [
+        {
+          "expr": "max(frontier_wormsoft_credit_window_usage and on(service) (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300))",
+          "legendFormat": "used",
+          "refId": "A"
+        },
+        {
+          "expr": "clamp_min(max(frontier_wormsoft_credit_window_limit and on(service) (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)) - max(frontier_wormsoft_credit_window_usage and on(service) (time() - frontier_wormsoft_credit_window_refresh_timestamp_seconds < 300)), 0)",
+          "legendFormat": "estimated remaining",
+          "refId": "B"
+        }
+      ],
+      "title": "Wormsoft Credits in Trailing Window",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.2.2",
+      "targets": [
+        {
+          "expr": "sum by (task, kind) (increase(frontier_wormsoft_credits_estimated_total{kind!=\"total\"}[4h]))",
+          "legendFormat": "{{task}} / {{kind}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Wormsoft Credits by Task and Token Kind (4h)",
+      "type": "timeseries"
     }
   ],
   "refresh": "15s",
@@ -1475,6 +1664,6 @@
   "timezone": "",
   "title": "Frontier Runtime",
   "uid": "frontier-runtime",
-  "version": 2,
+  "version": 4,
   "weekStart": ""
 }

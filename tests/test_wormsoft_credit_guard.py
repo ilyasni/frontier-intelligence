@@ -6,6 +6,7 @@ from shared.llm_control_plane import EXECUTION_ROLE_PRIMARY, EXECUTION_ROLE_SHAD
 from worker.wormsoft_credit_guard import (
     REASON_HARD_CAP,
     REASON_OK,
+    REASON_PRICING_UNKNOWN,
     REASON_READ_FAILED,
     REASON_SOFT_CAP,
     WormsoftCreditGuard,
@@ -38,7 +39,7 @@ def _settings(**overrides):
         wormsoft_credit_window_seconds=14400,
         wormsoft_credit_window_limit=3000000.0,
         wormsoft_credit_soft_cap_ratio=0.8,
-        wormsoft_credit_hard_cap_ratio=0.98,
+        wormsoft_credit_hard_cap_ratio=0.95,
         wormsoft_credit_soft_cap_shadow_ratio=0.7,
     )
     values.update(overrides)
@@ -59,18 +60,18 @@ async def test_allow_under_soft_cap():
 
 
 @pytest.mark.asyncio
-async def test_allow_blocks_on_soft_cap():
-    # soft cap = 0.8 * 3M = 2.4M; usage at 2.5M crosses soft but not hard (2.94M)
+async def test_primary_soft_cap_is_observability_threshold_not_a_deny():
+    # 80% is an early-warning threshold; primary traffic continues until the hard cap.
     guard = _guard(_FakeBudget(used=2_500_000.0), _settings())
     allowed, reason = await guard.allow(provider="wormsoft", execution_role=EXECUTION_ROLE_PRIMARY)
-    assert allowed is False
-    assert reason == REASON_SOFT_CAP
+    assert allowed is True
+    assert reason == REASON_OK
 
 
 @pytest.mark.asyncio
 async def test_allow_blocks_on_hard_cap():
-    # hard cap = 0.98 * 3M = 2.94M; usage at 2.95M crosses hard
-    guard = _guard(_FakeBudget(used=2_950_000.0), _settings())
+    # hard cap = 0.95 * 3M = 2.85M; usage at 2.86M crosses hard
+    guard = _guard(_FakeBudget(used=2_860_000.0), _settings())
     allowed, reason = await guard.allow(provider="wormsoft", execution_role=EXECUTION_ROLE_PRIMARY)
     assert allowed is False
     assert reason == REASON_HARD_CAP
@@ -137,15 +138,28 @@ async def test_usage_read_failure_fails_closed_for_primary_via_setting():
 
 
 @pytest.mark.asyncio
-async def test_usage_read_failure_fails_open_for_shadow_even_when_hardened():
-    # Shadow stays fail-open (non-critical) even with fail-closed hardening.
+async def test_usage_read_failure_always_skips_optional_shadow_work():
     guard = _guard(
         _FakeBudget(raise_on_usage=True),
         _settings(wormsoft_credit_fail_closed=True),
     )
     allowed, reason = await guard.allow(provider="wormsoft", execution_role=EXECUTION_ROLE_SHADOW)
-    assert allowed is True
-    assert reason == REASON_OK
+    assert allowed is False
+    assert reason == REASON_READ_FAILED
+
+
+@pytest.mark.asyncio
+async def test_unknown_pricing_model_is_rejected_when_enforcement_is_enabled():
+    guard = _guard(_FakeBudget(used=0.0), _settings())
+
+    allowed, reason = await guard.allow(
+        provider="wormsoft",
+        execution_role=EXECUTION_ROLE_PRIMARY,
+        requested_model="vendor/new-model",
+    )
+
+    assert allowed is False
+    assert reason == REASON_PRICING_UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -157,7 +171,15 @@ async def test_usage_read_failure_fails_closed_via_env(monkeypatch):
     assert reason == REASON_READ_FAILED
 
 
-def _receipt(*, provider="wormsoft", cost=1000.0):
+def _receipt(
+    *,
+    provider="wormsoft",
+    cost=1000.0,
+    pricing_model="wormsoft/agent/medium",
+    prompt_tokens=1000,
+    completion_tokens=100,
+    cached_prompt_tokens=0,
+):
     return ExecutionReceipt(
         task="relevance",
         task_family="text_generation",
@@ -168,6 +190,12 @@ def _receipt(*, provider="wormsoft", cost=1000.0):
         actual_provider=provider,
         actual_model="gemma4:31b-cloud",
         actual_cost=cost,
+        budget_attribution={
+            "model": pricing_model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cached_prompt_tokens": cached_prompt_tokens,
+        },
     )
 
 
@@ -176,7 +204,7 @@ async def test_record_adds_usage_for_wormsoft():
     budget = _FakeBudget()
     await _guard(budget, _settings()).record(_receipt(cost=1234.0))
     assert len(budget.added) == 1
-    assert budget.added[0]["credits"] == 1234.0
+    assert budget.added[0]["credits"] == pytest.approx(130.0)
     assert budget.added[0]["window_seconds"] == 14400
 
 
@@ -188,14 +216,33 @@ async def test_record_skips_non_wormsoft():
 
 
 @pytest.mark.asyncio
-async def test_record_skips_zero_cost():
+async def test_record_uses_usage_even_when_generic_cost_is_zero():
     budget = _FakeBudget()
     await _guard(budget, _settings()).record(_receipt(cost=0.0))
-    assert budget.added == []
+    assert budget.added[0]["credits"] == pytest.approx(130.0)
 
 
 @pytest.mark.asyncio
-async def test_record_skips_when_disabled():
+async def test_record_keeps_shadow_accounting_when_enforcement_is_disabled():
     budget = _FakeBudget()
     await _guard(budget, _settings(wormsoft_credit_throttle_enabled=False)).record(_receipt(cost=10.0))
+    assert budget.added[0]["credits"] == pytest.approx(130.0)
+
+
+@pytest.mark.asyncio
+async def test_record_prices_cached_tokens_separately():
+    budget = _FakeBudget()
+    await _guard(budget, _settings()).record(
+        _receipt(prompt_tokens=1000, completion_tokens=100, cached_prompt_tokens=400)
+    )
+
+    assert budget.added[0]["credits"] == pytest.approx(118.02)
+
+
+@pytest.mark.asyncio
+async def test_record_skips_unknown_pricing_model(caplog):
+    budget = _FakeBudget()
+    await _guard(budget, _settings()).record(_receipt(pricing_model="vendor/unknown"))
+
     assert budget.added == []
+    assert "wormsoft_credit_record_skipped_unknown_model" in caplog.text

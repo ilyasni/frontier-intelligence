@@ -9,6 +9,7 @@ from worker.provider_budget_manager import ProviderBudgetManager
 class _FakeRedis:
     def __init__(self):
         self.data = {}
+        self.zsets = {}
 
     async def hgetall(self, key):
         return dict(self.data.get(key, {}))
@@ -33,6 +34,57 @@ class _FakeRedis:
 
     async def expire(self, key, ttl):
         return True
+
+    @staticmethod
+    def _score(value):
+        if value == "-inf":
+            return float("-inf"), False
+        if value == "+inf":
+            return float("inf"), False
+        raw = str(value)
+        exclusive = raw.startswith("(")
+        return float(raw[1:] if exclusive else raw), exclusive
+
+    async def zadd(self, key, mapping):
+        bucket = self.zsets.setdefault(key, {})
+        bucket.update({str(member): float(score) for member, score in mapping.items()})
+        return len(mapping)
+
+    async def zremrangebyscore(self, key, minimum, maximum):
+        bucket = self.zsets.setdefault(key, {})
+        lower, lower_exclusive = self._score(minimum)
+        upper, upper_exclusive = self._score(maximum)
+        removed = []
+        for member, score in bucket.items():
+            lower_match = score > lower if lower_exclusive else score >= lower
+            upper_match = score < upper if upper_exclusive else score <= upper
+            if lower_match and upper_match:
+                removed.append(member)
+        for member in removed:
+            del bucket[member]
+        return len(removed)
+
+    async def zrangebyscore(self, key, minimum, maximum):
+        bucket = self.zsets.setdefault(key, {})
+        lower, lower_exclusive = self._score(minimum)
+        upper, upper_exclusive = self._score(maximum)
+        rows = []
+        for member, score in bucket.items():
+            lower_match = score > lower if lower_exclusive else score >= lower
+            upper_match = score < upper if upper_exclusive else score <= upper
+            if lower_match and upper_match:
+                rows.append((score, member))
+        return [member for _, member in sorted(rows)]
+
+
+class _EvalRedis:
+    def __init__(self, *results: str):
+        self.results = list(results)
+        self.calls = []
+
+    async def eval(self, *args):
+        self.calls.append(args)
+        return self.results.pop(0)
 
 
 def _settings():
@@ -178,3 +230,82 @@ async def test_provider_budget_manager_tracks_credit_window_usage() -> None:
 
     assert total == pytest.approx(125.5)
     assert usage == pytest.approx(125.5)
+
+
+@pytest.mark.asyncio
+async def test_credit_window_uses_atomic_redis_scripts_when_available() -> None:
+    redis = _EvalRedis("125.5", "125.5")
+    manager = ProviderBudgetManager(redis=redis, settings=_settings())
+
+    total = await manager.add_credit_usage(
+        provider="wormsoft",
+        credits=125.5,
+        window_seconds=14400,
+    )
+    usage = await manager.credit_window_usage(provider="wormsoft", window_seconds=14400)
+
+    assert total == pytest.approx(125.5)
+    assert usage == pytest.approx(125.5)
+    assert len(redis.calls) == 2
+    assert redis.calls[0][1] == 2
+    assert redis.calls[0][2].endswith(":wormsoft:14400")
+    assert redis.calls[0][3].endswith(":wormsoft:14400:total")
+    assert "ZADD" in redis.calls[0][0]
+    assert "ZRANGEBYSCORE" in redis.calls[1][0]
+
+
+@pytest.mark.asyncio
+async def test_credit_window_counts_bursts_by_event_timestamp(monkeypatch) -> None:
+    now = 1_000.0
+    monkeypatch.setattr("worker.provider_budget_manager.time.time", lambda: now)
+    manager = ProviderBudgetManager(redis=_FakeRedis(), settings=_settings())
+
+    await manager.add_credit_usage(provider="wormsoft", credits=100.0, window_seconds=60)
+    now = 1_059.0
+    await manager.add_credit_usage(provider="wormsoft", credits=25.0, window_seconds=60)
+    assert await manager.credit_window_usage(
+        provider="wormsoft", window_seconds=60
+    ) == pytest.approx(125.0)
+
+    now = 1_061.0
+    assert await manager.credit_window_usage(
+        provider="wormsoft", window_seconds=60
+    ) == pytest.approx(25.0)
+
+
+@pytest.mark.asyncio
+async def test_credit_window_includes_event_exactly_at_cutoff(monkeypatch) -> None:
+    now = 2_000.0
+    monkeypatch.setattr("worker.provider_budget_manager.time.time", lambda: now)
+    manager = ProviderBudgetManager(redis=_FakeRedis(), settings=_settings())
+
+    await manager.add_credit_usage(provider="wormsoft", credits=50.0, window_seconds=60)
+    now = 2_060.0
+
+    assert await manager.credit_window_usage(
+        provider="wormsoft", window_seconds=60
+    ) == pytest.approx(50.0)
+
+
+@pytest.mark.asyncio
+async def test_credit_window_read_errors_are_not_silently_zeroed() -> None:
+    class _BrokenRedis(_FakeRedis):
+        async def zremrangebyscore(self, key, minimum, maximum):
+            raise ConnectionError("redis unavailable")
+
+    manager = ProviderBudgetManager(redis=_BrokenRedis(), settings=_settings())
+
+    with pytest.raises(ConnectionError, match="redis unavailable"):
+        await manager.credit_window_usage(provider="wormsoft", window_seconds=60)
+
+
+@pytest.mark.asyncio
+async def test_credit_window_rejects_non_finite_credits() -> None:
+    manager = ProviderBudgetManager(redis=_FakeRedis(), settings=_settings())
+
+    with pytest.raises(ValueError, match="credits must be finite"):
+        await manager.add_credit_usage(
+            provider="wormsoft",
+            credits=float("nan"),
+            window_seconds=60,
+        )

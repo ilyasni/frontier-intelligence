@@ -17,8 +17,7 @@ from sqlalchemy import text
 from shared.config import get_settings
 from shared.metrics import note_novelty_judge
 from worker.chains.novelty_judge_chain import NoveltyJudgeChain
-from worker.polza_text_client import PolzaTextClient
-from worker.wormsoft_client import WormsoftTextClient
+from worker.llm_router_client import LLMRouterClient
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +40,14 @@ async def run_novelty_judge(workspace_id: str, cap: int | None = None) -> dict[s
     threshold = float(settings.novelty_judge_threshold)
     from shared.db import get_session_factory
 
-    wormsoft = WormsoftTextClient(service_name="worker")
-    polza = PolzaTextClient(service_name="worker")
+    router = LLMRouterClient(service_name="worker")
     chain = NoveltyJudgeChain(
-        wormsoft,
-        polza,
+        None,
+        None,
         model=settings.novelty_judge_model,
         fallback_model=settings.novelty_judge_fallback_model,
         token_budget=int(settings.novelty_judge_token_budget),
+        router_client=router,
     )
 
     judged = underrated = failed = 0
@@ -94,8 +93,7 @@ async def run_novelty_judge(workspace_id: str, cap: int | None = None) -> dict[s
                     note_novelty_judge("worker", "confirmed_weak")
             await session.commit()
     finally:
-        await _aclose(wormsoft)
-        await _aclose(polza)
+        await _aclose(router)
 
     logger.info(
         "novelty_judge workspace=%s judged=%d underrated=%d failed=%d",

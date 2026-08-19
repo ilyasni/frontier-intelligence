@@ -53,7 +53,11 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALERTS_YML = REPO_ROOT / "prometheus" / "alerts.yml"
 ALERTS_TEST_YML = REPO_ROOT / "prometheus" / "alerts.test.yml"
-EXPORTER = REPO_ROOT / "scripts" / "export-analysis-freshness.sh"
+METRIC_EXPORTERS = (
+    REPO_ROOT / "scripts" / "export-analysis-freshness.sh",
+    REPO_ROOT / "scripts" / "export-backup-metrics.sh",
+    REPO_ROOT / "shared" / "metrics.py",
+)
 VERIFY_SCRIPT = REPO_ROOT / "scripts" / "verify-alert-rules.sh"
 CLUSTERING = REPO_ROOT / "worker" / "services" / "semantic_clustering.py"
 
@@ -71,7 +75,9 @@ PRIOR_WINDOW = "prior"
 
 @lru_cache(maxsize=1)
 def _exporter_text() -> str:
-    return EXPORTER.read_text(encoding="utf-8", errors="replace")
+    return "\n".join(
+        path.read_text(encoding="utf-8", errors="replace") for path in METRIC_EXPORTERS
+    )
 
 
 @lru_cache(maxsize=1)
@@ -147,7 +153,13 @@ def _exporter_metric_names() -> frozenset[str]:
 
 
 def test_extraction_is_not_vacuous() -> None:
-    for path in (ALERTS_YML, ALERTS_TEST_YML, EXPORTER, VERIFY_SCRIPT, CLUSTERING):
+    for path in (
+        ALERTS_YML,
+        ALERTS_TEST_YML,
+        *METRIC_EXPORTERS,
+        VERIFY_SCRIPT,
+        CLUSTERING,
+    ):
         assert path.is_file(), f"missing required file: {path}"
     assert len(_rules()) >= 40, f"alerts.yml parsed into {len(_rules())} rules"
     assert len(_promtool_cases()) >= 3, (

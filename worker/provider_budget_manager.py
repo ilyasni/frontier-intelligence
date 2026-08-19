@@ -2,15 +2,111 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from typing import Any
 
 from shared.config import get_settings
 from shared.llm_control_plane import BudgetWindowState, CostAggregateState, ExecutionReceipt
-from shared.llm_routing import PROVIDER_GIGACHAT, PROVIDER_OPENROUTER, PROVIDER_POLZA, PROVIDER_WORMSOFT, normalize_provider
+from shared.llm_routing import (
+    PROVIDER_GIGACHAT,
+    PROVIDER_OPENROUTER,
+    PROVIDER_POLZA,
+    PROVIDER_WORMSOFT,
+    normalize_provider,
+)
 
 logger = logging.getLogger(__name__)
+
+
+_CREDIT_WINDOW_ADD_LUA = """
+local events_key = KEYS[1]
+local total_key = KEYS[2]
+local exclusive_cutoff = "(" .. ARGV[1]
+local now = tonumber(ARGV[2])
+local member = ARGV[3]
+local amount = tonumber(ARGV[4]) or 0
+local ttl = tonumber(ARGV[5])
+
+local function member_credits(value)
+    return tonumber(string.match(value, "([^:]+)$")) or 0
+end
+
+local expired = redis.call("ZRANGEBYSCORE", events_key, "-inf", exclusive_cutoff)
+local expired_credits = 0
+for _, value in ipairs(expired) do
+    expired_credits = expired_credits + member_credits(value)
+end
+if #expired > 0 then
+    redis.call("ZREMRANGEBYSCORE", events_key, "-inf", exclusive_cutoff)
+end
+
+local total_raw = redis.call("GET", total_key)
+local current = 0
+if total_raw then
+    current = (tonumber(total_raw) or 0) - expired_credits
+else
+    local active = redis.call("ZRANGE", events_key, 0, -1)
+    for _, value in ipairs(active) do
+        current = current + member_credits(value)
+    end
+end
+if redis.call("ZCARD", events_key) == 0 or current < 0 then
+    current = 0
+end
+
+if amount > 0 then
+    redis.call("ZADD", events_key, now, member)
+    current = current + amount
+end
+redis.call("SET", total_key, tostring(current), "EX", ttl)
+if redis.call("ZCARD", events_key) > 0 then
+    redis.call("EXPIRE", events_key, ttl)
+end
+return tostring(current)
+"""
+
+
+_CREDIT_WINDOW_READ_LUA = """
+local events_key = KEYS[1]
+local total_key = KEYS[2]
+local exclusive_cutoff = "(" .. ARGV[1]
+local ttl = tonumber(ARGV[2])
+
+local function member_credits(value)
+    return tonumber(string.match(value, "([^:]+)$")) or 0
+end
+
+local expired = redis.call("ZRANGEBYSCORE", events_key, "-inf", exclusive_cutoff)
+local expired_credits = 0
+for _, value in ipairs(expired) do
+    expired_credits = expired_credits + member_credits(value)
+end
+if #expired > 0 then
+    redis.call("ZREMRANGEBYSCORE", events_key, "-inf", exclusive_cutoff)
+end
+
+local total_raw = redis.call("GET", total_key)
+local current = 0
+if total_raw then
+    current = (tonumber(total_raw) or 0) - expired_credits
+else
+    local active = redis.call("ZRANGE", events_key, 0, -1)
+    for _, value in ipairs(active) do
+        current = current + member_credits(value)
+    end
+end
+if redis.call("ZCARD", events_key) == 0 or current < 0 then
+    current = 0
+end
+
+redis.call("SET", total_key, tostring(current), "EX", ttl)
+if redis.call("ZCARD", events_key) > 0 then
+    redis.call("EXPIRE", events_key, ttl)
+end
+return tostring(current)
+"""
 
 
 def _day_key() -> str:
@@ -42,6 +138,8 @@ class ProviderBudgetManager:
                 self._managed_redis = aioredis.from_url(
                     redis_url,
                     decode_responses=True,
+                    socket_connect_timeout=2.0,
+                    socket_timeout=2.0,
                 )
             except Exception:
                 logger.debug("budget_redis_client_init_failed", exc_info=True)
@@ -53,23 +151,52 @@ class ProviderBudgetManager:
         return max(60, int(window_seconds or 3600))
 
     @staticmethod
-    def _credit_window_label(window_seconds: int) -> str:
-        now = int(time.time())
-        size = ProviderBudgetManager._credit_window_size(window_seconds)
-        return str(now // size)
-
-    @staticmethod
-    def _credit_window_key_for_label(provider: str, *, window_seconds: int, label: str) -> str:
-        normalized_provider = normalize_provider(provider)
-        return f"llm:budget:credit_window:{normalized_provider}:{window_seconds}:{label}"
-
-    @staticmethod
     def _credit_window_key(provider: str, *, window_seconds: int) -> str:
-        return ProviderBudgetManager._credit_window_key_for_label(
-            provider,
-            window_seconds=window_seconds,
-            label=ProviderBudgetManager._credit_window_label(window_seconds),
-        )
+        """Versioned event key for an exact trailing credit window.
+
+        Versioning intentionally avoids mixing the old raw-token tumbling buckets
+        with pricing-weighted credits written by the corrected estimator.
+        """
+        normalized_provider = normalize_provider(provider)
+        size = ProviderBudgetManager._credit_window_size(window_seconds)
+        return f"llm:budget:credit_window:v2:{normalized_provider}:{size}"
+
+    @staticmethod
+    def _credit_window_total_key(events_key: str) -> str:
+        return f"{events_key}:total"
+
+    @staticmethod
+    def _credit_window_member(*, timestamp: float, credits: float) -> str:
+        return f"{timestamp:.6f}:{uuid.uuid4().hex}:{credits:.12g}"
+
+    @staticmethod
+    def _credit_window_member_credits(member: Any) -> float:
+        raw = member.decode("utf-8") if isinstance(member, bytes) else str(member)
+        try:
+            value = float(raw.rsplit(":", 1)[-1])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid credit-window event") from exc
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError("invalid credit-window credit value")
+        return value
+
+    @staticmethod
+    async def _eval_credit_window(
+        redis: Any,
+        *,
+        script: str,
+        keys: tuple[str, str],
+        args: tuple[Any, ...],
+    ) -> float | None:
+        """Run the atomic Redis path, or return ``None`` for lightweight test fakes."""
+        evaluator = getattr(redis, "eval", None)
+        if not callable(evaluator):
+            return None
+        raw = await evaluator(script, len(keys), *keys, *args)
+        value = float(raw or 0.0)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError("invalid credit-window total")
+        return value
 
     @staticmethod
     def _runtime_budget_key(
@@ -292,64 +419,62 @@ class ProviderBudgetManager:
     ) -> float:
         redis = await self._client()
         if redis is None:
-            return 0.0
-        key = self._credit_window_key(provider, window_seconds=window_seconds)
-        ttl = max(2 * max(60, int(window_seconds or 3600)), 120)
+            raise RuntimeError("credit window requires Redis")
+        size = self._credit_window_size(window_seconds)
+        key = self._credit_window_key(provider, window_seconds=size)
+        total_key = self._credit_window_total_key(key)
+        ttl = max(2 * size, 120)
+        now = time.time()
+        cutoff = now - size
+        amount = float(credits or 0.0)
+        if not math.isfinite(amount):
+            raise ValueError("credits must be finite")
+        amount = max(0.0, amount)
         try:
-            total = await redis.hincrbyfloat(key, "used_credits", float(max(0.0, credits or 0.0)))
-            await redis.hset(
-                key,
-                mapping={
-                    "provider": normalize_provider(provider),
-                    "window_seconds": str(max(60, int(window_seconds or 3600))),
-                    "updated_at": str(time.time()),
-                },
+            member = self._credit_window_member(timestamp=now, credits=amount)
+            atomic_total = await self._eval_credit_window(
+                redis,
+                script=_CREDIT_WINDOW_ADD_LUA,
+                keys=(key, total_key),
+                args=(f"{cutoff:.6f}", f"{now:.6f}", member, amount, ttl),
             )
+            if atomic_total is not None:
+                return atomic_total
+            if amount > 0.0:
+                await redis.zadd(key, {member: now})
+            await redis.zremrangebyscore(key, "-inf", f"({cutoff:.6f}")
+            members = await redis.zrangebyscore(key, cutoff, "+inf")
             await redis.expire(key, ttl)
-            return float(total or 0.0)
+            return sum(self._credit_window_member_credits(item) for item in members)
         except Exception:
             logger.warning("budget_add_credit_usage_failed", exc_info=True)
-            return 0.0
+            raise
 
     async def credit_window_usage(self, *, provider: str, window_seconds: int) -> float:
-        """Sliding-window estimate of credit usage over the trailing ``window_seconds``.
-
-        Storage stays tumbling (one hash per ``now // size`` bucket), but the read
-        approximates a rolling window: it sums the current bucket in full plus the
-        previous bucket weighted by how much of it still falls inside the trailing
-        window. With ``elapsed = now % size``, a trailing window of ``size`` seconds
-        covers ``elapsed`` of the current bucket and ``size - elapsed`` of the previous
-        one, so ``used ≈ cur + prev * (1 - elapsed/size)``. Right after a boundary the
-        weight is ~1 (previous window still fully counted), preventing the ~2x breach a
-        pure tumbling counter allowed; the weight decays to 0 as the bucket fills. This
-        can only over-estimate vs. a true rolling counter, so it never under-throttles.
-        """
+        """Return exact event-summed usage over the trailing ``window_seconds``."""
         redis = await self._client()
         if redis is None:
-            return 0.0
+            raise RuntimeError("credit window requires Redis")
         size = self._credit_window_size(window_seconds)
-        now = int(time.time())
-        cur_label = now // size
-        elapsed_ratio = (now % size) / size  # 0.0 at boundary → 1.0 at bucket end
-        prev_weight = max(0.0, 1.0 - elapsed_ratio)
-
-        async def _bucket_used(label: int) -> float:
-            key = self._credit_window_key_for_label(
-                provider, window_seconds=window_seconds, label=str(label)
+        key = self._credit_window_key(provider, window_seconds=size)
+        total_key = self._credit_window_total_key(key)
+        ttl = max(2 * size, 120)
+        cutoff = time.time() - size
+        try:
+            atomic_total = await self._eval_credit_window(
+                redis,
+                script=_CREDIT_WINDOW_READ_LUA,
+                keys=(key, total_key),
+                args=(f"{cutoff:.6f}", ttl),
             )
-            try:
-                raw = await redis.hgetall(key)
-            except Exception:
-                logger.warning("budget_credit_window_read_failed", exc_info=True)
-                return 0.0
-            try:
-                return float((raw or {}).get("used_credits") or 0.0)
-            except (TypeError, ValueError):
-                return 0.0
-
-        cur_used = await _bucket_used(cur_label)
-        prev_used = await _bucket_used(cur_label - 1) if prev_weight > 0.0 else 0.0
-        return cur_used + prev_used * prev_weight
+            if atomic_total is not None:
+                return atomic_total
+            await redis.zremrangebyscore(key, "-inf", f"({cutoff:.6f}")
+            members = await redis.zrangebyscore(key, cutoff, "+inf")
+        except Exception:
+            logger.warning("budget_credit_window_read_failed", exc_info=True)
+            raise
+        return sum(self._credit_window_member_credits(item) for item in members)
 
     async def _scope_snapshot(
         self,
@@ -527,6 +652,7 @@ class ProviderBudgetManager:
         actual_units: float | None = None,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        cached_prompt_tokens: int = 0,
         billable_tokens: int = 0,
     ) -> dict[str, Any]:
         payload = dict(reservation or {})
@@ -540,6 +666,7 @@ class ProviderBudgetManager:
         )
         payload["prompt_tokens"] = int(prompt_tokens or 0)
         payload["completion_tokens"] = int(completion_tokens or 0)
+        payload["cached_prompt_tokens"] = int(cached_prompt_tokens or 0)
         payload["billable_tokens"] = int(billable_tokens or 0)
         payload["committed_at"] = time.time()
         redis = await self._client()
@@ -561,6 +688,11 @@ class ProviderBudgetManager:
                 await redis.hincrby(key, "active_requests", -1)
                 await redis.hincrby(key, "prompt_tokens", payload["prompt_tokens"])
                 await redis.hincrby(key, "completion_tokens", payload["completion_tokens"])
+                await redis.hincrby(
+                    key,
+                    "cached_prompt_tokens",
+                    payload["cached_prompt_tokens"],
+                )
                 await redis.hincrby(key, "billable_tokens", payload["billable_tokens"])
                 await redis.hset(key, mapping={"updated_at": str(time.time())})
                 await redis.expire(key, ttl)
@@ -593,6 +725,9 @@ class ProviderBudgetManager:
             else 0.0,
             "prompt_tokens": int(receipt.budget_attribution.get("prompt_tokens") or 0),
             "completion_tokens": int(receipt.budget_attribution.get("completion_tokens") or 0),
+            "cached_prompt_tokens": int(
+                receipt.budget_attribution.get("cached_prompt_tokens") or 0
+            ),
             "billable_tokens": int(receipt.budget_attribution.get("billable_tokens") or 0),
             "unit": str(receipt.cost_currency or "credits"),
             "day": _day_key(),
@@ -629,6 +764,10 @@ class ProviderBudgetManager:
                     ("hincrbyfloat", (key, "cost_drift_total", payload["cost_drift"])),
                     ("hincrby", (key, "prompt_tokens", payload["prompt_tokens"])),
                     ("hincrby", (key, "completion_tokens", payload["completion_tokens"])),
+                    (
+                        "hincrby",
+                        (key, "cached_prompt_tokens", payload["cached_prompt_tokens"]),
+                    ),
                     ("hincrby", (key, "billable_tokens", payload["billable_tokens"])),
                     (
                         "hset",
@@ -754,19 +893,6 @@ class ProviderBudgetManager:
                 )
 
             for descriptor in scope_descriptors:
-                key = self._runtime_budget_key(
-                    provider,
-                    scope=descriptor["scope"],
-                    model=descriptor["model"],
-                    task_family=descriptor["task_family"],
-                    execution_role=descriptor["execution_role"],
-                )
-                try:
-                    raw = await redis.hgetall(key)
-                except Exception:
-                    logger.debug("budget_snapshot_scope_read_failed", exc_info=True)
-                    raw = {}
-
                 result.append(
                     await self._scope_snapshot(
                         provider=provider,
