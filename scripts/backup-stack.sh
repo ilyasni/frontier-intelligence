@@ -207,7 +207,18 @@ else
 fi
 
 # манифест
-{ echo "backup $TS"; ls -la "$DEST"; } > "$DEST/MANIFEST.txt"
+# Манифест уезжает в бакет ВМЕСТЕ с набором, поэтому оффсайт-копия обязана описывать
+# саму себя. Без этой строки восстанавливающий видит в списке файл, которого в S3 нет,
+# и читает замысел как порчу.
+{
+  echo "backup $TS"
+  ls -la "$DEST"
+  if [ -n "${S3_UPLOAD_EXCLUDE:-}" ]; then
+    echo "S3_UPLOAD_EXCLUDE=$S3_UPLOAD_EXCLUDE"
+    echo "# файлы по этим маскам есть ТОЛЬКО локально ($BACKUP_ROOT, ретеншн ${RETENTION_DAYS}d);"
+    echo "# векторы иначе восстанавливаются переиндексацией из postgres.dump"
+  fi
+} > "$DEST/MANIFEST.txt"
 
 # --- 5. Выгрузка в S3/Cloud.ru через worker-образ (boto3) ---
 step "s3 upload"

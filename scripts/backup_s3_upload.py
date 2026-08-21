@@ -6,7 +6,21 @@ Usage: python backup_s3_upload.py <local_dir> <s3_key_prefix>
 Креды берутся из окружения (передаётся через docker run --env-file .env):
   S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET_NAME, S3_REGION (опц.)
   S3_BACKUP_KEEP_DAYS — сколько ПРОШЛЫХ суточных комплектов держать (по умолчанию 1)
+  S3_UPLOAD_EXCLUDE   — маски файлов, которые НЕ уезжают в S3 (через пробел или запятую)
+
+Про S3_UPLOAD_EXCLUDE. Замер 21.08.2026: суточный комплект 5.0 GiB, из них снапшот
+dense-коллекции Qdrant 2.71 GiB (54%), neo4j 1.59, postgres 0.68. То есть 86% веса —
+ПРОИЗВОДНЫЕ данные: векторы переиндексируются из postgres, а граф сам скрипт бэкапа
+называет восстановимым из PG+Qdrant. Невосстановим ровно один файл, postgres.dump.
+При квоте 15 GiB это означало, что offsite-глубина по единственному незаменимому
+файлу равна ОДНИМ суткам, потому что место съедено тем, что и так пересчитывается.
+Маска убирает тяжёлое производное из выгрузки; локальная копия (ретеншн 7 суток,
+на диске 134 GB свободно) остаётся нетронутой.
+
+Исключение — про МЕСТО, и этим отличается от QDRANT_BACKUP_EXCLUDE в backup-stack.sh:
+тот решает, что вообще не снимать (приватный корпус), а этот — что не увозить.
 """
+import fnmatch
 import os
 import sys
 import pathlib
@@ -148,14 +162,36 @@ def main() -> int:
     if prune_only:
         return 0
 
+    patterns = [p for p in os.environ.get("S3_UPLOAD_EXCLUDE", "").replace(",", " ").split() if p]
+
     uploaded = 0
+    skipped: list[str] = []
+    skipped_bytes = 0
     for path in sorted(src.rglob("*")):
         if not path.is_file():
             continue
-        key = f"{prefix}/{path.relative_to(src).as_posix()}"
+        rel = path.relative_to(src).as_posix()
+        size = path.stat().st_size
+        # Маска проверяется и по относительному пути, и по имени: комплект плоский,
+        # но правило не должно молча перестать работать, если каталог станет вложенным.
+        if any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(path.name, pat) for pat in patterns):
+            skipped.append(rel)
+            skipped_bytes += size
+            print(f"skip (S3_UPLOAD_EXCLUDE): {rel} ({size} bytes)")
+            continue
+        key = f"{prefix}/{rel}"
         s3.upload_file(str(path), bucket, key)
-        print(f"uploaded s3://{bucket}/{key} ({path.stat().st_size} bytes)")
+        print(f"uploaded s3://{bucket}/{key} ({size} bytes)")
         uploaded += 1
+
+    # Пропуск проговаривается вслух ОТДЕЛЬНОЙ строкой. Тихо сокращённая выгрузка
+    # читается в логе как полная — ровно тот способ, которым бэкап уже однажды
+    # выглядел успешным, не будучи им.
+    if skipped:
+        print(
+            f"skipped {len(skipped)} файлов ({skipped_bytes / 1024 ** 3:.2f} GiB) "
+            f"по S3_UPLOAD_EXCLUDE={' '.join(patterns)}: {', '.join(skipped)}"
+        )
 
     if uploaded == 0:
         print("nothing uploaded (empty dir)", file=sys.stderr)
