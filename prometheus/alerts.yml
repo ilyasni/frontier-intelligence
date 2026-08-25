@@ -301,7 +301,7 @@ groups:
         expr: sum by (service, operation) (increase(frontier_rate_limit_events_total{upstream="wormsoft"}[10m])) >= 3
         for: 5m
         labels:
-          severity: critical
+          severity: warning
           service: worker
           notify: telegram
         annotations:
