@@ -60,6 +60,7 @@ class OpenAICompatTextClient:
         max_parallel_requests: int = 1,
         min_request_interval_ms: int = 250,
         default_headers: Mapping[str, str] | None = None,
+        proxy: str | None = None,
     ) -> None:
         self._service_name = service_name
         self._api_key = str(api_key or "").strip()
@@ -68,7 +69,10 @@ class OpenAICompatTextClient:
         self._min_request_interval_s = max(0.0, float(int(min_request_interval_ms or 250)) / 1000.0)
         self._request_gap_lock = asyncio.Lock()
         self._last_request_started_at = 0.0
-        self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
+        self._http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            proxy=proxy or None,
+        )
         self._client = AsyncOpenAI(
             base_url=str(base_url or "").rstrip("/"),
             api_key=self._api_key or "missing",

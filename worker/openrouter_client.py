@@ -15,7 +15,7 @@ from shared.metrics import (
 )
 from shared.openrouter_limits import parse_rate_limit_reset
 from worker.gigachat_client import VISION_PROMPT, _parse_vision_payload
-from worker.llm_http import DEFAULT_LLM_HTTP_TIMEOUT
+from worker.llm_http import DEFAULT_LLM_HTTP_TIMEOUT, resolve_openrouter_proxy
 from worker.llm_types import GigaChatResponse, usage_from_openai_payload
 
 
@@ -69,7 +69,10 @@ class OpenRouterVisionClient:
         settings = get_settings()
         self._settings = settings
         self._service_name = service_name
-        self._http_client = httpx.AsyncClient(timeout=DEFAULT_LLM_HTTP_TIMEOUT)
+        self._http_client = httpx.AsyncClient(
+            timeout=DEFAULT_LLM_HTTP_TIMEOUT,
+            proxy=resolve_openrouter_proxy(),
+        )
 
     async def close(self) -> None:
         await self._http_client.aclose()

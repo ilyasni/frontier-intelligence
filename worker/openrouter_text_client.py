@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from shared.config import get_settings
+from worker.llm_http import resolve_openrouter_proxy
 from worker.openai_compat_text_client import OpenAICompatTextClient, OpenAICompatTextError
 from shared.openrouter_limits import parse_rate_limit_reset
 
@@ -28,6 +29,7 @@ class OpenRouterTextClient(OpenAICompatTextClient):
                 "HTTP-Referer": settings.openrouter_referrer,
                 "X-Title": "Frontier Intelligence",
             },
+            proxy=resolve_openrouter_proxy(),
         )
 
     def _error_reason(self, status_code: int | None) -> str:
