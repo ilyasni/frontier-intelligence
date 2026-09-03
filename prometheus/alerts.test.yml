@@ -399,3 +399,61 @@ tests:
             exp_annotations:
               summary: "Wormsoft credit-window telemetry is stale"
               description: "Successful Wormsoft traffic is present, but no service refreshed the account-wide credit-window gauge for more than 10 minutes. Check the credit accounting path before enabling enforcement."
+
+  # Разведение двойника 03.09.2026. До правки один шторм таймаутов wormsoft
+  # поднимал ДВА имени: FrontierWormsoftFallbackBurst (явный перечень reason)
+  # и FrontierProviderOutageFallbackBurst (хвост `.*_(timeout|...)` ловил тот же
+  # wormsoft_timeout). Инцидент один, имён два, и второе уводит дежурного к
+  # ложной гипотезе «отказ провайдера». Тест держит обе стороны развилки:
+  # wormsoft в outage-правило больше не попадает, чужой провайдер — попадает.
+  - interval: 1m
+    name: "fallback burst: wormsoft уходит из outage-правила, чужой провайдер остаётся"
+    input_series:
+      # 1. Шторм таймаутов wormsoft. Обязан поднять ТОЛЬКО wormsoft-правило.
+      - series: 'frontier_llm_fallbacks_total{service="worker",from_provider="wormsoft",task="concepts",reason="wormsoft_timeout"}'
+        values: '0+10x60'
+      # 2. Тот же шторм у чужого провайдера. Обязан поднять outage-правило —
+      #    иначе правка превратила бы его в вечно молчащее.
+      - series: 'frontier_llm_fallbacks_total{service="worker",from_provider="polza",task="concepts",reason="polza_timeout"}'
+        values: '0+10x60'
+      # 3. guard_unavailable у wormsoft: отказ локального Redis гарда. Раньше его
+      #    ловило ТОЛЬКО outage-правило (через хвост `.*_unavailable`), поэтому
+      #    вместе с исключением wormsoft он выпал бы из обоих. Добавлен в перечень
+      #    wormsoft-правила той же правкой; тест это и стережёт.
+      - series: 'frontier_llm_fallbacks_total{service="worker",from_provider="wormsoft",task="relevance",reason="guard_unavailable"}'
+        values: '0+10x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FrontierProviderOutageFallbackBurst
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: worker
+              notify: telegram
+              from_provider: polza
+              task: concepts
+              reason: polza_timeout
+            exp_annotations:
+              summary: "Provider outage fallback burst is rising"
+              description: "Fallbacks likely caused by provider outage for polza/concepts (reason=polza_timeout) increased by 150 in 15 minutes. Validate upstream health before changing local throttle settings."
+      - eval_time: 30m
+        alertname: FrontierWormsoftFallbackBurst
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: worker
+              notify: telegram
+              task: concepts
+              reason: wormsoft_timeout
+            exp_annotations:
+              summary: "Wormsoft fallback traffic is spiking"
+              description: "Wormsoft provider fallbacks for worker/concepts (reason=wormsoft_timeout) increased by 150 in 15 minutes. Check Wormsoft availability, timeout profile, or model routing."
+          - exp_labels:
+              severity: warning
+              service: worker
+              notify: telegram
+              task: relevance
+              reason: guard_unavailable
+            exp_annotations:
+              summary: "Wormsoft fallback traffic is spiking"
+              description: "Wormsoft provider fallbacks for worker/relevance (reason=guard_unavailable) increased by 150 in 15 minutes. Check Wormsoft availability, timeout profile, or model routing."

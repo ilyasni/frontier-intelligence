@@ -353,7 +353,7 @@ groups:
           description: "Admin could not fetch Wormsoft limits/pricing for more than 15 minutes. Check DNS, outbound access, API key validity, and Wormsoft control endpoints."
 
       - alert: FrontierWormsoftFallbackBurst
-        expr: sum by (service, task, reason) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason=~"API.*|model_not_found|provider_unavailable|upstream_5xx|timeout|connection|wormsoft_(timeout|connection|5xx|unavailable|model_not_found)"}[15m])) >= 3
+        expr: sum by (service, task, reason) (increase(frontier_llm_fallbacks_total{from_provider="wormsoft",reason=~"API.*|model_not_found|provider_unavailable|upstream_5xx|timeout|connection|wormsoft_(timeout|connection|5xx|unavailable|model_not_found)|guard_unavailable"}[15m])) >= 3
         for: 5m
         labels:
           severity: warning
@@ -481,7 +481,7 @@ groups:
           description: "Successful Wormsoft traffic is present, but no service refreshed the account-wide credit-window gauge for more than 10 minutes. Check the credit accounting path before enabling enforcement."
 
       - alert: FrontierProviderOutageFallbackBurst
-        expr: sum by (service, from_provider, task, reason) (increase(frontier_llm_fallbacks_total{service="worker",reason=~"provider_unavailable|upstream_5xx|timeout|connection|.*_(timeout|connection|5xx|unavailable)"}[15m])) >= 10
+        expr: sum by (service, from_provider, task, reason) (increase(frontier_llm_fallbacks_total{service="worker",from_provider!="wormsoft",reason=~"provider_unavailable|upstream_5xx|timeout|connection|.*_(timeout|connection|5xx|unavailable)"}[15m])) >= 10
         for: 10m
         labels:
           severity: warning
@@ -1502,7 +1502,7 @@ groups:
           notify: telegram
         annotations:
           summary: "Один материал стал чаще разъезжаться по кластерам у {{ $labels.workspace }}"
-          description: "Доля одинаковых артефактов (общий канонический URL или один заголовок в пределах 72ч), попавших в разные семантические кластеры, выросла в полтора раза против собственной базовой линии за трое суток и держится 12ч. Это переизмельчение: дедуп перестал схлопывать то, что провенанс считает одним материалом. Смотри semantic_dedupe_similarity_threshold и semantic_dedupe_max_gap_hours у воркспейса, а также не сменилась ли модель эмбеддингов."
+          description: "Доля одинаковых артефактов (общий канонический URL или один заголовок в пределах 72ч), попавших в разные семантические кластеры, выросла в полтора раза против собственной базовой линии за трое суток. Два часа в правиле — предпусковой дебаунс, а не длительность роста. ПЕРЕД ТЕМ КАК ТРОГАТЬ ПОРОГИ ДЕДУПА сверься с same_artifact_groups: серию пишут ДВА джоба (run_semantic_clusters и run_signal_analysis) с разным размером выборки, значение скачет в разы в течение суток, а базовая линия смешивает оба режима — частая причина срабатывания именно эта, а не переизмельчение. Если выборка стабильна, тогда смотри semantic_dedupe_similarity_threshold, semantic_dedupe_max_gap_hours и не сменилась ли модель эмбеддингов."
 
   # Пропавшая дата публикации. Класс молчаливой потери данных: пост, у которого
   # не разобралась `published_at`, сохраняется, считается принятым (source_runs
