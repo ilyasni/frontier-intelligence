@@ -156,6 +156,11 @@ Daily digests are intentionally disabled. The admin scheduler only sends Telegra
 в ntfy прямо с хоста через `scripts/notify_ntfy.py` и не зависит от Docker/admin.
 Watchdog читает из серверного `.env` только `NTFY_URL` и путь
 `NTFY_WATCHDOG_CREDENTIAL_FILE`; credential хранится в отдельном файле и в лог не попадает.
+Фактический cron принадлежит `ilyasni`, и ему доступен только watchdog credential.
+Каноническая матрица ownership/mode приведена в
+[runbook](runbooks/alert-triage-daily.md#настройка--тюнинг).
+Перенос watchdog в root-cron запрещён: скрипт лежит в пользовательском checkout и не
+должен исполняться с лишними привилегиями.
 Остальные host-path переменные — `NTFY_APP_CREDENTIAL_FILE` и
 `NTFY_ALERTMANAGER_CREDENTIAL_FILE`; в `admin` app credential доступен как
 `NTFY_CREDENTIAL_FILE=/run/secrets/ntfy-app`.

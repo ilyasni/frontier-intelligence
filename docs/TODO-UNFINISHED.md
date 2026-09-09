@@ -175,6 +175,10 @@ mcp/mcp_gateway.py:20-25 (host=0.0.0.0, allowed_hosts/origins=['*'], dns_rebindi
 > правило `FrontierWatchdog` (firing всегда, глушится в blackhole) и внешний
 > наблюдатель `scripts/alert-watchdog.sh` в cron каждые 10 минут.
 > Подробности — [маршрут, заход 1](./AUDIT-2026-08-04.md#7-маршрут).
+>
+> **Актуализация 2026-09-09.** Operational receivers переименованы в `ntfy-direct` и
+> `ntfy-admin`, 73 active rules переведены на ntfy, host watchdog тоже публикует в ntfy.
+> Срочные trend alerts остались в Telegram. Ниже сохранён исходный срез аудита 2026-08-04.
 
 `ops` · работает частично · объём M
 

@@ -82,6 +82,12 @@ Windows-задача `FrontierAlertTriage` и `.claude/run-alert-triage.ps1` у�
   `NTFY_WATCHDOG_CREDENTIAL_FILE`. В контейнер `admin` файл приложения монтируется как
   `/run/secrets/ntfy-app`, поэтому внутри него задано
   `NTFY_CREDENTIAL_FILE=/run/secrets/ntfy-app`. Значения credentials в `.env` не хранятся.
+
+  Каноническая матрица прав на сервере соответствует фактическим consumers: каталог
+  `/etc/frontier-intelligence/credentials` — `root:ilyasni 0710`, `ntfy-app` —
+  `root:root 0600`, `ntfy-alertmanager` — `65534:65534 0400` (официальный image работает
+  как `nobody`), `ntfy-watchdog` — `root:ilyasni 0640` для user-cron. Root-cron для
+  watchdog не используется.
 - **URL и direct webhook**: production compose допускает только `https://host/topic`
   без явного порта; topic — 1–64 символа `A–Z`, `a–z`, `0–9`, `_`, `-`.
   Служебные topics `account`, `admin`, `app`, `docs`, `file`, `health`, `metrics`,

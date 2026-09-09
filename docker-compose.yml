@@ -919,6 +919,11 @@ services:
           exit 1
         fi
 
+        if [ ! -r /run/secrets/ntfy-alertmanager ] || [ ! -s /run/secrets/ntfy-alertmanager ]; then
+          echo "ntfy credential file is not readable or empty" >&2
+          exit 1
+        fi
+
         sed -e "s#__ALERTMANAGER_WEBHOOK_TOKEN__#$${ALERTMANAGER_WEBHOOK_TOKEN}#g" \
             -e "s#__NTFY_URL__#$${NTFY_URL}#g" \
           /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml

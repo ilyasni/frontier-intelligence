@@ -1,93 +1,107 @@
-# Handoff: migration of operational alerts to ntfy
+# Handoff: перевод operational alerts на ntfy
 
 Date: 2026-09-09
-State: `needs-human` — code is synced and validated, runtime cutover is not activated
+State: `complete` — cutover выполнен и проверен в live
 base_sha: `97194eb85228c9006834cd9aaf967da15440f6f6`
 written_by: `codex`
 
-## Understanding
+## Понимание задачи
 
-Move operational notifications from Telegram to the shared ntfy service at topic
-`home-network`. Urgent trend notifications remain in Telegram. Preserve two independent
-critical delivery paths and the host-direct dead-man watchdog.
+Перевести operational notifications из Telegram в общий ntfy, topic `home-network`.
+Срочные тренды оставить в Telegram. Сохранить два независимых пути доставки critical alerts
+и host-direct dead-man watchdog.
 
-## Changed files
+## Изменённые файлы
 
-- Application publisher and settings: `admin/backend/services/ntfy_alerts.py`,
+- Application publisher и settings: `admin/backend/services/ntfy_alerts.py`,
   `shared/config.py`.
-- Alert producers: `admin/backend/routers/monitoring.py`,
+- Producers: `admin/backend/routers/monitoring.py`,
   `admin/backend/services/gigachat_balance.py`,
   `admin/backend/services/xray_health.py`.
-- Alertmanager and rules: `prometheus/alertmanager.yml`, `prometheus/alerts.yml`,
+- Alertmanager и rules: `prometheus/alertmanager.yml`, `prometheus/alerts.yml`,
   `prometheus/alerts.test.yml`, `docker-compose.yml`, `.env.example`.
 - Host publishers: `scripts/notify_ntfy.py`, `scripts/alert-watchdog.sh`,
   `scripts/alert-triage-deliver.sh`.
-- Documentation: `docs/README.md`, `docs/runbooks/alert-triage-daily.md`.
+- Документация: `docs/README.md`, `docs/runbooks/alert-triage-daily.md`,
+  `docs/TODO-UNFINISHED.md`.
 - Contract tests: `tests/test_ntfy_alerts.py`, `tests/test_notify_ntfy_script.py`,
   `tests/test_ntfy_alert_scripts.py`, `tests/test_ntfy_alertmanager_config.py`,
   `tests/test_admin_alert_notifications.py`, `tests/test_admin_monitoring_webhook.py`,
   `tests/test_alert_rules_contract.py`.
 
-## What was done
+## Что сделано
 
-- Added an HTTPS-only ntfy publisher. Credentials are read from a file, redirects are
-  disabled, message size is bounded by UTF-8 bytes, and success requires an ntfy JSON receipt.
-- Switched GigaChat balance, Xray health and Alertmanager admin webhook notifications to ntfy.
-  Delivery failures remain retryable and do not incorrectly advance cooldown/dedup state.
-- Replaced active Prometheus `notify: telegram` labels with `notify: ntfy`; `notify: never`
-  and watchdog blackholes are unchanged.
-- Kept urgent trend Telegram delivery and its admin environment variables unchanged.
-- Kept independent critical delivery: native Alertmanager ntfy webhook plus the admin webhook.
-- Kept the host-direct watchdog independent from Docker. Failed recovery delivery no longer
-  clears watchdog state.
-- Split credentials into three files: app, Alertmanager and watchdog.
-- Synced only the 22 task files into `/opt/frontier-intelligence`; unrelated server changes
-  and untracked operational files were preserved.
+- Добавлен HTTPS-only ntfy publisher. Credential читается из отдельного файла, redirects
+  запрещены, размер сообщения ограничен по UTF-8 bytes, успех подтверждается ntfy JSON receipt.
+- GigaChat balance, Xray health и Alertmanager admin webhook переведены на ntfy. Ошибки
+  доставки остаются retryable и не продвигают cooldown/dedup state.
+- У 73 active Prometheus rules `notify: telegram` заменён на `notify: ntfy`;
+  `notify: never`, watchdog blackhole и 15 rules без `notify` сохранены.
+- Срочные trend alerts по-прежнему отправляются через Telegram; их env и код не менялись.
+- Critical alerts идут двумя независимыми путями: native Alertmanager ntfy webhook и admin
+  webhook. Host watchdog отправляет напрямую в ntfy, без Docker и Alertmanager.
+- Для app, Alertmanager и watchdog созданы отдельные write-only ntfy credentials к одному
+  topic. Значения не читались и нигде не записаны в git.
+- Credentials установлены в `/etc/frontier-intelligence/credentials/`: каталог
+  `root:ilyasni 0710`, app `root:root 0600`, Alertmanager `65534:65534 0400`, watchdog
+  `root:ilyasni 0640`. User-cron читает только watchdog credential; root-cron не используется.
+- В Alertmanager entrypoint добавлен fail-fast на нечитаемый или пустой credential. Это
+  защищает от тихой деградации при смене UID container image.
+- Исторический закрытый пункт TODO дополнен актуальным ntfy-состоянием; исходный срез
+  аудита 2026-08-04 сохранён и явно обозначен как исторический.
+- Первый implementation commit на server-first checkout: `a8622d7 feat: route operational
+  alerts through ntfy`. Старые несвязанные изменения в working tree сохранены.
 
-## Validation
+## Live cutover и найденная проблема
 
-- Local targeted pytest: `218 passed, 38 subtests passed`.
-- Targeted pytest against a staging tree based on the server working copy:
-  `218 passed, 38 subtests passed`.
-- Independent review suite: `136 passed, 38 subtests passed`; no Critical, Important or
-  Minor findings.
-- Full local command `pytest -m "not integration and not e2e" -q`:
-  `16 failed, 1464 passed, 5 deselected, 38 subtests passed`. All 16 failures match the
-  documented Windows/pre-existing baseline; none is in the ntfy change.
-- Targeted Ruff, Python compilation and shell syntax checks passed. Full Ruff only finds
-  14 pre-existing `F821` errors in an excluded legacy example under `docs/old_docs`.
-- Server Compose render passed.
+- Три credential независимо получили валидный ntfy receipt; app publisher также проверен
+  через собранный image.
+- Обычный Dockerfile build дважды остановился на timeout Docker Hub при получении metadata
+  `python:3.11-slim`. Для cutover из прежнего локального admin image собран clean-HEAD overlay
+  `frontier-intelligence-admin:ntfy-a8622d7`; предыдущий image сохранён как
+  `frontier-intelligence-admin:pre-ntfy-a8622d7`.
+- Пересозданы только `admin`, `alertmanager` и `prometheus`. Все три health endpoints дают
+  HTTP 200; Alertmanager config и Prometheus rules загружены.
+- После rsync Prometheus продолжал видеть старый inode индивидуально bind-mounted файла.
+  Recreate синхронизировал host/container inode и реально загрузил новые labels.
+- Первый live smoke обнаружил `permission denied`: image Alertmanager работает как UID/GID
+  65534 и не мог прочитать файл `root:root 0600`. Ownership исправлен, а regression test
+  сначала воспроизвёл отсутствие startup guard, затем подтверждён fail-fast.
+- Повторный `FrontierNtfySmoke2` прошёл целиком. На FIRING и RESOLVED nginx зарегистрировал
+  по два HTTP 200 (`python-httpx/0.27.0` и `Alertmanager/0.32.0`); admin принял оба webhook
+  с HTTP 200. Метрики Alertmanager после smoke: `webhook total=4`, все failure reasons `0`.
+- После выхода старой ошибки из 15-minute window production watchdog подтвердил здоровый
+  контур, очистил state и отправил recovery напрямую в ntfy с HTTP 200.
+
+## Проверка
+
+- Финальный targeted pytest: `219 passed, 38 subtests passed`.
+- Targeted Ruff (`E9,F63,F7,F82,F811`), Python compilation и Bash syntax: passed.
+- Compose render: passed.
 - Server `promtool check rules`: 91 rules, success.
-- Rendered server Alertmanager config passed `amtool check-config` with 3 receivers.
-- Route checks: critical -> `ntfy-direct,ntfy-admin`; watchdog -> `blackhole`;
-  `notify=never` -> `blackhole`; warning -> `ntfy-admin`.
-- ntfy health is reachable from both the server host and the current admin container.
-- Admin image build did not complete because Docker Hub metadata lookup timed out. No image
-  or running service was changed.
+- Live Prometheus: 91 rules; `notify=ntfy` 73, `never` 2, `watchdog` 1, без `notify` 15;
+  `notify=telegram` отсутствует.
+- Rendered Alertmanager config: critical -> `ntfy-direct,ntfy-admin`; warning ->
+  `ntfy-admin`; watchdog и `notify=never` -> `blackhole`.
+- Полный локальный suite ранее дал документированный Windows baseline: 16 failures вне
+  ntfy-изменений. Broad Ruff не является clean из-за существующего formatting/UP debt;
+  релевантный CI subset проходит.
 
-## Not completed
+## Откат и остаточные риски
 
-- The three production credential files do not exist yet. Token values were neither requested
-  nor read.
-- `admin` and `alertmanager` were not rebuilt/recreated, so live notifications still use the
-  previous Telegram runtime.
-- No synthetic FIRING/RESOLVED notification has been delivered to a real ntfy subscriber.
+- Backup ntfy auth DB на VPS: `/root/frontier-ntfy-cutover-20260909-a8622d7/user.db.before`.
+- Backup server env и прежний admin image tag: каталог
+  `/root/frontier-ntfy-cutover-20260909-a8622d7/` и tag
+  `frontier-intelligence-admin:pre-ntfy-a8622d7`.
+- `prom/alertmanager:latest` mutable и сейчас запускается как UID 65534. При смене UID
+  fail-fast остановит Alertmanager вместо скрытой потери direct delivery; permissions придётся
+  сверить с фактическим UID нового image.
+- Overlay image функционально содержит clean HEAD, но при восстановлении Docker Hub следует
+  повторить стандартный Dockerfile build и заменить overlay обычным image.
+- В server working tree остаются старые несвязанные изменения, включая PostgreSQL
+  `shm_size` в `docker-compose.yml`; их нельзя включать в ntfy commit.
 
-## Uncertainties and rollback risks
+## Что дальше
 
-- Recreating the services before credential files exist will fail closed at startup or at the
-  bind mount. Provision credentials first.
-- Alertmanager native webhook accepts HTTP success semantics; application and host publishers
-  additionally validate the ntfy receipt. This difference is documented in the runbook.
-- The server checkout had unrelated modifications before this work, including a PostgreSQL
-  `shm_size` change in `docker-compose.yml`. Stage that mixed file by hunk and do not absorb
-  the pre-existing change into this commit.
-
-## Next step
-
-1. Create three separate write-only ntfy credentials for topic `home-network`.
-2. Install them as mode `0600` files in `/etc/frontier-intelligence/credentials/`:
-   `ntfy-app`, `ntfy-alertmanager`, `ntfy-watchdog` (parent directory mode `0700`).
-3. Put only `NTFY_URL` and the three credential paths in the server `.env`.
-4. Retry the admin image build, recreate `admin` and `alertmanager` with valid Compose profiles,
-   then run synthetic FIRING and RESOLVED checks and confirm delivery on the subscriber.
+Обязательной работы по cutover нет. При доступном Docker Hub пересобрать `admin` стандартным
+Dockerfile и повторить его health check; это не меняет routing или credentials.

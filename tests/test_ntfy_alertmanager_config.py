@@ -206,6 +206,7 @@ def _run_entrypoint(
     *,
     webhook_token: str,
     ntfy_url: str,
+    credential_present: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], bool]:
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -217,7 +218,13 @@ def _run_entrypoint(
     )
     fake_sed.chmod(0o755)
 
-    rendered_script = script.replace("$$", "$")
+    credential = tmp_path / "ntfy-alertmanager"
+    if credential_present:
+        credential.write_text("test-credential\n", encoding="utf-8")
+    rendered_script = script.replace("$$", "$").replace(
+        "/run/secrets/ntfy-alertmanager",
+        _shell_path(credential),
+    )
     wrapped_script = f'PATH="{_shell_path(fake_bin)}:$PATH"\n{rendered_script}'
     environment = os.environ.copy()
     environment.update(
@@ -236,6 +243,24 @@ def _run_entrypoint(
         check=False,
     )
     return result, marker.exists()
+
+
+def test_alertmanager_rendering_rejects_missing_credential_before_sed(
+    tmp_path: Path,
+) -> None:
+    """Контейнер должен остановиться до запуска receiver без доступного credential."""
+    script = _load_yaml(COMPOSE_CONFIG)["services"]["alertmanager"]["entrypoint"][2]
+    result, sed_called = _run_entrypoint(
+        script,
+        tmp_path,
+        webhook_token="safe_token_123",
+        ntfy_url="https://ntfy.produman.studio/home-network",
+        credential_present=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "credential file is not readable" in result.stderr
+    assert not sed_called, result.stderr
 
 
 @pytest.mark.parametrize(
