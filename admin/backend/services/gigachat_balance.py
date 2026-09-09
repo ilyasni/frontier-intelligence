@@ -11,9 +11,13 @@ from uuid import uuid4
 import httpx
 import redis.asyncio as aioredis
 
+from admin.backend.services.ntfy_alerts import (
+    ntfy_alerts_enabled,
+    send_ntfy_alert_message,
+    truncate_ntfy_message,
+)
 from shared.config import Settings, get_settings
 from shared.metrics import note_gigachat_balance_refresh, set_gigachat_balance
-from admin.backend.services.telegram_alerts import send_telegram_alert_message
 
 _TOKEN_LOCK = asyncio.Lock()
 _TOKEN_VALUE = ""
@@ -301,7 +305,7 @@ async def _notify_low_balance_if_needed(
 ) -> None:
     global _LAST_LOW_BALANCE_SIGNATURE
 
-    if not settings.telegram_bot_token or not settings.telegram_alert_chat_id:
+    if not ntfy_alerts_enabled():
         return
 
     low_items = [
@@ -317,18 +321,28 @@ async def _notify_low_balance_if_needed(
     async with _ALERT_LOCK:
         if signature == _LAST_LOW_BALANCE_SIGNATURE:
             return
-        _LAST_LOW_BALANCE_SIGNATURE = signature
+        if not low_items:
+            _LAST_LOW_BALANCE_SIGNATURE = signature
+            return
 
-    if not low_items:
-        return
+        lines = [
+            "Frontier alert: low GigaChat token balance",
+            f"threshold: {settings.gigachat_balance_alert_threshold}",
+        ]
+        lines.extend(
+            f"{item['usage']}: {int(item.get('value') or 0)}"
+            for item in sorted(low_items, key=lambda row: str(row.get("usage") or ""))
+        )
 
-    lines = [
-        "Frontier alert: low GigaChat token balance",
-        f"threshold: {settings.gigachat_balance_alert_threshold}",
-    ]
-    lines.extend(
-        f"{item['usage']}: {int(item.get('value') or 0)}"
-        for item in sorted(low_items, key=lambda row: str(row.get("usage") or ""))
-    )
-
-    await send_telegram_alert_message("\n".join(lines))
+        message = truncate_ntfy_message(
+            "\n".join(lines),
+            suffix="\n… message truncated",
+        )
+        delivered = await send_ntfy_alert_message(
+            message,
+            title="Frontier: low GigaChat balance",
+            priority="high",
+            tags="warning,frontier",
+        )
+        if delivered:
+            _LAST_LOW_BALANCE_SIGNATURE = signature

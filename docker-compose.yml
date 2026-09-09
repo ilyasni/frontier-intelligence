@@ -711,6 +711,8 @@ services:
       ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
       TELEGRAM_ALERT_CHAT_ID: ${TELEGRAM_ALERT_CHAT_ID:-}
       TELEGRAM_ALERT_PROXY_URL: ${TELEGRAM_ALERT_PROXY_URL:-socks5://xray:10808}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.produman.studio/home-network}
+      NTFY_CREDENTIAL_FILE: /run/secrets/ntfy-app
       XRAY_PROFILE_REGISTRY_PATH: ${XRAY_PROFILE_REGISTRY_PATH:-/runtime/xray-profiles.json}
       XRAY_ACTIVE_PROFILE_PATH: ${XRAY_ACTIVE_PROFILE_PATH:-/runtime/xray-active-profile.txt}
       XRAY_PREVIOUS_PROFILE_PATH: ${XRAY_PREVIOUS_PROFILE_PATH:-/runtime/xray-previous-profile.txt}
@@ -763,6 +765,7 @@ services:
       - "8101:8101"
     volumes:
       - ${FRONTIER_RUNTIME_DIR:-/opt/frontier-intelligence/runtime}:/runtime
+      - ${NTFY_APP_CREDENTIAL_FILE:-/etc/frontier-intelligence/credentials/ntfy-app}:/run/secrets/ntfy-app:ro
       # Статика админки монтируется с хоста — правки фронта применяются мгновенно
       # (FastAPI StaticFiles/FileResponse читают с диска), без пересборки образа.
       - ./admin/frontend:/app/admin/frontend:ro
@@ -874,34 +877,61 @@ services:
       - /bin/sh
       - -lc
       - |
-        # Плейсхолдеры подставляются здесь, а не хранятся в репозитории.
-        # Все три значения sed-безопасны по составу символов: токен вебхука —
-        # base64 без /+=, токен бота — алфавит с двоеточием, chat_id — цифры.
-        # URL прокси сюда НЕ подставляется: в нём учётные данные, и '&' в пароле
-        # молча испортил бы замену. Он уезжает в HTTPS_PROXY, см. environment.
+        set -eu
+
+        # Runtime-значения подставляются здесь, а не хранятся в репозитории.
+        # Bearer credential не проходит через env/sed: Alertmanager читает его
+        # напрямую из отдельного read-only файла.
+        case "$${ALERTMANAGER_WEBHOOK_TOKEN}" in
+          ""|*[!A-Za-z0-9_-]*)
+            echo "ALERTMANAGER_WEBHOOK_TOKEN must be a non-empty single-line token" >&2
+            exit 1
+            ;;
+        esac
+
+        # Разрешён только https://host/topic без явного порта. Белые списки ниже одновременно
+        # исключают credentials, query/fragment, whitespace и sed-метасимволы.
+        case "$${NTFY_URL}" in
+          https://*/*)
+            ;;
+          *)
+            echo "NTFY_URL must be an HTTPS origin plus one topic" >&2
+            exit 1
+            ;;
+        esac
+        ntfy_authority_and_topic=$${NTFY_URL#https://}
+        ntfy_authority=$${ntfy_authority_and_topic%%/*}
+        ntfy_topic=$${ntfy_authority_and_topic#*/}
+        case "$${ntfy_authority}" in
+          ""|*[!A-Za-z0-9.-]*)
+            echo "NTFY_URL authority contains unsafe characters" >&2
+            exit 1
+            ;;
+        esac
+        case "$${ntfy_topic}" in
+          ""|*[!A-Za-z0-9_-]*|account|admin|app|docs|file|health|metrics|settings|static|v1)
+            echo "NTFY_URL must contain one safe topic and no query or fragment" >&2
+            exit 1
+            ;;
+        esac
+        if [ "$${#ntfy_topic}" -gt 64 ]; then
+          echo "NTFY_URL topic must be at most 64 characters" >&2
+          exit 1
+        fi
+
         sed -e "s#__ALERTMANAGER_WEBHOOK_TOKEN__#$${ALERTMANAGER_WEBHOOK_TOKEN}#g" \
-            -e "s#__TELEGRAM_BOT_TOKEN__#$${TELEGRAM_BOT_TOKEN}#g" \
-            -e "s#__ALERT_TELEGRAM_CHAT_NUMERIC_ID__#$${ALERT_TELEGRAM_CHAT_NUMERIC_ID}#g" \
+            -e "s#__NTFY_URL__#$${NTFY_URL}#g" \
           /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
         exec /bin/alertmanager \
           --config.file=/tmp/alertmanager.yml \
           --storage.path=/alertmanager
     environment:
       ALERTMANAGER_WEBHOOK_TOKEN: ${ALERTMANAGER_WEBHOOK_TOKEN:-}
-      # Прямой путь доставки в Telegram, минуя admin (receiver telegram-direct).
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      # Числовой id канала: Alertmanager принимает chat_id только как int64.
-      # В ALERT_TELEGRAM_CHAT_ID лежит @имя — оно годится для Bot API в admin,
-      # но не для этого конфига. Получить числовой: getChat?chat_id=@имя.
-      ALERT_TELEGRAM_CHAT_NUMERIC_ID: ${ALERT_TELEGRAM_CHAT_NUMERIC_ID:-}
-      # Прямого egress к api.telegram.org с хоста нет — только socks5.
-      # Читается через http_config.proxy_from_environment у telegram-direct.
-      HTTPS_PROXY: ${TELEGRAM_ALERT_PROXY_URL:-}
-      # Внутрисетевые адреса мимо прокси: вебхук в admin и собственный API.
-      NO_PROXY: admin,prometheus,localhost,127.0.0.1
+      NTFY_URL: ${NTFY_URL:-https://ntfy.produman.studio/home-network}
     command:
     volumes:
       - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${NTFY_ALERTMANAGER_CREDENTIAL_FILE:-/etc/frontier-intelligence/credentials/ntfy-alertmanager}:/run/secrets/ntfy-alertmanager:ro
       - alertmanager_data:/alertmanager
     ports:
       - "127.0.0.1:9093:9093"

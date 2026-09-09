@@ -116,6 +116,29 @@ def _rule(name: str) -> dict[str, Any] | None:
     return None
 
 
+def test_active_alerts_use_only_supported_notification_routes() -> None:
+    """Операционные Prometheus-алерты не должны снова обойти ntfy-маршрут.
+
+    Ломается, если в активное правило случайно вернуть старый `notify: telegram`
+    или добавить новое значение, для которого нет маршрута Alertmanager. Отсутствие
+    метки допустимо: его обслуживает catch-all `ntfy-admin`.
+    """
+    allowed = {"ntfy", "never", "watchdog", None}
+    unsupported: list[str] = []
+    for rule in _rules():
+        if "alert" not in rule:
+            continue
+        labels = rule.get("labels") if isinstance(rule.get("labels"), dict) else {}
+        notify = labels.get("notify")
+        if notify not in allowed:
+            unsupported.append(f"{rule['alert']}: notify={notify!r}")
+
+    assert not unsupported, (
+        "active Prometheus alerts must use notify=ntfy, never, watchdog, or omit "
+        f"the label (Alertmanager catch-all); unsupported routes:\n  {chr(10).join(unsupported)}"
+    )
+
+
 def _referenced_metrics(expr: str) -> frozenset[str]:
     """Имена серий, на которые опирается выражение.
 
@@ -446,13 +469,13 @@ def test_trend_cluster_silence_is_observed_but_does_not_page() -> None:
     # `notify: never` — не то же самое, что отсутствие метки `notify`, и первая
     # редакция этого правила ошиблась именно здесь. В alertmanager.yml в blackhole
     # уходят ровно два маршрута (alertname="FrontierWatchdog" и notify="never"),
-    # а всё прочее подхватывает catch-all `telegram-admin`. Правило без метки
-    # доставлялось в Telegram и повторялось каждые 6 часов; поймано
+    # а всё прочее подхватывает catch-all `ntfy-admin`. Правило без метки
+    # доставлялось в канал оповещений и повторялось каждые 6 часов; поймано
     # `amtool config routes test` на рабочем конфиге, а не чтением YAML.
     assert labels.get("notify") == "never", (
         f"notify={labels.get('notify')!r}. Omitting the label does NOT keep the alert "
         "quiet: alertmanager routes everything that is not notify=\"never\" (or the "
-        "watchdog) to the telegram-admin catch-all, so this would sit in Telegram "
+        "watchdog) to the ntfy-admin catch-all, so this would sit in ntfy "
         "repeating every 6h about a known, deferred condition."
     )
 
@@ -470,7 +493,7 @@ def test_trend_cluster_silence_is_observed_but_does_not_page() -> None:
             f"{paging} does not restrict the `table` label at all, so it selects every "
             "table the exporter emits — including trend_clusters, where silence is a "
             "known deferred condition (decision 29), and card_feedback, where zero rows "
-            "are expected. It would sit permanently firing in Telegram."
+            "are expected. It would sit permanently firing in ntfy."
         )
         selected = {
             table.strip()
@@ -502,7 +525,7 @@ def test_no_rule_groups_own_metrics_by_the_reserved_job_label() -> None:
 
     Свои метки размечаются `job_name` — это имя уже принято в проекте
     (`frontier_admin_manual_job_*`, белый список меток в
-    admin/backend/services/telegram_alerts.py).
+    admin/backend/services/ntfy_alerts.py).
     """
     offenders: list[str] = []
     for rule in _rules():

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import hashlib
 import logging
 from typing import Any
 
 import redis.asyncio as aioredis
-from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
-from admin.backend.services.telegram_alerts import (
+from admin.backend.services.ntfy_alerts import (
     format_alertmanager_message,
-    send_telegram_alert_message,
-    telegram_alerts_enabled,
+    ntfy_alerts_enabled,
+    send_ntfy_alert_message,
 )
 from admin.backend.services.xray_health import (
     get_xray_health_history,
@@ -31,6 +31,7 @@ from shared.config import get_settings
 
 router = APIRouter()
 _ALERTMANAGER_BASIC_AUTH_USERNAME = "alertmanager"
+_ALERT_PENDING_TTL_SECONDS = 120
 _ALERT_DEDUPE_TTL_SECONDS = 1800
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def _assert_alertmanager_token(request: Request) -> None:
     if not expected:
         # Раньше здесь стоял `return`, то есть при пустой переменной единственный
         # контроль доступа к этому эндпоинту молча выключался, а эндпоинт продолжал
-        # принимать и рассылать в Telegram что угодно. Отказ громче тихого допуска:
+        # принимать и рассылать произвольные уведомления. Отказ громче тихого допуска:
         # ошибку конфигурации видно в логах Alertmanager как провал доставки.
         logger.error(
             "ALERTMANAGER_WEBHOOK_TOKEN пуст — вебхук отклоняется. "
@@ -121,37 +122,65 @@ async def _claim_alert_delivery(payload: dict[str, Any]) -> bool:
     settings = get_settings()
     client = aioredis.from_url(settings.redis_url, decode_responses=True)
     try:
+        key = _alert_delivery_key(payload)
+        if await client.set(key, "pending", ex=_ALERT_PENDING_TTL_SECONDS, nx=True):
+            return True
+        if await client.get(key) == "delivered":
+            return False
+        raise HTTPException(status_code=503, detail="alertmanager_delivery_pending")
+    finally:
+        await client.aclose()
+
+
+async def _mark_alert_delivered(payload: dict[str, Any]) -> bool:
+    settings = get_settings()
+    client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        # Один SET атомарно сохраняет подтверждение доставки вместе с новым TTL.
         return bool(
             await client.set(
                 _alert_delivery_key(payload),
-                "1",
+                "delivered",
                 ex=_ALERT_DEDUPE_TTL_SECONDS,
-                nx=True,
             )
         )
     finally:
         await client.aclose()
 
 
-async def _deliver_alert_message(payload: dict[str, Any], message: str) -> None:
+async def _release_alert_delivery(payload: dict[str, Any]) -> None:
+    settings = get_settings()
+    client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        await client.delete(_alert_delivery_key(payload))
+    finally:
+        await client.aclose()
+
+
+async def _deliver_alert_message(payload: dict[str, Any], message: str) -> bool:
     attempts = 3
     delay_seconds = 2.0
     for attempt in range(1, attempts + 1):
         try:
-            await send_telegram_alert_message(message)
-            return
-        except Exception:
-            logger.exception(
-                "alertmanager_telegram_delivery_failed attempt=%s/%s alertname=%s status=%s",
-                attempt,
-                attempts,
-                (payload.get("commonLabels") or {}).get("alertname"),
-                payload.get("status"),
+            delivered = await send_ntfy_alert_message(
+                message,
+                title="Frontier Alertmanager",
+                priority="high",
+                tags="warning,frontier",
             )
-            if attempt >= attempts:
-                return
+        except Exception:
+            delivered = False
+        if delivered:
+            return True
+        logger.warning(
+            "alertmanager_ntfy_delivery_failed attempt=%s/%s",
+            attempt,
+            attempts,
+        )
+        if attempt < attempts:
             await asyncio.sleep(delay_seconds)
             delay_seconds *= 2
+    return False
 
 
 @router.get("/alertmanager/health")
@@ -159,11 +188,13 @@ async def alertmanager_health() -> dict[str, Any]:
     settings = get_settings()
     return {
         "status": "ok",
-        "telegram_enabled": telegram_alerts_enabled(),
+        "ntfy_enabled": ntfy_alerts_enabled(),
         "alertmanager_token_configured": bool(settings.alertmanager_webhook_token.strip()),
         "alertmanager_basic_auth_username": _ALERTMANAGER_BASIC_AUTH_USERNAME,
-        "proxy_configured": bool(settings.telegram_alert_proxy_url.strip()),
-        "chat_id_configured": bool(settings.telegram_alert_chat_id.strip()),
+        "ntfy_url_configured": bool(settings.ntfy_url.strip()),
+        "ntfy_credential_file_configured": bool(
+            settings.ntfy_credential_file.strip()
+        ),
     }
 
 
@@ -193,10 +224,22 @@ async def alertmanager_webhook(request: Request) -> dict[str, Any]:
             "receiver": payload.get("receiver"),
         }
     message = format_alertmanager_message(payload)
-    asyncio.create_task(_deliver_alert_message(payload, message))
+    if not await _deliver_alert_message(payload, message):
+        try:
+            await _release_alert_delivery(payload)
+        except Exception:
+            logger.warning("alertmanager_delivery_claim_release_failed")
+        raise HTTPException(status_code=503, detail="alertmanager_ntfy_delivery_failed")
+    try:
+        marked_delivered = await _mark_alert_delivered(payload)
+    except Exception:
+        marked_delivered = False
+    if not marked_delivered:
+        logger.warning("alertmanager_delivery_confirmation_failed")
+        raise HTTPException(status_code=503, detail="alertmanager_delivery_confirmation_failed")
     return {
         "status": "accepted",
-        "delivered": False,
+        "delivered": True,
         "alerts": len(alerts),
         "receiver": payload.get("receiver"),
     }

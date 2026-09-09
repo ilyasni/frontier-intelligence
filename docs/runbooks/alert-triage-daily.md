@@ -1,19 +1,17 @@
 # Daily Alert Triage Loop
 
-<!-- audit-status:2026-08-04 -->
-> **🟡 ЧАСТИЧНО УСТАРЕЛО · сверено 2026-08-04.**
-> Основа верна, но часть утверждений разошлась с рабочим стеком. Сверяйтесь с разбором, прежде чем опираться на числа и команды.
-> Конкретных расхождений найдено: **4** — перечислены в разборе.
-> Разбор: [AUDIT-2026-08-04.md](../AUDIT-2026-08-04.md).
+<!-- audit-status:2026-09-09 -->
+> **Сверено 2026-09-09.** Операционные алерты и daily triage доставляются в ntfy.
+> Единственное исключение — urgent trend alerts: они по-прежнему отправляются в Telegram.
 
-Дата: 2026-07-19
+Дата: 2026-07-19; расписание сверено 2026-09-09
 Область: ежедневный автоматический разбор алертов Frontier.
 
 ## Что это
 
 Раз в сутки локальный headless-прогон Claude Code собирает возникшие/висящие алерты
 с сервера, ставит по каждому вероятный диагноз (по runbook'ам + памяти повторяющихся
-инцидентов) и отдаёт дайджест в Telegram + в лог на сервере.
+инцидентов) и отдаёт дайджест в ntfy + в лог на сервере.
 
 Почему локально, а не в облаке: Prometheus (`:9090`) и Alertmanager (`:9093`) слушают
 только на `127.0.0.1` сервера. Дотянуться до них можно лишь с рабочей машины через
@@ -22,26 +20,24 @@
 ## Поток
 
 ```
-Task Scheduler (09:15 local, если пользователь залогинен)
-  → .claude\run-alert-triage.ps1
-     → claude -p "/alert-triage"  (allowedTools: Bash Read Grep Glob Write; --max-budget-usd 2)
+Claude Code scheduled task (ежедневно 09:36 local)
+  → ~/.claude/scheduled-tasks/frontier-alert-triage/SKILL.md
         → ssh: bash scripts/alert-triage-collect.sh      # read-only бандл алертов+метрик
         → точечная диагностика (PromQL, docker logs, docker inspect) по горящим алертам
         → сверка с памятью повторяющихся паттернов
         → Markdown-дайджест (TL;DR первым)
-        → ssh: bash scripts/alert-triage-deliver.sh        # сохранить + Telegram
+        → ssh: bash scripts/alert-triage-deliver.sh        # сохранить + ntfy
 ```
 
 ## Компоненты
 
 | Файл | Где живёт | Роль |
 |---|---|---|
-| `.claude/commands/alert-triage.md` | локально (не синкается) | «Мозг»: процедура разбора + карта «алерт → диагностика» |
-| `.claude/run-alert-triage.ps1` | локально | Обёртка для Task Scheduler (headless, лимит бюджета, лог) |
+| `~/.claude/scheduled-tasks/frontier-alert-triage/SKILL.md` | user scope Claude Code | Живой источник процедуры и расписания, ежедневно 09:36 |
+| `.claude/commands/alert-triage.md` | локально (не синкается) | Историческая копия для ручного `/alert-triage`; к расписанию не подключена |
 | `scripts/alert-triage-collect.sh` | сервер (синкается) | Read-only бандл: firing/24h алерты, Alertmanager, контейнеры, host, key metrics |
-| `scripts/alert-triage-deliver.sh` | сервер (синкается) | Сохраняет дайджест в лог + шлёт в Telegram (creds из `.env`) |
+| `scripts/alert-triage-deliver.sh` | сервер (синкается) | Сохраняет дайджест в лог + шлёт в ntfy через sender внутри `admin` |
 | `docs/ops/alert-digests/<UTC-date>.md` | **только сервер** (в `.rsync-exclude`) | История дайджестов |
-| `.claude/alert-triage.log` | локально | Лог прогонов (stdout claude) |
 
 ## Развёртывание / изменение
 
@@ -56,56 +52,62 @@ Task Scheduler (09:15 local, если пользователь залогине�
 Лог `docs/ops/alert-digests/` исключён из синка (`.rsync-exclude`), поэтому push с
 `--delete` его не сотрёт.
 
+Процедуру или время scheduled task меняют в
+`~/.claude/scheduled-tasks/frontier-alert-triage/SKILL.md`, а не в историческом
+`.claude/commands/alert-triage.md`.
+
 ## Ручной запуск
 
-```powershell
-# полный прогон (с доставкой в Telegram)
-powershell -ExecutionPolicy Bypass -File D:\Workspace\frontier-intelligence\.claude\run-alert-triage.ps1
-
-# сухой прогон — собрать и показать дайджест, без Telegram
-powershell -ExecutionPolicy Bypass -File D:\Workspace\frontier-intelligence\.claude\run-alert-triage.ps1 -Dry
-```
-Или в интерактивной сессии Claude Code в этом проекте: `/alert-triage` (или `/alert-triage dry`).
+В интерактивной сессии Claude Code в этом проекте: `/alert-triage` для доставки или
+`/alert-triage dry` без ntfy. Команда использует историческую локальную копию процедуры;
+scheduled task исполняет отдельный user-scope skill.
 
 Только собрать бандл (без разбора):
 ```
 ssh frontier-intelligence "cd /opt/frontier-intelligence && tr -d '\r' < scripts/alert-triage-collect.sh | bash"
 ```
 
-## Расписание (Windows Task Scheduler)
+## Расписание (Claude Code)
 
-Задача: **FrontierAlertTriage**, ежедневно 09:15 local, запускается когда пользователь залогинен.
-
-```powershell
-# посмотреть
-Get-ScheduledTask -TaskName FrontierAlertTriage | Get-ScheduledTaskInfo
-# сменить время (например на 08:00)
-$t = New-ScheduledTaskTrigger -Daily -At 08:00
-Set-ScheduledTask -TaskName FrontierAlertTriage -Trigger $t
-# запустить сейчас
-Start-ScheduledTask -TaskName FrontierAlertTriage
-# удалить
-Unregister-ScheduledTask -TaskName FrontierAlertTriage -Confirm:$false
-```
+Живёт только Claude Code scheduled task
+`~/.claude/scheduled-tasks/frontier-alert-triage/SKILL.md`: ежедневно в **09:36 local**.
+Windows-задача `FrontierAlertTriage` и `.claude/run-alert-triage.ps1` удалены
+18.08.2026. Это явно зафиксировано в шапке `.claude/commands/alert-triage.md`; тот файл
+оставлен для истории и ручного вызова и не получает scheduler-specific шаги 0.5 и 7.
 
 ## Настройка / тюнинг
 
-- **Доставка**: лог `docs/ops/alert-digests/` пишется КАЖДЫЙ день; в Telegram (тот же
-  чат, что и сырые алерты) уходит **только если есть firing critical/warning** — гейтинг
+- **Credential files**: `NTFY_URL` общий и не секретный. В server `.env` лежат только пути:
+  `NTFY_APP_CREDENTIAL_FILE`, `NTFY_ALERTMANAGER_CREDENTIAL_FILE` и
+  `NTFY_WATCHDOG_CREDENTIAL_FILE`. В контейнер `admin` файл приложения монтируется как
+  `/run/secrets/ntfy-app`, поэтому внутри него задано
+  `NTFY_CREDENTIAL_FILE=/run/secrets/ntfy-app`. Значения credentials в `.env` не хранятся.
+- **URL и direct webhook**: production compose допускает только `https://host/topic`
+  без явного порта; topic — 1–64 символа `A–Z`, `a–z`, `0–9`, `_`, `-`.
+  Служебные topics `account`, `admin`, `app`, `docs`, `file`, `health`, `metrics`,
+  `settings`, `static`, `v1`, query и fragment запрещены. Direct-маршрут
+  Alertmanager использует native HTTP webhook semantics: успешный HTTP-ответ
+  сам по себе не означает проверку JSON-квитанции ntfy. Квитанцию проверяют
+  Python publishers приложения и host watchdog; watchdog сохраняет state после
+  неудачной доставки recovery и повторяет её на следующем прогоне.
+- **Доставка**: лог `docs/ops/alert-digests/` пишется КАЖДЫЙ день; в ntfy уходит
+  **только если есть firing critical/warning** — гейтинг
   через 2-й аргумент `deliver.sh` (`send`|`skip`). «Всё зелено», только `info`, только
   `pending` или только отгремевшее за 24ч → лог есть, пуша нет. Fail-safe: дефолт `deliver.sh`
   = `send`, поэтому забытый аргумент шлёт (лишний пинг), а не глушит алерт.
-  Telegram отправляется штатным `send_telegram_alert_message` внутри контейнера `admin`
-  (host-`curl` не резолвит socks5-прокси `xray`); creds/proxy из `.env` контейнера admin.
-- **Стоимость**: `--max-budget-usd 2` в обёртке — предохранитель от разгона. Модель —
-  по умолчанию сессии; при желании удешевить добавь `--model` в `run-alert-triage.ps1`.
-- **Права**: headless идёт с узким `--allowedTools`, без полного bypass. Диагностика —
-  строго read-only (curl к Prometheus, `docker compose logs`, `docker inspect`).
+  Сообщение отправляется штатным `send_ntfy_alert_message` внутри контейнера `admin`.
+  `truncate_ntfy_message` ограничивает сообщение 4096 UTF-8 байт, не разрезая символ;
+  полный Markdown остаётся в `docs/ops/alert-digests/` даже при сбое отправки.
+- **Права диагностики**: серверные команды должны оставаться read-only (curl к Prometheus,
+  `docker compose logs`, `docker inspect`); доставка пишет только digest и notification.
 
 ## Связанные материалы
 
 - `prometheus/alerts.yml` — каталог правил (~40 алертов).
-- `prometheus/alertmanager.yml` — маршрут (всё → Telegram, дедуп 30м, repeat 6h).
+- `prometheus/alertmanager.yml` — маршруты операционных алертов в ntfy.
+- `scripts/alert-watchdog.sh` + `scripts/notify_ntfy.py` — внешний host-direct watchdog;
+  читает из серверного `.env` только `NTFY_URL` и путь `NTFY_WATCHDOG_CREDENTIAL_FILE`.
+- Urgent trend alerts не относятся к этому контуру и остаются в Telegram.
 - `docs/runbooks/llm-orchestrator-alerts.md` — классы LLM-алертов (provider_outage,
   local_throttle, quota_exhausted, cost_drift, catalog_stale).
 - Память повторяющихся инцидентов: `MEMORY.md` + файлы `memory/` (AdminDown, enrichment

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# alert-triage-deliver.sh — persist a triage digest and push it to the Telegram alert chat.
+# alert-triage-deliver.sh — persist a triage digest and push it to ntfy.
 #
 # (Named "deliver", not "notify", on purpose: the project's Bash pre-hook blocks the
 #  literal substring "-n", which "-notify" would trip on every scheduled run.)
@@ -7,19 +7,17 @@
 # Runs on the server.
 #   $1 = path to a finished Markdown digest (produced by the Claude triage loop).
 #   $2 = send mode: "send" (default) or "skip". "skip" saves the log but does NOT push
-#        to Telegram — used when no firing critical/warning alert is present.
+#        to ntfy — used when no firing critical/warning alert is present.
 # It:
 #   1. Copies the digest to docs/ops/alert-digests/<UTC-date>.md  (excluded from rsync,
 #      so `sync-push --delete` never wipes the history) — ALWAYS, regardless of mode.
-#   2. If mode=send: sends a Telegram-safe message (first ~3800 chars, TL;DR at the top)
-#      to the same chat alerts already use, reusing TELEGRAM_* creds + proxy from .env.
+#   2. If mode=send: sends a UTF-8-byte-safe ntfy message (<=4096 bytes, TL;DR first).
 #
-# The Telegram send is delegated to the app's own sender (send_telegram_alert_message)
-# running INSIDE the admin container: the socks5 proxy host (xray) only resolves on the
-# docker network, so a host-side curl cannot reach it. Creds/proxy resolve from admin's env.
+# The send is delegated to the app's own ntfy sender running INSIDE admin. The module's
+# truncate_ntfy_message helper owns the 4096-byte boundary and never splits UTF-8.
 #
-# Missing digest -> exit 1. Send failure -> saves file, warns, exits 0
-# (a broken bot must not break the log).
+# Missing/invalid input or persistence failure -> nonzero. Send failure -> the saved
+# digest remains, a warning is printed, and delivery exits 0.
 #
 # Invoke CRLF-safely from the client with:
 #   ssh frontier-intelligence "cd /opt/frontier-intelligence && tr -d '\r' < scripts/alert-triage-deliver.sh | bash -s -- /tmp/frontier-alert-digest.md"
@@ -32,50 +30,45 @@ if [ -z "$DIGEST_PATH" ] || [ ! -f "$DIGEST_PATH" ]; then
   echo "deliver: digest file not found: '${DIGEST_PATH}'" >&2
   exit 1
 fi
+case "$MODE" in
+  send|skip) : ;;
+  *)
+    echo "deliver: invalid mode '${MODE}' (expected send or skip)" >&2
+    exit 2
+    ;;
+esac
 
-REPO="/opt/frontier-intelligence"
+REPO="${REPO:-/opt/frontier-intelligence}"
 DEST_DIR="${REPO}/docs/ops/alert-digests"
 UTC_DATE="$(date -u '+%Y-%m-%d')"
 DEST="${DEST_DIR}/${UTC_DATE}.md"
 
-mkdir -p "$DEST_DIR"
-cp "$DIGEST_PATH" "$DEST"
+if ! mkdir -p "$DEST_DIR"; then
+  echo "deliver: cannot create digest directory" >&2
+  exit 1
+fi
+if ! cp "$DIGEST_PATH" "$DEST"; then
+  echo "deliver: cannot persist digest" >&2
+  exit 1
+fi
 echo "deliver: saved digest -> ${DEST}"
 
-# Gate: only push to Telegram when there is something worth pinging about.
+# Gate: only push to ntfy when there is something worth pinging about.
 if [ "$MODE" = "skip" ]; then
-  echo "deliver: telegram skipped (mode=skip — нет firing critical/warning; лог сохранён)"
+  echo "deliver: ntfy skipped (mode=skip — нет firing critical/warning; лог сохранён)"
   exit 0
 fi
 
-# Telegram hard limit is 4096 chars; keep headroom for the header + truncation note.
-#
-# Меряем и режем в СИМВОЛАХ. На байтах оба шага врут, и 17.08.2026 это стоило первой
-# доставки — 400 Bad Request. Что было сломано:
-#   1) ${#BODY} в локали сервера (LANG=C) считает БАЙТЫ: 5017 вместо 3413 букв.
-#   2) `cut -c` у GNU режет БАЙТЫ независимо от локали — и, главное, работает ПОСТРОЧНО.
-#      Строк длиннее 3800 в дайджесте нет, поэтому предохранитель не обрезал НИЧЕГО:
-#      замер на живом тексте — 11290 букв на входе, 11289 на выходе.
-# Итог: в Telegram уходило полное сообщение (~4200 букв) с припиской «обрезано» и
-# отвергалось целиком по лимиту 4096.
-#
-# Срез средствами bash идёт по границам символов, поэтому не рубит букву пополам
-# (невалидный UTF-8 Telegram тоже отвергает). Локаль C.utf8 на сервере есть.
-export LC_ALL=C.utf8
-MAX=3800
 BODY="$(cat "$DEST")"
-NOTE=""
-if [ "${#BODY}" -gt "$MAX" ]; then
-  BODY="${BODY:0:$MAX}"
-  NOTE=$'\n\n… (обрезано; полный разбор: '"docs/ops/alert-digests/${UTC_DATE}.md на сервере)"
-fi
-MSG="🔎 Frontier alert-triage ${UTC_DATE} (UTC)"$'\n\n'"${BODY}${NOTE}"
+MSG="🔎 Frontier alert-triage ${UTC_DATE} (UTC)"$'\n\n'"${BODY}"
+NOTE=$'\n\n… (обрезано; полный разбор: '"docs/ops/alert-digests/${UTC_DATE}.md на сервере)"
 
-# Send via the app's own sender inside admin (docker network resolves the socks5 proxy).
-RESULT="$(printf '%s' "$MSG" | ( cd "$REPO" && docker compose exec -T admin python -c "import sys,asyncio; from admin.backend.services.telegram_alerts import send_telegram_alert_message as s; print('SENT' if asyncio.run(s(sys.stdin.read())) else 'DISABLED')" ) 2>&1)"
-if printf '%s' "$RESULT" | grep -q 'SENT'; then
-  echo "deliver: telegram sent (via admin sender)"
+# Byte-safe truncation and delivery use the app's own ntfy module inside admin.
+RESULT="$(printf '%s' "$MSG" | ( cd "$REPO" && docker compose exec -T admin python -c "import sys,asyncio; from admin.backend.services.ntfy_alerts import send_ntfy_alert_message as s, truncate_ntfy_message as t; message=t(sys.stdin.read(), suffix=sys.argv[1]); print('FRONTIER_NTFY_SENT' if asyncio.run(s(message)) else 'FRONTIER_NTFY_DISABLED')" "$NOTE" ) 2>&1)"
+FINAL_MARKER="$(printf '%s\n' "$RESULT" | tail -n 1 | tr -d '\r')"
+if [ "$FINAL_MARKER" = "FRONTIER_NTFY_SENT" ]; then
+  echo "deliver: ntfy sent (via admin sender)"
 else
-  echo "deliver: telegram send FAILED — ${RESULT}" >&2
+  echo "deliver: ntfy send FAILED — ${RESULT}" >&2
 fi
 exit 0

@@ -9,9 +9,10 @@ from typing import Any
 import httpx
 import redis.asyncio as aioredis
 
-from admin.backend.services.telegram_alerts import (
-    send_telegram_alert_message,
-    telegram_alerts_enabled,
+from admin.backend.services.ntfy_alerts import (
+    ntfy_alerts_enabled,
+    send_ntfy_alert_message,
+    truncate_ntfy_message,
 )
 from shared.config import get_settings
 
@@ -92,9 +93,9 @@ async def _run_probe_group(
     }
 
 
-async def _send_xray_alert(streak: int, failed: list[ProbeResult], total: int) -> None:
-    if not telegram_alerts_enabled():
-        return
+async def _send_xray_alert(streak: int, failed: list[ProbeResult], total: int) -> bool:
+    if not ntfy_alerts_enabled():
+        return False
     failed_bits = []
     for item in failed[:6]:
         status = str(item.status_code) if item.status_code is not None else "ERR"
@@ -112,10 +113,20 @@ async def _send_xray_alert(streak: int, failed: list[ProbeResult], total: int) -
             "action: verify xray upstream and restart xray+ingest if needed",
         ]
     )
+    text = truncate_ntfy_message(
+        text,
+        suffix="\n… message truncated",
+    )
     try:
-        await send_telegram_alert_message(text)
+        return await send_ntfy_alert_message(
+            text,
+            title="Frontier: XRAY degraded",
+            priority="high",
+            tags="warning,frontier",
+        )
     except Exception:  # noqa: BLE001
-        logger.exception("xray_degradation_alert_delivery_failed")
+        logger.warning("xray_degradation_alert_delivery_failed")
+        return False
 
 
 async def _trigger_remediation_webhook(payload: dict[str, Any]) -> dict[str, Any]:
@@ -195,9 +206,11 @@ async def run_xray_health_check(*, allow_remediation: bool = True) -> dict[str, 
             if last_alert is not None:
                 can_alert = False
             if can_alert:
-                await _send_xray_alert(streak, transport_failed, int(transport["targets_total"]))
-                alert_sent = True
-                await redis.set(_XRAY_LAST_ALERT_KEY, "1", ex=settings.xray_alert_cooldown_seconds)
+                alert_sent = await _send_xray_alert(
+                    streak, transport_failed, int(transport["targets_total"])
+                )
+                if alert_sent:
+                    await redis.set(_XRAY_LAST_ALERT_KEY, "1", ex=settings.xray_alert_cooldown_seconds)
 
             # Опциональная авторемедиация через внешний webhook.
             if allow_remediation and settings.xray_auto_remediation_enabled:

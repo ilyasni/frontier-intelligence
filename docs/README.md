@@ -150,11 +150,16 @@ Daily digests are intentionally disabled. The admin scheduler only sends Telegra
 - Manual check: `POST http://127.0.0.1:8101/api/pipeline/run-urgent-trend-alerts?dry_run=true`
   — **требует авторизации**, голый `curl` вернёт `401 {"detail":"unauthorized"}`.
 
-С 04.08.2026 у алертинга два независимых пути доставки: штатный вебхук в `admin`
-и прямой receiver `telegram-direct` в Alertmanager, который ходит в Telegram сам.
-Критические правила идут обоими сразу, поэтому падение `admin` больше не глушит
-сообщение о падении `admin`. Плюс dead man's switch: правило `FrontierWatchdog`
-и внешний наблюдатель `scripts/alert-watchdog.sh` в cron.
+С 09.09.2026 операционные алерты (то есть всё, кроме urgent trend alerts) доставляются
+в ntfy. Штатный путь идёт из Alertmanager и `admin`; dead man's switch
+`FrontierWatchdog` проверяется внешним `scripts/alert-watchdog.sh`, который публикует
+в ntfy прямо с хоста через `scripts/notify_ntfy.py` и не зависит от Docker/admin.
+Watchdog читает из серверного `.env` только `NTFY_URL` и путь
+`NTFY_WATCHDOG_CREDENTIAL_FILE`; credential хранится в отдельном файле и в лог не попадает.
+Остальные host-path переменные — `NTFY_APP_CREDENTIAL_FILE` и
+`NTFY_ALERTMANAGER_CREDENTIAL_FILE`; в `admin` app credential доступен как
+`NTFY_CREDENTIAL_FILE=/run/secrets/ntfy-app`.
+Urgent trend alerts намеренно остаются в Telegram: миграция их не затрагивает.
 
 ---
 
@@ -228,7 +233,7 @@ LLM-роутер (wormsoft / polza / openrouter / GigaChat), хранит в в�
 | Urgent trend alerts | Работает | Только Telegram, только подтверждённые всплески stable-трендов, cron `25 * * * *`, отбор по `signal_stage='stable'` + `has_recent_change_point`, два потолка — `TREND_ALERT_MAX_PER_RUN` и `TREND_ALERT_MAX_PER_7D` (оба по 2). Ежедневного дайджеста нет |
 | Admin UI: workspaces, sources, pipeline, search, clusters, graph, media | Работает | 11 роутеров в `admin/backend/routers/`, все подключены в `admin/backend/main.py` (сверка: `grep -c include_router admin/backend/main.py`). Всё, кроме `/api/health`, закрыто cookie/Basic-авторизацией: голый `curl` получает `401 {"detail":"unauthorized"}` |
 | MCP: поиск, наблюдаемость, кластеры, здоровье источников, `ingest_url`, редакторская обратная связь | Работает | REST-слой на `mcp:8100` (loopback), MCP-шлюз на `:8102` — Streamable HTTP. Шлюз опубликован наружу и не имеет аутентификации вообще |
-| Prometheus + Grafana | Работает | Два дашборда: `frontier-runtime.json`, `frontier-rsi.json`. Алерты — `prometheus/alerts.yml` + textfile-коллектор |
+| Prometheus + Grafana | Работает | Два дашборда: `frontier-runtime.json`, `frontier-rsi.json`. Операционные алерты → ntfy; urgent trend alerts остаются в Telegram. Правила — `prometheus/alerts.yml` + textfile-коллектор |
 | crawl4ai, SearXNG, PaddleOCR, xray | Работают как вспомогательные | crawl4ai читает `stream:posts:crawl` (внешние ссылки из постов), а не забирает web-источники: те тянет ingest через httpx + BeautifulSoup |
 
 Четыре утверждения прошлой версии были неверны — если они помнятся, это не аберрация памяти:
@@ -436,7 +441,7 @@ docker compose exec -T postgres psql -U frontier -d frontier -c \
 | **S3 / Cloud.ru** | boto3, path-style | Медиафайлы, vision summaries gzip, ночные бэкапы |
 | **crawl4ai** | локальная сборка | Web-краулинг источников |
 | **SearXNG** | searxng/searxng | Self-hosted поиск для missing signals |
-| **Prometheus + Grafana** | standard | Метрики и дашборды, Alertmanager с двумя путями доставки |
+| **Prometheus + Grafana** | standard | Метрики и дашборды, Alertmanager доставляет операционные алерты в ntfy |
 | **xray** | локальная сборка | Единственный egress наружу (socks5 `xray:10808`) |
 | **Admin UI** | FastAPI + Vue 3 (CDN, без сборки) | Управление: workspace, источники, темы, FinOps |
 
@@ -450,9 +455,10 @@ docker compose exec -T postgres psql -U frontier -d frontier -c \
 Supabase стек (kong/postgrest/studio/meta), Caddy, JWT/QR-auth, Mini App,
 мультитенантность (RLS), SaluteSpeech.
 
-> Telegram Bot API — **исключение**: он используется в проде для доставки алертов
-> (`admin/backend/services/telegram_alerts.py` и прямой receiver Alertmanager).
-> Запрет касается бота как пользовательского интерфейса, а не как транспорта уведомлений.
+> Telegram Bot API — **узкое исключение**: он используется в проде только для urgent
+> trend alerts. Операционные алерты и daily alert-triage доставляются в ntfy.
+> Запрет касается бота как пользовательского интерфейса и не отменяет этот отдельный
+> транспорт редких подтверждённых trend spikes.
 
 ---
 
@@ -1384,7 +1390,7 @@ PROXY_CONFIGS = [
 | `prometheus/` | `prometheus.yml`, `alerts.yml`, `alertmanager.yml`. Монтируются **пофайлово**, а не каталогом — новый файл в этой папке контейнер не увидит. `prometheus/textfile/` в репозитории отсутствует: каталог создаёт cron на сервере, в `.rsync-exclude` он защищён отдельным правилом. |
 | `grafana/` | Provisioning целиком: `dashboards/` (`frontier-runtime.json`, `frontier-rsi.json`) и `datasources/`. Монтируется каталогом, добавление дашборда пересборки не требует. |
 | `searxng/` | `settings.example.yml` — шаблон в git, `limiter.toml` — настройки лимитера. Рабочий `settings.yml` с `secret_key` живёт только на сервере. |
-| `scripts/` | 64 файла в git. Основные группы: сборка и развёртывание на сервере (`server-*.sh`), синхронизация с Windows (`sync-push.ps1`, `sync-pull.ps1`), разовые операции с данными (бэкфиллы, cutover алиасов Qdrant, обслуживание S3, миграции), бэкап и восстановление стека (`backup-stack.sh`, `restore-stack.sh`), экспорт метрик в textfile-коллектор node_exporter (`export-*.sh` — способ добавить метрику без пересборки образа), ежедневный разбор алертов (`alert-triage-*.sh`, `alert-watchdog.sh`). |
+| `scripts/` | Host/server utilities. Основные группы: сборка и развёртывание (`server-*.sh`), синхронизация с Windows (`sync-push.ps1`, `sync-pull.ps1`), разовые операции с данными, бэкап/восстановление, экспорт textfile-метрик и контур алертов (`alert-triage-*.sh`, `alert-watchdog.sh`, `notify_ntfy.py`). |
 | `tests/` | pytest, 97 файлов в git: 93 штуки `test_<модуль>.py` плоским списком плюс `__init__.py`, `conftest.py`, `stub_policy.py` и `fixtures/`. Зарегистрированы только маркеры `unit` и `integration`. Прогонять внутри Docker-образа: host-окружение на Python 3.10 несовместимо. |
 | `docs/` | 93 markdown-файла. Точка входа — `AUDIT-2026-08-04.md`. Датированная пометка статуса стоит в шапке только у документов, разошедшихся с реальностью; **отсутствие пометки означает «сверен и актуален»**, а не «забыли проставить». Подкаталоги: `harness/` и `chatgpt/` — самые крупные (27 и 23 файла), дальше `saas/` (13), `runbooks/`, `archive/`, `audit/`, `sre/`. |
 | `tmp/` | Рабочий каталог для выгрузок и черновиков. В git попадает только `.gitkeep`, содержимое исключено и из git, и из rsync. |

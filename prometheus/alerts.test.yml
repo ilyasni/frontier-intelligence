@@ -104,7 +104,7 @@ tests:
           - exp_labels:
               severity: warning
               service: ingest
-              notify: telegram
+              notify: ntfy
               source_id: web_new_scrape
               workspace: auto_hmi
               source_type: web
@@ -185,7 +185,7 @@ tests:
           - exp_labels:
               severity: critical
               service: backup
-              notify: telegram
+              notify: ntfy
               instance: tight
               job: node-exporter
             exp_annotations:
@@ -203,7 +203,7 @@ tests:
           - exp_labels:
               severity: warning
               service: backup
-              notify: telegram
+              notify: ntfy
               instance: tight
               job: node-exporter
             exp_annotations:
@@ -267,7 +267,7 @@ tests:
           - exp_labels:
               severity: warning
               service: worker
-              notify: telegram
+              notify: ntfy
             exp_annotations:
               summary: "Local throttle dominates outage-like fallback profile"
               description: "Throttle events are much higher than outage-like fallback events for worker. Re-check classification (`throttled_local` vs upstream outage), pacing, and circuit policy."
@@ -303,7 +303,7 @@ tests:
               reason: redis_error
               severity: warning
               service: worker
-              notify: telegram
+              notify: ntfy
             exp_annotations:
               summary: "Wormsoft credit accounting is failing"
               description: "Wormsoft credit accounting failed during read (reason=redis_error). This is visible even with enforcement disabled; check Redis health or the pricing table before trusting utilization."
@@ -326,7 +326,7 @@ tests:
           - exp_labels:
               severity: warning
               service: worker
-              notify: telegram
+              notify: ntfy
             exp_annotations:
               summary: "Wormsoft account reached its credit warning threshold"
               description: "Account-wide Wormsoft usage stayed above the configured soft warning threshold for 15 minutes (ratio=0.85). Check remaining credits and the time until reset before increasing pacing."
@@ -355,7 +355,7 @@ tests:
           - exp_labels:
               severity: critical
               service: worker
-              notify: telegram
+              notify: ntfy
             exp_annotations:
               summary: "Wormsoft account reached its credit hard threshold"
               description: "Account-wide Wormsoft usage stayed above the configured hard threshold for 10 minutes (ratio=0.96). Expect local throttling or fallback unless the credit window resets soon."
@@ -395,7 +395,7 @@ tests:
           - exp_labels:
               severity: warning
               service: worker
-              notify: telegram
+              notify: ntfy
             exp_annotations:
               summary: "Wormsoft credit-window telemetry is stale"
               description: "Successful Wormsoft traffic is present, but no service refreshed the account-wide credit-window gauge for more than 10 minutes. Check the credit accounting path before enabling enforcement."
@@ -429,7 +429,7 @@ tests:
           - exp_labels:
               severity: warning
               service: worker
-              notify: telegram
+              notify: ntfy
               from_provider: polza
               task: concepts
               reason: polza_timeout
@@ -442,7 +442,7 @@ tests:
           - exp_labels:
               severity: warning
               service: worker
-              notify: telegram
+              notify: ntfy
               task: concepts
               reason: wormsoft_timeout
             exp_annotations:
@@ -451,7 +451,7 @@ tests:
           - exp_labels:
               severity: warning
               service: worker
-              notify: telegram
+              notify: ntfy
               task: relevance
               reason: guard_unavailable
             exp_annotations:

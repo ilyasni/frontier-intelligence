@@ -3,18 +3,17 @@ global:
 
 # Маршрутизация.
 #
-# Штатный путь доставки — вебхук в admin, который форматирует сообщение и шлёт его
-# в Telegram через socks5-прокси. Он остаётся основным: у него дедуп и человеческий формат.
+# Штатный путь доставки — вебхук в admin, который форматирует сообщение и публикует
+# его в ntfy. Он остаётся основным: у него дедуп и человеческий формат.
 #
 # Проблема, ради которой появился второй путь: цепочка Prometheus -> Alertmanager -> admin
-# -> Telegram завязана на тот самый сервис, о падении которого надо сообщать. Замер за
+# -> ntfy завязана на тот самый сервис, о падении которого надо сообщать. Замер за
 # 7 дней до правки: 135 провалов доставки из 296 (46%), и все они пришлись на окно, когда
 # admin лежал. То есть в момент аварии не доходило вообще ничего, включая FrontierAdminDown.
 #
-# Поэтому критические правила дублируются receiver'ом telegram-direct, который ходит
-# в Telegram сам, минуя admin. Прямой egress к api.telegram.org с этого хоста закрыт
-# (Network is unreachable), так что прямой путь идёт через тот же socks5-прокси —
-# общий с admin остаётся только он, а не целый сервис.
+# Поэтому критические правила дублируются receiver'ом ntfy-direct, который ходит
+# в ntfy сам, минуя admin. У него отдельный bearer credential: отказ или компрометация
+# app credential не затрагивает независимый аварийный путь.
 #
 # Цена решения: на критический алерт приходит два сообщения. Это сознательно —
 # критические правила редки по построению, и потерять их дороже, чем получить дважды.
@@ -23,7 +22,7 @@ global:
 # кто-либо станет её править. Актуальное:
 #   curl -sS 127.0.0.1:9090/api/v1/rules | grep -c '"severity":"critical"'
 route:
-  receiver: telegram-admin
+  receiver: ntfy-admin
   group_by: ['alertname', 'severity', 'service']
   group_wait: 30s
   group_interval: 10m
@@ -44,7 +43,7 @@ route:
 
     # Критические — дублируем прямым путём и продолжаем обход, чтобы штатный
     # путь через admin тоже отработал.
-    - receiver: telegram-direct
+    - receiver: ntfy-direct
       matchers:
         - severity="critical"
       continue: true
@@ -52,16 +51,18 @@ route:
     # Catch-all. Нужен явно: если бы его не было, критический алерт, совпавший
     # с правилом выше, ушёл бы ТОЛЬКО прямым путём — receiver родительского
     # маршрута не применяется, когда сработал хоть один дочерний.
-    - receiver: telegram-admin
+    - receiver: ntfy-admin
 
 receivers:
   - name: blackhole
 
-  - name: telegram-admin
+  - name: ntfy-admin
     webhook_configs:
       - url: 'http://admin:8101/api/monitoring/alertmanager/webhook'
         send_resolved: true
         max_alerts: 10
+        # Дождаться трёх попыток ntfy по 15s и backoff 2s/4s в admin webhook.
+        timeout: 60s
         # Токен уехал из query string в Basic-auth: uvicorn логирует полный путь
         # запроса, поэтому раньше секрет ложился открытым текстом в docker-логи admin
         # (ротация логов на демоне не настроена). Обработчик принимает оба способа —
@@ -71,34 +72,14 @@ receivers:
             username: alertmanager
             password: __ALERTMANAGER_WEBHOOK_TOKEN__
 
-  - name: telegram-direct
-    telegram_configs:
-      - bot_token: __TELEGRAM_BOT_TOKEN__
-        # ЧИСЛОВОЙ id, а не @имя. Alertmanager типизирует это поле как int64 и на
-        # строку отвечает `cannot unmarshal !!str into int64`; вдобавок голый
-        # скаляр в YAML не может начинаться с '@'. В ALERT_TELEGRAM_CHAT_ID лежит
-        # именно @имя — им пользуется admin через Bot API, где это допустимо.
-        # Поэтому здесь отдельная переменная ALERT_TELEGRAM_CHAT_NUMERIC_ID.
-        # Получить: getChat?chat_id=@имя -> result.id
-        chat_id: __ALERT_TELEGRAM_CHAT_NUMERIC_ID__
+  - name: ntfy-direct
+    webhook_configs:
+      - url: '__NTFY_URL__?template=netwatch'
         send_resolved: true
-        # Пусто = не разбирать разметку. При HTML (умолчание Alertmanager) любое
-        # '<' или '&' в тексте алерта роняет доставку с 400 от Telegram.
-        parse_mode: ''
-        message: |-
-          Frontier {{ .Status | toUpper }} (прямой путь, мимо admin)
-          {{ range .Alerts -}}
-          {{ .Labels.alertname }} [{{ .Labels.severity }}]{{ with .Labels.job }} job={{ . }}{{ end }}
-          {{ with .Annotations.summary }}{{ . }}
-          {{ end }}
-          {{- end }}
+        max_alerts: 3
+        timeout: 15s
         http_config:
-          # Прямого выхода в интернет у хоста нет — только socks5. Берём его из
-          # переменной HTTPS_PROXY контейнера (compose подставляет туда
-          # TELEGRAM_ALERT_PROXY_URL), а не пишем сюда строкой: в URL прокси есть
-          # учётные данные, а sed по ним ломается на '&' и '#' в пароле.
-          #
-          # Флаг действует только на этот receiver: у webhook_configs выше
-          # proxy_from_environment не задан, значит вебхук в admin по-прежнему
-          # ходит напрямую по внутренней сети (плюс admin в NO_PROXY).
-          proxy_from_environment: true
+          follow_redirects: false
+          authorization:
+            type: Bearer
+            credentials_file: /run/secrets/ntfy-alertmanager

@@ -9,13 +9,11 @@
 #
 # Этот скрипт наблюдает за контуром СНАРУЖИ него: крутится на хосте по cron,
 # опрашивает Prometheus и Alertmanager по loopback и, если что-то не так, шлёт
-# сообщение в Telegram, не задействуя ни admin, ни маршрутизацию Alertmanager.
+# сообщение в ntfy, не задействуя ни Docker, ни admin, ни Alertmanager.
 #
-# Ограничение, которое надо знать. Прямого egress к api.telegram.org с хоста
-# нет, а socks5-прокси живёт по адресу xray:10808 внутри docker-сети и с хоста
-# не резолвится. Поэтому отправка идёт через docker exec в первый живой
-# контейнер, у которого есть httpx и переменная с прокси. admin пробуется
-# последним: именно он чаще всего и оказывается причиной.
+# Доставка host-direct: URL и ПУТЬ к credential читаются из серверного .env,
+# само значение credential читает только scripts/notify_ntfy.py из отдельного
+# файла. .env не source-ится и прочие переменные из него не попадают в процесс.
 #
 # Дальше цепочка кончается: если умрёт сам cron или docker, сообщить будет
 # некому. Это неустранимый конец на одном хосте, и он тут назван честно.
@@ -37,9 +35,6 @@ ALERTMANAGER="${ALERTMANAGER:-http://127.0.0.1:9093}"
 
 # Не повторять одно и то же сообщение чаще, чем раз в N секунд.
 COOLDOWN="${COOLDOWN:-10800}"   # 3 часа
-# Контейнеры-отправители, по порядку. admin последним — он подозреваемый.
-SENDERS="${SENDERS:-worker mcp ingest admin}"
-
 NOW="$(date +%s)"
 PROBLEMS=()
 
@@ -99,48 +94,28 @@ fi
 
 # ─────────────────────────────────────────────────────────── отправка
 
-send_telegram() {
-  local text="$1" sent=0 c cname
-  local token chat_id
-  token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')"
-  chat_id="$(grep -E '^ALERT_TELEGRAM_CHAT_ID=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')"
-  if [ -z "$token" ] || [ -z "$chat_id" ]; then
-    log "отправка невозможна: TELEGRAM_BOT_TOKEN или ALERT_TELEGRAM_CHAT_ID пуст"
+read_env_value() {
+  local key="$1" line
+  line="$(grep -m1 -E "^${key}=" "$ENV_FILE" 2>/dev/null || true)"
+  printf '%s' "${line#*=}" | tr -d '\r'
+}
+
+send_ntfy() {
+  local text="$1" ntfy_url credential_file result
+  ntfy_url="$(read_env_value NTFY_URL)"
+  credential_file="$(read_env_value NTFY_WATCHDOG_CREDENTIAL_FILE)"
+  if [ -z "$ntfy_url" ] || [ -z "$credential_file" ]; then
+    log "отправка ntfy невозможна: не заданы URL или путь к credential"
     return 1
   fi
 
-  for c in $SENDERS; do
-    cname="frontier-intelligence-${c}-1"
-    docker inspect "$cname" --format '{{.State.Running}}' 2>/dev/null | grep -q true || continue
-    # Секреты уходят в контейнер через stdin, а не аргументами: argv виден в ps.
-    if printf '%s' "$(python3 -c "
-import json, sys
-print(json.dumps({'token': sys.argv[1], 'chat_id': sys.argv[2], 'text': sys.argv[3]}))
-" "$token" "$chat_id" "$text")" \
-      | timeout 40 docker exec -i "$cname" python -c "
-import json, os, sys
-import httpx
-
-p = json.load(sys.stdin)
-proxy = os.environ.get('TELEGRAM_ALERT_PROXY_URL') or None
-r = httpx.post(
-    f\"https://api.telegram.org/bot{p['token']}/sendMessage\",
-    json={'chat_id': p['chat_id'], 'text': p['text'], 'disable_web_page_preview': True},
-    proxy=proxy,
-    timeout=30,
-)
-r.raise_for_status()
-" >/dev/null 2>&1; then
-      log "отправлено через $c"
-      sent=1
-      break
-    else
-      log "через $c не удалось, пробую следующий"
-    fi
-  done
-
-  [ "$sent" = 1 ] || { log "ОТПРАВИТЬ НЕ УДАЛОСЬ НИ ЧЕРЕЗ ОДИН КОНТЕЙНЕР"; return 1; }
-  return 0
+  if result="$(NTFY_URL="$ntfy_url" NTFY_CREDENTIAL_FILE="$credential_file" \
+      timeout 40 python3 "$ROOT_DIR/scripts/notify_ntfy.py" "$text" 2>&1)"; then
+    log "отправлено напрямую в ntfy"
+    return 0
+  fi
+  log "отправить в ntfy не удалось: $result"
+  return 1
 }
 
 # ─────────────────────────────────────────────────────────── состояние
@@ -159,11 +134,16 @@ if [ "${#PROBLEMS[@]}" -eq 0 ]; then
   log "контур алертинга в порядке"
   # О восстановлении сообщаем, только если до этого сообщали о поломке.
   if [ -n "$PREV_SIG" ]; then
-    send_telegram "Frontier watchdog: контур алертинга восстановлен.
+    if send_ntfy "Frontier watchdog: контур алертинга восстановлен.
 
-Prometheus и Alertmanager отвечают, FrontierWatchdog на месте, провалов доставки за 15 минут нет." || true
+Prometheus и Alertmanager отвечают, FrontierWatchdog на месте, провалов доставки за 15 минут нет."; then
+      : > "$STATE_FILE"
+    else
+      log "состояние сохранено, повтор recovery на следующем запуске"
+    fi
+  else
+    : > "$STATE_FILE"
   fi
-  : > "$STATE_FILE"
 else
   STATUS=1
   SIG="$(printf '%s\n' "${PROBLEMS[@]}" | sort | md5sum | cut -c1-32)"
@@ -176,7 +156,7 @@ $(printf '  - %s\n' "${PROBLEMS[@]}")
   if [ "$SIG" = "$PREV_SIG" ] && [ $((NOW - PREV_TS)) -lt "$COOLDOWN" ]; then
     log "то же самое уже отправляли $((NOW - PREV_TS))с назад, молчу до истечения $COOLDOWN с"
   else
-    if send_telegram "$BODY"; then
+    if send_ntfy "$BODY"; then
       printf '%s\n%s\n' "$SIG" "$NOW" > "$STATE_FILE"
     else
       # Не записываем состояние: на следующем запуске попробуем снова.

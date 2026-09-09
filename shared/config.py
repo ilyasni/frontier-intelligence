@@ -339,6 +339,10 @@ class Settings(BaseSettings):
     telegram_alert_proxy_url: str = Field("", alias="TELEGRAM_ALERT_PROXY_URL")
     alertmanager_webhook_token: str = Field("", alias="ALERTMANAGER_WEBHOOK_TOKEN")
 
+    # ntfy operational alerts. The bearer credential is read only from this file.
+    ntfy_url: str = Field("", alias="NTFY_URL")
+    ntfy_credential_file: str = Field("", alias="NTFY_CREDENTIAL_FILE")
+
     # ── IMAP (email-коннектор) ───────────────────────────────────────────────
     # Пароль ящика НИКОГДА не живёт в конфиге источника: тот едет из
     # git-трекаемого config/sources.yml и лежит в PostgreSQL открытым текстом

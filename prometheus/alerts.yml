@@ -20,7 +20,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Стадия {{ $labels.stage }} даёт ошибки пачками"
           description: "На стадии {{ $labels.stage }} за час накопилось {{ $value }} исходов outcome=error. Разрез по воркспейсам: sum by (workspace) (increase(frontier_pipeline_stage_total{stage=\"{{ $labels.stage }}\",outcome=\"error\"}[1h])). До появления этого счётчика такой всплеск не был виден ничем: статус стадии писался только в indexing_status, то есть существовал как состояние, но не как поток."
@@ -33,7 +33,7 @@ groups:
         labels:
           severity: warning
           service: ingest
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Публикация событий ingest не удаётся ({{ $labels.workspace }})"
           description: "За 15 минут {{ $value }} событий воркспейса {{ $labels.workspace }} не доехали до stream:posts:parsed. Чекпоинт при этом НЕ сдвигается (at-least-once), то есть следующий прогон перечитает окно — но если отказы продолжаются, источник стоит на месте. Проверь Redis и его память."
@@ -47,7 +47,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Джоб {{ $labels.job_name }} падает повторно"
           description: "{{ $value }} неудачных прогонов {{ $labels.job_name }} за 6 часов. outcome=timeout означает превышение ADMIN_JOB_SUBPROCESS_TIMEOUT_SEC (1800с по умолчанию с 05.08.2026, коммит 7cf0b33) — ночная кластеризация disruption занимает 484-552с, то есть около 30% лимита. outcome=failed — ненулевой код возврата, расшифровку сигнала смотри в логах admin."
@@ -70,7 +70,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Джоб {{ $labels.job_name }} падает не первый день"
           description: "{{ $value }} неудачных прогонов {{ $labels.job_name }} за двое суток — то есть отказ повторяется, а не случился однажды. Для суточных джобов (run_retrospective_review, run_novelty_judge, run_relevance_audit, run_semantic_clusters) это единственное правило, способное сработать: FrontierAdminJobFailing требует ≥3 отказов за 6 часов и суточный прогон столько не наберёт. Смотри `docker logs frontier-intelligence-admin-1 | grep 'failed for workspace'` — счётчик считает ПО ВОРКСПЕЙСАМ, поэтому падение одного из шести видно здесь и не видно по статусу самой задачи APScheduler."
@@ -106,7 +106,7 @@ groups:
         labels:
           severity: warning
           service: crawl4ai
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Краул отказывает в четырёх случаях из пяти"
           description: "Доля неуспешных краулов за час — {{ $value | humanizePercentage }} при обычных ~50%. Разбивка по причинам: sum by (reason) (rate(frontier_crawl_outcomes_total[1h])). Смотри в первую очередь reason=timeout и reason=browser_error: первое означает сеть или прокси, второе — движок браузера. reason=http_403 массово означает, что источники перестали пускать, и лечится прокси xray."
@@ -120,7 +120,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "В DLQ {{ $labels.stream }} лежат сообщения"
           description: "{{ $value }} poison-сообщений в {{ $labels.stream }}. Механизм «сохранить и разобрать позже» существовал только в половине «сохранить»: консьюмера у DLQ нет, разбирать надо руками — XRANGE {{ $labels.stream }} - + COUNT 10 и смотреть поле error."
@@ -139,7 +139,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "В стрим {{ $labels.stream }} пишут, но его никто не читает"
           description: "У {{ $labels.stream }} ноль consumer-групп, при этом за час прибавилось {{ $value }} записей. Они будут вытеснены триммингом непрочитанными, и ни lag, ни pending этого не покажут. Либо подключить потребителя, либо снять продюсера — группа без потребителя проблему не решает, а лишь меняет её форму на растущий pending."
@@ -151,7 +151,7 @@ groups:
         labels:
           severity: critical
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Тримминг съел недоставленное: {{ $labels.stream }}/{{ $labels.group }}"
           description: "last-delivered-id группы {{ $labels.group }} старше первой уцелевшей записи {{ $labels.stream }}: MAXLEN срезал сообщения ДО того, как их прочитали. Они потеряны безвозвратно. lag и pending при этом нулевые — отстающих записей больше не существует, ровно та тишина, что сопровождала Redis-OOM 31.07.2026. Смотри, не встал ли потребитель, и подними STREAM_MAXLEN, если поток вырос."
@@ -177,7 +177,7 @@ groups:
         labels:
           severity: warning
           service: redis
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Redis занял больше 80% своего потолка"
           description: "Использовано {{ $value | humanizePercentage }} от maxmemory. Именно это состояние 31.07.2026 положило стек на 9 часов, и заметить его было нечем: при упёршемся в потолок Redis lag и pending остаются нулевыми. Смотри длину стримов (XLEN) и кэш эмбеддингов; STREAM_MAXLEN=10000 уже стоит."
@@ -191,7 +191,7 @@ groups:
         labels:
           severity: warning
           service: redis
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Redis вытесняет ключи"
           description: "За 15 минут вытеснено {{ $value }} ключей. Политика volatile-ttl бьёт по ключам с TTL, то есть по кэшу эмбеддингов: работа продолжится, но подорожает и замедлится, без единой ошибки в логах."
@@ -202,7 +202,7 @@ groups:
         labels:
           severity: warning
           service: redis
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Последний bgsave Redis завершился ошибкой"
           description: "rdb_last_bgsave_status != ok. Снимок на диск не создаётся, значит перезапуск Redis потеряет состояние стримов и кэш. Обычная причина — нет места на диске или не хватает памяти на fork."
@@ -215,7 +215,7 @@ groups:
         labels:
           severity: warning
           service: postgres
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "PostgreSQL близок к лимиту подключений"
           description: "{{ $value }} подключений при max_connections=100. Дальше новые соединения получают отказ, и первым ляжет тот сервис, который переподключается чаще прочих. Ищи утечку пула."
@@ -236,7 +236,7 @@ groups:
         labels:
           severity: warning
           service: neo4j
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Neo4j не отвечает на опрос"
           description: "cypher-shell не вернул счётчики графа. Значения frontier_neo4j_node_count и _relationship_count при этом остаются последними известными — насколько они устарели, показывает frontier_neo4j_measured_timestamp_seconds."
@@ -249,7 +249,7 @@ groups:
         labels:
           severity: critical
           service: monitoring
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Экспортёр не может опросить Redis или PostgreSQL"
           description: "Признак живости одного из двух ключевых хранилищ равен нулю дольше 15 минут. Либо база не отвечает, либо `docker exec` из-под cron-пользователя перестал работать — проверь обе версии, вторая тихая."
@@ -263,7 +263,7 @@ groups:
         labels:
           severity: warning
           service: monitoring
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Экспортёр метрик хранилищ молчит"
           description: "Серия frontier_redis_up отсутствует >30м, значит вся группа frontier_storage сейчас не может сработать в принципе. Проверь cron scripts/export-storage-metrics.sh, каталог prometheus/textfile и флаг --collector.textfile.directory у node-exporter."
@@ -303,7 +303,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft is rate-limiting production traffic"
           description: "Wormsoft 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. The router may spill text tasks back to Giga and raise monthly cost."
@@ -314,7 +314,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "GigaChat token balance is below 100k"
           description: "Remaining {{ $labels.usage }} balance is {{ $value }} tokens. Top up package tokens to avoid 402 Payment Required and false dropped posts."
@@ -325,7 +325,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "GigaChat balance refresh is stale"
           description: "Admin has not refreshed GigaChat balance metrics for more than 30 minutes. Check scheduler health, OAuth, proxy, and GigaChat API reachability."
@@ -336,7 +336,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft limits refresh is stale"
           description: "Admin has not refreshed Wormsoft limits/pricing metrics for more than 60 minutes. Settings may still render from cache, but live routing cost visibility is degraded."
@@ -347,7 +347,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft limits snapshot is unavailable"
           description: "Admin could not fetch Wormsoft limits/pricing for more than 15 minutes. Check DNS, outbound access, API key validity, and Wormsoft control endpoints."
@@ -358,7 +358,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft fallback traffic is spiking"
           description: "Wormsoft provider fallbacks for {{ $labels.service }}/{{ $labels.task }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Check Wormsoft availability, timeout profile, or model routing."
@@ -379,7 +379,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft relevance gray-zone escalations are spiking"
           description: "Quality escalations from Wormsoft for {{ $labels.service }}/{{ $labels.task }} exceeded 30% with at least 30 events in 1 hour and persisted for 15 minutes. This usually means sustained gray-zone or ambiguous relevance cases and can materially raise Giga spend."
@@ -413,7 +413,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft account reached its credit warning threshold"
           description: "Account-wide Wormsoft usage stayed above the configured soft warning threshold for 15 minutes (ratio={{ $value }}). Check remaining credits and the time until reset before increasing pacing."
@@ -435,7 +435,7 @@ groups:
         labels:
           severity: critical
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft account reached its credit hard threshold"
           description: "Account-wide Wormsoft usage stayed above the configured hard threshold for 10 minutes (ratio={{ $value }}). Expect local throttling or fallback unless the credit window resets soon."
@@ -457,7 +457,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft credit accounting is failing"
           description: "Wormsoft credit accounting failed during {{ $labels.operation }} (reason={{ $labels.reason }}). This is visible even with enforcement disabled; check Redis health or the pricing table before trusting utilization."
@@ -475,7 +475,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Wormsoft credit-window telemetry is stale"
           description: "Successful Wormsoft traffic is present, but no service refreshed the account-wide credit-window gauge for more than 10 minutes. Check the credit accounting path before enabling enforcement."
@@ -486,7 +486,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Provider outage fallback burst is rising"
           description: "Fallbacks likely caused by provider outage for {{ $labels.from_provider }}/{{ $labels.task }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Validate upstream health before changing local throttle settings."
@@ -517,7 +517,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Local throttle dominates outage-like fallback profile"
           description: "Throttle events are much higher than outage-like fallback events for {{ $labels.service }}. Re-check classification (`throttled_local` vs upstream outage), pacing, and circuit policy."
@@ -528,7 +528,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter is rate-limiting production traffic"
           description: "OpenRouter 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. Dynamic OR fallback will spill to Polza or Giga and can raise cost."
@@ -549,7 +549,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter key refresh is stale"
           description: "Admin has not refreshed OpenRouter key usage/limits for more than 30 minutes. Cost visibility and cap detection are degraded."
@@ -560,7 +560,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter key snapshot is unavailable"
           description: "Admin could not fetch OpenRouter key state for more than 15 minutes. Check outbound access, key validity, and OpenRouter API reachability."
@@ -571,7 +571,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter catalog refresh is stale"
           description: "Admin has not refreshed the OpenRouter free-model catalog for more than 45 minutes. Dynamic routing may keep using outdated capability or availability data."
@@ -582,7 +582,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter catalog snapshot is unavailable"
           description: "Admin could not fetch a usable OpenRouter free-model catalog for more than 15 minutes. Picker quality and model awareness are degraded."
@@ -617,7 +617,7 @@ groups:
         for: 10m
         labels:
           severity: warning
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter free pool is quarantined AND the picker is failing because of it"
           description: "{{ $labels.service }}: picker skipped {{ $value }} requests in 30 minutes with a quarantine-related reason while three or more free models are quarantined. Unlike plain quarantine (which happens nightly when the free daily quota resets and is harmless), this means requests are actually being denied — expect spillover to paid providers."
@@ -628,7 +628,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter picker is repeatedly skipping requests"
           description: "OpenRouter picker skips for {{ $labels.service }}/{{ $labels.task_family }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. This usually means quarantine, cap pressure, or no compatible free model."
@@ -639,7 +639,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter non-free model attempt was blocked"
           description: "Runtime blocked non-free OpenRouter model usage for {{ $labels.service }}/{{ $labels.task_family }}. Check policy overrides and enforce free-only routing inputs."
@@ -650,7 +650,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "An OpenRouter free model is nearing the daily soft cap"
           description: "{{ $labels.model_id }} has already reserved {{ $value }} OpenRouter free requests today. Expect picker skips, more quarantine pressure, and more spillover to Polza or Giga."
@@ -661,7 +661,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter vision fallback traffic is spiking"
           description: "OpenRouter vision fallbacks from {{ $labels.service }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Vision cost and latency are likely rising."
@@ -672,7 +672,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "OpenRouter text fallback traffic is spiking"
           description: "OpenRouter text fallbacks for {{ $labels.service }}/{{ $labels.task }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. The text chain is bypassing OR more often than expected."
@@ -693,7 +693,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "LLM runtime cost drift is accumulating"
           description: "Provider {{ $labels.provider }} has accumulated {{ $value }} credits of actual-vs-estimated cost drift. Check pricing assumptions, fallback mix, and provider billing reconciliation."
@@ -704,7 +704,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "LLM finops reconciliation is running from stale provider snapshots"
           description: "Provider {{ $labels.provider }} is being reconciled from stale cached state for more than 20 minutes. Refresh lag can hide quota pressure or accounting drift."
@@ -715,7 +715,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Polza is rate-limiting production traffic"
           description: "Polza 429 events for {{ $labels.service }}/{{ $labels.operation }} increased by {{ $value }} in the last 10 minutes. Spillover to GigaChat may accelerate."
@@ -726,7 +726,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Polza is returning repeated errors"
           description: "Polza request errors for {{ $labels.service }}/{{ $labels.task }} increased by {{ $value }} in 15 minutes. Check provider health, model availability, and outbound connectivity."
@@ -737,7 +737,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Polza vision fallback is returning repeated errors"
           description: "Polza vision errors for {{ $labels.service }} increased by {{ $value }} in 15 minutes. Mass-vision fallback may spill directly into GigaChat."
@@ -748,7 +748,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Polza fallback traffic is spiking"
           description: "Polza fallbacks for {{ $labels.service }}/{{ $labels.task }} to {{ $labels.to_provider }} (reason={{ $labels.reason }}) increased by {{ $value }} in 15 minutes. Tertiary spillover to GigaChat is now material."
@@ -769,7 +769,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Redis stream lag is critically high"
           description: "{{ $labels.stream }}/{{ $labels.group }} lag is {{ $value }} for more than 10 minutes. New events are not being processed in time."
@@ -800,7 +800,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Admin scheduler is not running"
           description: "Scheduled maintenance jobs in admin are stopped. Cron-based source scoring, signal analysis, and balance refresh are not executing."
@@ -811,7 +811,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Manual analysis job is running too long"
           description: "The oldest {{ $labels.job_name }} job has been running for {{ $value }} seconds. Check worker pressure, model latency, or a stuck subprocess."
@@ -822,7 +822,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Manual analysis job recently failed"
           description: "{{ $labels.job_name }} has {{ $value }} failures in the recent observation window. Inspect admin manual job history and logs."
@@ -859,7 +859,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "SearXNG grounding is fully degraded"
           description: "{{ $labels.service }} {{ $labels.mode }} has no successful SearXNG queries in 30 minutes while errors continue. Missing-signals grounding is effectively down."
@@ -880,7 +880,7 @@ groups:
         labels:
           severity: critical
           service: host
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Host root filesystem free space is below 7%"
           description: "Root filesystem on the Docker host has only {{ $value | humanizePercentage }} free. Expect Redis persistence, Docker exec healthchecks, and Postgres writes to fail."
@@ -891,7 +891,7 @@ groups:
         labels:
           severity: critical
           service: '{{ $labels.job }}'
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Core Frontier service is down"
           description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 5 minutes."
@@ -908,7 +908,7 @@ groups:
         labels:
           severity: warning
           service: '{{ $labels.job }}'
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Control-plane Frontier service is down"
           description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable from Prometheus for more than 10 minutes. Для mcp-gateway это значит, что MCP-клиенты (Claude Code, Desktop) сейчас не получат ни одного инструмента."
@@ -934,7 +934,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Admin is down — весь ночной планировщик RSI стоит"
           description: "admin недоступен для Prometheus >5м. Все ночные джобы (clustering, retro-review, novelty-judge, relevance-audit, graph-maintenance, entity-resolution) могут НЕ выполняться. Две основные причины: (1) крэш-луп из-за нехватки worker-зависимости в admin-образе — проверь docker inspect admin (RestartCount>0) и логи; (2) блокировка event-loop тяжёлой CPU-джобой (signal_analysis/semantic_clustering) — RestartCount=0, ищи пробел в логах вокруг окна. Тяжёлые джобы вынесены в субпроцессы (scheduler._run_job_subprocess), поэтому (2) не должно повторяться."
@@ -958,7 +958,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Кросс-семейный novelty-judge падает на всех кандидатах"
           description: "За 6ч все вердикты судьи — failed, успешных ноль. Похоже, обе семьи DeepSeek (wormsoft + polza) недоступны. Судья слепых зон и ранний сигнал B→A фактически выключены."
@@ -992,7 +992,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
           tier: high_volume
         annotations:
           summary: "Полная тишина данных в {{ $labels.workspace }}"
@@ -1016,7 +1016,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
           tier: low_volume
         annotations:
           summary: "Полная тишина данных в {{ $labels.workspace }} (низкообъёмный)"
@@ -1050,7 +1050,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Аналитика {{ $labels.table }} не обновлялась в {{ $labels.workspace }}"
           description: "Последняя запись в {{ $labels.table }} для {{ $labels.workspace }} была {{ $value | humanizeDuration }} назад (>48ч). Ingest при этом может быть полностью здоров — проверять надо аналитический слой. ВАЖНО: статус джоба смотреть бесполезно, провал пишется как success. Первопричину ошибок схемы видно ТОЛЬКО в `docker logs frontier-intelligence-postgres-1`, в логах admin её нет. Перезапуск вручную: docker exec frontier-intelligence-admin-1 python -m admin.backend.manual_jobs run_semantic_clusters <workspace>"
@@ -1061,7 +1061,7 @@ groups:
         labels:
           severity: critical
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Аналитика {{ $labels.table }} стоит четвёртые сутки ({{ $labels.workspace }})"
           description: "Последняя запись в {{ $labels.table }} для {{ $labels.workspace }} была {{ $value | humanizeDuration }} назад (>96ч). MCP отдаёт клиентам устаревшие кластеры и сигналы без признака устаревания. Проверь миграции БД (расхождение схемы с кодом — известная причина), OOM субпроцессов admin и логи postgres."
@@ -1076,7 +1076,7 @@ groups:
         labels:
           severity: warning
           service: monitoring
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Экспортёр свежести аналитики молчит"
           description: "Серия frontier_analysis_last_update_timestamp_seconds отсутствует >30м, значит FrontierAnalysisStale сейчас не может сработать в принципе. Проверь cron scripts/export-analysis-freshness.sh, каталог prometheus/textfile и флаг --collector.textfile.directory у node-exporter."
@@ -1137,10 +1137,10 @@ groups:
         labels:
           severity: warning
           service: monitoring
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Ежедневный разбор алертов не отдал дайджест (>26ч)"
-          description: "Свежий дайджест в docs/ops/alert-digests/ не появлялся дольше 26 часов, значит петля /alert-triage не отработала. Смотри Get-ScheduledTaskInfo FrontierAlertTriage на рабочей машине и хвост .claude/alert-triage.log: маркер `start` без парного `exit=` означает, что процесс убили (0xC000013A — консольный сигнал, проверь настройки задачи и закрытие сессии)."
+          description: "Свежий дайджест в docs/ops/alert-digests/ не появлялся дольше 26 часов, значит петля /alert-triage не отработала. Живое расписание — Claude Code scheduled task ~/.claude/scheduled-tasks/frontier-alert-triage/SKILL.md (ежедневно 09:36 local); Windows-задача FrontierAlertTriage удалена. Проверь состояние scheduled task и запусти /alert-triage вручную."
 
       # Правило выше ловит ОТСУТСТВИЕ результата, это — ЗАЯВЛЕННЫЙ ОТКАЗ. Разница
       # стоила одиннадцати суток: с 07.08 по 17.08.2026 петля запускалась исправно
@@ -1166,10 +1166,10 @@ groups:
         labels:
           severity: warning
           service: monitoring
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Прогон alert-triage завершился с ошибкой"
-          description: "Последний прогон петли /alert-triage вернул ненулевой код и занял {{ $value }} с. Секунды вместо минут — подпись отказа авторизации: `claude` пишет `Not logged in. Please run /login` и выходит, сам переавторизоваться он не может. Лечится интерактивно на рабочей машине: запусти `claude`, выполни /login, затем `Start-ScheduledTask -TaskName FrontierAlertTriage` для проверки. Если длительность в минутах — авторизация цела, смотри хвост .claude/alert-triage.log и разбирай по месту падения. Пока правило firing, разбора алертов не происходит: FrontierAlertTriageStale в это время может молчать, если дайджест кто-то положил руками."
+          description: "Последний прогон петли /alert-triage вернул ненулевой код и занял {{ $value }} с. Секунды вместо минут — подпись отказа авторизации: `claude` пишет `Not logged in. Please run /login` и выходит, сам переавторизоваться он не может. Лечится интерактивно на рабочей машине: запусти `claude`, выполни /login, затем /alert-triage вручную для проверки. Если длительность в минутах — авторизация цела, проверь состояние Claude Code scheduled task ~/.claude/scheduled-tasks/frontier-alert-triage/SKILL.md и разбирай по месту падения. Пока правило firing, разбора алертов не происходит: FrontierAlertTriageStale в это время может молчать, если дайджест кто-то положил руками."
 
   # Dead man's switch. Правило firing ВСЕГДА, по построению — доставлять его
   # некуда и незачем, в alertmanager.yml оно уходит в blackhole первым же
@@ -1217,7 +1217,7 @@ groups:
         labels:
           severity: warning
           service: monitoring
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Наблюдатель контура алертинга молчит"
           description: "scripts/alert-watchdog.sh не отчитывался больше часа (или серия отсутствует). Значит внешняя проверка доставки сейчас не работает, и падение контура алертинга снова станет незаметным. Проверь cron на хосте и хвост backups/watchdog.log."
@@ -1234,7 +1234,7 @@ groups:
         labels:
           severity: critical
           service: backup
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Успешного бэкапа не было больше полутора суток"
           description: "frontier_backup_last_success_timestamp_seconds старше 36ч (или серии нет вовсе). Крон стоит на 03:30 ежедневно, значит пропущен минимум один прогон. Смотри хвост backups/backup.log: чаще всего это переполнение квоты S3 либо недоступность эндпоинта. Проверить целостность того, что есть: bash scripts/restore-stack.sh verify"
@@ -1256,7 +1256,7 @@ groups:
         labels:
           severity: warning
           service: backup
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Бэкап запускается, но завершается с ошибками"
           description: "Последний СТАРТ новее последнего УСПЕХА больше чем на сутки: прогон идёт и падает на каком-то шаге. Именно этот случай самый тихий — файлы в каталоге есть, а часть из них не доехала. Смотри строки '!!! FAILED' в backups/backup.log."
@@ -1306,7 +1306,7 @@ groups:
         labels:
           severity: warning
           service: backup
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Бакет заполнен более чем на 85%"
           description: "Занятость по нижней точке суток {{ $value | humanizePercentage }} квоты. 02.08.2026 бакет уже упирался в потолок, и из-за этого не доезжал самый важный файл. Учти: при опросе S3 раз в 6 часов нижняя точка почти не наблюдается, поэтому цифра сейчас близка к ночному пику. Разбор наполнения: docker run --rm --env-file .env <worker-образ> python /scripts/s3_bucket_usage.py"
@@ -1368,7 +1368,7 @@ groups:
         labels:
           severity: critical
           service: backup
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Ночной пик занятости бакета подошёл к квоте"
           description: "Пик за сутки {{ $value | humanizePercentage }} квоты. Отказ наступит в момент ночной заливки, когда прочее + вчерашний + сегодняшний комплект перерастут квоту, — запас до 100% и есть оставшееся время. Разбор наполнения: docker run --rm --env-file .env <worker-образ> python /scripts/s3_bucket_usage.py. Уменьшить комплект: снимать снапшот dense_2560 реже ежедневного (он 55% веса) либо поднять квоту бакета. Результат проверять только через S3_POLL_MIN_INTERVAL=0 bash scripts/export-backup-metrics.sh — иначе 6-часовой кэш покажет старое число."
@@ -1379,7 +1379,7 @@ groups:
         labels:
           severity: warning
           service: monitoring
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Экспортёр метрик бэкапа молчит"
           description: "Серии frontier_backup_* отсутствуют больше 2ч, значит все правила группы frontier_backup сейчас не могут сработать в принципе. Проверь cron scripts/export-backup-metrics.sh и каталог prometheus/textfile."
@@ -1415,7 +1415,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Потолок кластеризации мал для потока {{ $labels.workspace }}"
           description: "Суточный приток подходящих постов приблизился к semantic_cluster_max_posts или превысил его: выборка берёт N самых свежих, остальное не кластеризуется никогда. Именно так disruption держал покрытие 40% при потолке 400 и потоке ~1000/сут. Потолок правится в config/workspaces.yml, extra.cluster_analysis — и НЕ забудь про docker cp в контейнеры, config/ запечён в образ. Цена подъёма — матрица попарных косинусов O(n^2) и время прогона: 400 постов = 37с, 2000 = 484-552с при таймауте субпроцесса 1800с (поднят 05.08.2026 вместе с переносом крона на 05:00, вне окна ночного бэкапа)."
@@ -1435,7 +1435,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Кластеризация видит менее 30% окна у {{ $labels.workspace }}"
           description: "Покрытие {{ $value | humanizePercentage }} держится сутки. Трендовый и emerging-слой строятся на этой выборке, значит клиентам MCP отдаётся картина по трети корпуса. Проверь cluster_runs на ошибки и semantic_cluster_max_posts у воркспейса."
@@ -1464,7 +1464,7 @@ groups:
         labels:
           severity: warning
           service: admin
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Метрики качества кластеризации не публикуются"
           description: "Серии frontier_cluster_quality нет больше 26ч. Либо оба кластерных джоба не отработали, либо перепубликация из дочернего процесса сломалась (admin/backend/scheduler.py::_republish_cluster_quality). Пока ряда нет, ни одно правило этой группы сработать не может — проверь cluster_runs на последний успешный прогон."
@@ -1499,7 +1499,7 @@ groups:
         labels:
           severity: warning
           service: worker
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Один материал стал чаще разъезжаться по кластерам у {{ $labels.workspace }}"
           description: "Доля одинаковых артефактов (общий канонический URL или один заголовок в пределах 72ч), попавших в разные семантические кластеры, выросла в полтора раза против собственной базовой линии за трое суток. Два часа в правиле — предпусковой дебаунс, а не длительность роста. ПЕРЕД ТЕМ КАК ТРОГАТЬ ПОРОГИ ДЕДУПА сверься с same_artifact_groups: серию пишут ДВА джоба (run_semantic_clusters и run_signal_analysis) с разным размером выборки, значение скачет в разы в течение суток, а базовая линия смешивает оба режима — частая причина срабатывания именно эта, а не переизмельчение. Если выборка стабильна, тогда смотри semantic_dedupe_similarity_threshold, semantic_dedupe_max_gap_hours и не сменилась ли модель эмбеддингов."
@@ -1569,7 +1569,7 @@ groups:
         labels:
           severity: warning
           service: ingest
-          notify: telegram
+          notify: ntfy
         annotations:
           summary: "Источник {{ $labels.source_id }} перестал отдавать дату публикации"
           description: "За последние 7 суток доля постов без published_at у {{ $labels.source_id }} ({{ $labels.workspace }}, тип {{ $labels.source_type }}) выше половины, и это скачок на {{ $value | humanizePercentage }} против всей предыдущей истории источника. Такие посты сохраняются и находятся поиском, но выборка кластеризации требует published_at IS NOT NULL — значит весь этот материал не попадёт ни в кластеры, ни в тренды. Проверь date_selector источника в config/sources.yml (перевёрстка сайта ломает селектор молча) либо переведи источник на RSS, как сделано с auto_web_ieee_spectrum_autonomous 16.08.2026."
