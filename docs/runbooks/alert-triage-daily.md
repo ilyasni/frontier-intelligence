@@ -102,8 +102,13 @@ Windows-задача `FrontierAlertTriage` и `.claude/run-alert-triage.ps1` у�
   `pending` или только отгремевшее за 24ч → лог есть, пуша нет. Fail-safe: дефолт `deliver.sh`
   = `send`, поэтому забытый аргумент шлёт (лишний пинг), а не глушит алерт.
   Сообщение отправляется штатным `send_ntfy_alert_message` внутри контейнера `admin`.
-  `truncate_ntfy_message` ограничивает сообщение 4096 UTF-8 байт, не разрезая символ;
+  `truncate_ntfy_message` ограничивает сообщение **3800** UTF-8 байт, не разрезая символ;
   полный Markdown остаётся в `docs/ops/alert-digests/` даже при сбое отправки.
+  Почему не 4096: ntfy 2.28.0 считает тело **ровно** 4096 байт вложением, а
+  attachment-cache на VPS 109 выключен → HTTP 400 `code 40014 attachments not allowed`.
+  Так 11.09.2026 потерялся дайджест 5595 байт (единственный 400 в логе nginx за всю историю).
+  Граница замерена живым sender'ом: 4096 → 400, 4095 → 200. Sender теперь пишет `code`/`error`
+  из JSON-ответа ntfy в лог и в текст ошибки.
 - **Права диагностики**: серверные команды должны оставаться read-only (curl к Prometheus,
   `docker compose logs`, `docker inspect`); доставка пишет только digest и notification.
 

@@ -237,7 +237,7 @@ def test_publisher_rejects_invalid_credential_before_network(
     assert ntfy_server.received == []
 
 
-@pytest.mark.parametrize("message", ["", "я" * 2049])
+@pytest.mark.parametrize("message", ["", "я" * 1901, "я" * 2048, "я" * 2049])
 def test_publisher_rejects_messages_outside_utf8_byte_limit(
     monkeypatch, tmp_path, ntfy_server, message: str
 ) -> None:
@@ -248,6 +248,94 @@ def test_publisher_rejects_messages_outside_utf8_byte_limit(
         asyncio.run(_send_loopback_message(message))
 
     assert ntfy_server.received == []
+
+
+def test_message_cap_is_strictly_below_ntfy_server_limit() -> None:
+    # ntfy 2.28.0: util.Peek(body, message-size-limit) → LimitReached при read == limit,
+    # т.е. тело РОВНО 4096 байт уже вложение; без attachment-cache это HTTP 400 (40014).
+    # Замерено 2026-09-11: 4096 → 400, 4095 → 200. Кэп обязан оставаться строго ниже.
+    assert ntfy_alerts._NTFY_SERVER_MESSAGE_SIZE_LIMIT == 4096
+    assert ntfy_alerts._MAX_MESSAGE_BYTES < ntfy_alerts._NTFY_SERVER_MESSAGE_SIZE_LIMIT
+    assert ntfy_alerts._MAX_MESSAGE_BYTES <= 3800
+
+
+def test_publisher_accepts_message_at_the_cap(monkeypatch, tmp_path, ntfy_server) -> None:
+    url = f"http://127.0.0.1:{ntfy_server.server_port}/frontier-alerts"
+    _configure(monkeypatch, tmp_path, url)
+    message = "я" * (ntfy_alerts._MAX_MESSAGE_BYTES // 2)
+    assert len(message.encode("utf-8")) == ntfy_alerts._MAX_MESSAGE_BYTES
+
+    assert asyncio.run(_send_loopback_message(message)) is True
+    assert len(ntfy_server.received[0][2]) == ntfy_alerts._MAX_MESSAGE_BYTES
+
+
+def test_default_truncation_of_oversized_digest_stays_below_server_limit() -> None:
+    # Реальный кейс 11.09.2026: дайджест 5595 байт с кириллицей и эмодзи, суффикс
+    # усечения как в scripts/alert-triage-deliver.sh.
+    suffix = "\n\n… (обрезано; полный разбор: docs/ops/alert-digests/2026-09-11.md на сервере)"
+    digest = "🔎 Frontier alert-triage 2026-09-11 (UTC)\n\n" + "Превышение порога 🟠 — причина\n" * 200
+    assert len(digest.encode("utf-8")) > ntfy_alerts._NTFY_SERVER_MESSAGE_SIZE_LIMIT
+
+    result = ntfy_alerts.truncate_ntfy_message(digest, suffix=suffix)
+
+    encoded = result.encode("utf-8")
+    assert len(encoded) <= ntfy_alerts._MAX_MESSAGE_BYTES
+    assert len(encoded) < ntfy_alerts._NTFY_SERVER_MESSAGE_SIZE_LIMIT
+    assert result.endswith(suffix)
+    assert result.startswith("🔎 Frontier alert-triage")
+    assert encoded.decode("utf-8") == result  # ни одного разрезанного code point
+
+
+def test_rejection_error_carries_ntfy_json_code_and_error_only(
+    monkeypatch, tmp_path, ntfy_server, caplog
+) -> None:
+    url = f"http://127.0.0.1:{ntfy_server.server_port}/frontier-alerts"
+    credential_file = _configure(monkeypatch, tmp_path, url)
+    credential_file.write_text("credential-must-stay-secret", encoding="utf-8")
+    ntfy_server.status = 400
+    ntfy_server.response = json.dumps(
+        {
+            "code": 40014,
+            "http": 400,
+            "error": "invalid request: attachments not allowed",
+            "link": "https://ntfy.sh/docs/config/#attachments",
+        }
+    ).encode("utf-8")
+
+    with caplog.at_level("WARNING", logger="admin.backend.services.ntfy_alerts"):
+        with pytest.raises(ntfy_alerts.NtfyDeliveryError) as exc_info:
+            asyncio.run(_send_loopback_message("message-body-must-stay-secret"))
+
+    error = str(exc_info.value)
+    assert "HTTP 400 (code 40014: invalid request: attachments not allowed)" in error
+    assert "link" not in error and "ntfy.sh/docs" not in error
+    assert "credential-must-stay-secret" not in error
+    assert "message-body-must-stay-secret" not in error
+    assert "code 40014" in caplog.text
+    assert "credential-must-stay-secret" not in caplog.text
+    assert "message-body-must-stay-secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"not json",
+        b"[]",
+        b'{"code":"40014","error":"str code"}',
+        b'{"code":true,"error":"bool code"}',
+        b'{"code":40014,"error":123}',
+        b'{"http":400}',
+    ],
+)
+def test_describe_error_body_ignores_unstructured_bodies(raw: bytes) -> None:
+    assert ntfy_alerts._describe_error_body(raw) == ""
+
+
+def test_describe_error_body_bounds_and_flattens_error_text() -> None:
+    raw = json.dumps({"code": 40014, "error": "a\n b" + "x" * 500}).encode("utf-8")
+    described = ntfy_alerts._describe_error_body(raw)
+    assert described.startswith(" (code 40014: a b")
+    assert len(described) <= len(" (code 40014: ") + 200 + 1
 
 
 def test_delivery_errors_do_not_expose_credential_message_or_response_body(

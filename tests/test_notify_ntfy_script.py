@@ -127,12 +127,15 @@ class NotifyNtfyTests(unittest.TestCase):
                     self.publish()
         self.assertEqual(self.server.received, [])
 
-    def test_message_limit_is_utf8_bytes(self):
-        self.publish("я" * 2048)
+    def test_message_limit_is_utf8_bytes_and_strictly_below_ntfy_4096(self):
+        # ntfy 2.28.0 считает тело ровно 4096 байт вложением → 400 без attachment-cache.
+        self.assertLess(self.notify.MAX_MESSAGE_BYTES, 4096)
+        self.publish("я" * (self.notify.MAX_MESSAGE_BYTES // 2))
         with self.assertRaises(self.notify.DeliveryError):
             self.publish("")
-        with self.assertRaises(self.notify.DeliveryError):
-            self.publish("я" * 2049)
+        for chars in (self.notify.MAX_MESSAGE_BYTES // 2 + 1, 2048, 2049):
+            with self.subTest(chars=chars), self.assertRaises(self.notify.DeliveryError):
+                self.publish("я" * chars)
 
     def test_url_requires_https_and_exactly_one_safe_topic(self):
         invalid = (

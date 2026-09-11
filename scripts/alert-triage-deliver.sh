@@ -11,10 +11,12 @@
 # It:
 #   1. Copies the digest to docs/ops/alert-digests/<UTC-date>.md  (excluded from rsync,
 #      so `sync-push --delete` never wipes the history) — ALWAYS, regardless of mode.
-#   2. If mode=send: sends a UTF-8-byte-safe ntfy message (<=4096 bytes, TL;DR first).
+#   2. If mode=send: sends a UTF-8-byte-safe ntfy message (<=3800 bytes, TL;DR first).
 #
 # The send is delegated to the app's own ntfy sender running INSIDE admin. The module's
-# truncate_ntfy_message helper owns the 4096-byte boundary and never splits UTF-8.
+# truncate_ntfy_message helper owns the byte boundary (3800, strictly below ntfy's
+# message-size-limit of 4096: a body of exactly 4096 bytes is treated as an attachment
+# and rejected with 400 when attachments are disabled) and never splits UTF-8.
 #
 # Missing/invalid input or persistence failure -> nonzero. Send failure -> the saved
 # digest remains, a warning is printed, and delivery exits 0.

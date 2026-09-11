@@ -40,9 +40,9 @@ from pathlib import Path
 
 def truncate_ntfy_message(text, suffix=''):
     raw = text.encode('utf-8')
-    if len(raw) <= 4096:
+    if len(raw) <= 3800:
         return text
-    budget = 4096 - len(suffix.encode('utf-8'))
+    budget = 3800 - len(suffix.encode('utf-8'))
     head = raw[:budget]
     while True:
         try:
@@ -53,7 +53,7 @@ def truncate_ntfy_message(text, suffix=''):
 
 async def send_ntfy_alert_message(text):
     raw = text.encode('utf-8')
-    if len(raw) > 4096:
+    if len(raw) > 3800:
         raise ValueError('message exceeds ntfy boundary')
     if os.environ.get('FAKE_SENDER_OK') != '1':
         print('UNSENT diagnostic contains SENT')
@@ -287,7 +287,9 @@ def test_triage_always_saves_and_delivers_a_byte_safe_ntfy_message(tmp_path):
             assert len(server.received) == 1, (sent.stdout, sent.stderr)
             headers, delivered_bytes = server.received[0]
             assert headers["Authorization"] == "Bearer triage-test-token"
-            assert len(delivered_bytes) <= 4096
+            # Строго ниже 4096: ровно 4096 байт ntfy уже считает вложением (HTTP 400).
+            assert len(delivered_bytes) < 4096
+            assert len(delivered_bytes) <= 3800
             delivered_text = delivered_bytes.decode("utf-8")
             assert delivered_text.startswith("🔎 Frontier alert-triage")
             assert "… (обрезано; полный разбор:" in delivered_text

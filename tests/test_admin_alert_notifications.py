@@ -46,7 +46,7 @@ def test_format_alertmanager_message_fits_ntfy_utf8_limit() -> None:
         }
     )
 
-    assert len(message.encode("utf-8")) <= 4096
+    assert len(message.encode("utf-8")) < 4096  # ровно 4096 = вложение для ntfy
     assert message.endswith("\n… message truncated")
 
 
@@ -93,7 +93,7 @@ def test_gigachat_low_balance_bounds_ntfy_message_by_utf8_bytes(monkeypatch) -> 
     )
 
     assert len(sent) == 1
-    assert len(sent[0].encode("utf-8")) <= 4096
+    assert len(sent[0].encode("utf-8")) < 4096
     assert sent[0].endswith("\n… message truncated")
 
 
@@ -153,7 +153,7 @@ def test_xray_degradation_bounds_ntfy_message_by_utf8_bytes(monkeypatch) -> None
     )
 
     assert len(sent) == 1
-    assert len(sent[0].encode("utf-8")) <= 4096
+    assert len(sent[0].encode("utf-8")) < 4096
     assert sent[0].endswith("\n… message truncated")
 
 

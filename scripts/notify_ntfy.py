@@ -12,6 +12,9 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
+MAX_MESSAGE_BYTES = 3800  # строго ниже message-size-limit ntfy (4096)
+
+
 class DeliveryError(Exception):
     """Безопасное для журнала описание без сообщения и credential."""
 
@@ -85,8 +88,12 @@ def _publish(
     """HTTP loopback разрешается явно только для локальных transport-тестов."""
     topic = validate_url(url, _allow_http_loopback=_allow_http_loopback)
     body = message.encode("utf-8")
-    if not body or len(body) > 4096:
-        raise DeliveryError("Сообщение ntfy должно занимать 1–4096 байт UTF-8")
+    # Тело ровно 4096 байт ntfy 2.28.0 уже считает вложением (util.Peek: read == limit)
+    # и без attachment-cache отвечает 400; граница проверена 2026-09-11, запас намеренный.
+    if not body or len(body) > MAX_MESSAGE_BYTES:
+        raise DeliveryError(
+            f"Сообщение ntfy должно занимать 1–{MAX_MESSAGE_BYTES} байт UTF-8"
+        )
     try:
         credential = credential_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):

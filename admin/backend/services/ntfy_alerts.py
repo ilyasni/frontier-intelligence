@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,18 @@ import httpx
 
 from shared.config import get_settings
 
-_MAX_MESSAGE_BYTES = 4096
+logger = logging.getLogger(__name__)
+
+# ntfy 2.28.0 (VPS 109) читает тело через util.Peek(body, message-size-limit=4096) и
+# ставит LimitReached при read == limit: тело РОВНО 4096 байт уже уходит в ветку
+# attachment, а attachment-cache на сервере выключен → HTTP 400, code 40014
+# "attachments not allowed". Замерено 2026-09-11 живым sender'ом: 4096 → 400, 4095 → 200.
+# Держим запас: суффикс усечения, TrimSpace на стороне ntfy и возможное снижение лимита
+# в server.yml не должны снова упереться в границу.
+_NTFY_SERVER_MESSAGE_SIZE_LIMIT = 4096
+_MAX_MESSAGE_BYTES = 3800
 _MAX_RECEIPT_BYTES = 16384
+_MAX_ERROR_TEXT_CHARS = 200
 _RESERVED_TOPICS = {
     "account",
     "admin",
@@ -29,7 +40,33 @@ _CREDENTIAL_RE = re.compile(r"[A-Za-z0-9._~-]+")
 
 
 class NtfyDeliveryError(RuntimeError):
-    """Safe-to-log delivery failure without credentials or response content."""
+    """Safe-to-log delivery failure without credentials or message content.
+
+    Из ответа сервера наружу попадают только структурные поля ошибки ntfy
+    (`code`, `error`) — см. `_describe_error_body`; заголовки и тело сообщения — никогда.
+    """
+
+
+def _describe_error_body(raw: bytes) -> str:
+    """Вернуть ' (code N: text)' из JSON-ошибки ntfy или '' для любого другого тела.
+
+    ntfy отвечает {"code":40014,"http":400,"error":"invalid request: ..."}. Без этих
+    полей HTTP 400 на 4096-байтном теле диагностировался только догадкой.
+    """
+    if not raw or len(raw) > _MAX_RECEIPT_BYTES:
+        return ""
+    try:
+        payload = json.loads(raw)
+    except (ValueError, UnicodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    code = payload.get("code")
+    error = payload.get("error")
+    if not isinstance(code, int) or isinstance(code, bool) or not isinstance(error, str):
+        return ""
+    error = " ".join(error.split())[:_MAX_ERROR_TEXT_CHARS]
+    return f" (code {code}: {error})" if error else f" (code {code})"
 
 
 def ntfy_alerts_enabled() -> bool:
@@ -135,7 +172,9 @@ async def _send_ntfy_alert_message(
     topic = _validate_url(url, _allow_http_loopback=_allow_http_loopback)
     body = text.encode("utf-8")
     if not body or len(body) > _MAX_MESSAGE_BYTES:
-        raise NtfyDeliveryError("ntfy message must be 1-4096 UTF-8 bytes")
+        raise NtfyDeliveryError(
+            f"ntfy message must be 1-{_MAX_MESSAGE_BYTES} UTF-8 bytes"
+        )
     credential = _read_credential(str(settings.ntfy_credential_file))
     headers = {
         "Authorization": f"Bearer {credential}",
@@ -152,8 +191,15 @@ async def _send_ntfy_alert_message(
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             response = await client.post(url, content=body, headers=headers)
         if response.status_code != 200:
+            detail = _describe_error_body(response.content)
+            logger.warning(
+                "ntfy rejected publication: HTTP %s%s (body %d bytes)",
+                response.status_code,
+                detail,
+                len(body),
+            )
             raise NtfyDeliveryError(
-                f"ntfy rejected publication: HTTP {response.status_code}"
+                f"ntfy rejected publication: HTTP {response.status_code}{detail}"
             )
         raw = response.content
         receipt = json.loads(raw) if len(raw) <= _MAX_RECEIPT_BYTES else None
