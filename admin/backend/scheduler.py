@@ -252,12 +252,15 @@ def _republish_graph_health(item: dict[str, Any]) -> None:
             logger.debug("graph_health metric %s is not numeric: %r", metric, value)
 
 
-def _republish_cluster_quality(item: dict[str, Any]) -> None:
+def _republish_cluster_quality(item: dict[str, Any], *, job_kind: str) -> None:
     """Вынести cluster_runs.metrics последнего прогона в экспозицию admin.
 
     До 16.08.2026 качество кластеризации жило только в JSONB-колонке: ни метрик, ни
     алертов. Оба джоба возвращают `quality_metrics` в том же виде, в каком он лёг в
     базу, поэтому перепубликация — это просто раскладка словаря по меткам.
+
+    `job_kind` обязателен: без него два джоба с разной выборкой затирали один ряд
+    (см. комментарий у CLUSTER_QUALITY_GAUGE в shared/metrics.py).
     """
     workspace = str(item.get("workspace_id") or "")
     quality = item.get("quality_metrics")
@@ -265,9 +268,19 @@ def _republish_cluster_quality(item: dict[str, Any]) -> None:
         return
     for metric, value in quality.items():
         try:
-            set_cluster_quality_metric("admin", workspace, str(metric), float(value))
+            set_cluster_quality_metric(
+                "admin", workspace, str(metric), float(value), job_kind=job_kind
+            )
         except (TypeError, ValueError):
             logger.debug("cluster_quality metric %s is not numeric: %r", metric, value)
+
+
+def _republish_semantic_clusters_quality(item: dict[str, Any]) -> None:
+    _republish_cluster_quality(item, job_kind="semantic_clusters")
+
+
+def _republish_signal_analysis_quality(item: dict[str, Any]) -> None:
+    _republish_cluster_quality(item, job_kind="signal_analysis")
 
 
 _CHILD_METRIC_REPUBLISHERS = {
@@ -275,8 +288,8 @@ _CHILD_METRIC_REPUBLISHERS = {
     "run_relevance_audit": _republish_relevance_audit,
     "run_graph_maintenance": _republish_graph_health,
     "run_graph_resolution": _republish_graph_health,
-    "run_semantic_clusters": _republish_cluster_quality,
-    "run_signal_analysis": _republish_cluster_quality,
+    "run_semantic_clusters": _republish_semantic_clusters_quality,
+    "run_signal_analysis": _republish_signal_analysis_quality,
 }
 
 

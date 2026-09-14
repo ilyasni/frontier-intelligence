@@ -229,6 +229,14 @@ async def _refresh_last_post_age_metric() -> None:
 
     Isolated in its own try so a Postgres failure never blocks the other
     metric refreshes in /metrics.
+
+    A feed date is capped at the moment the post was written. Feeds do date items
+    ahead (Mistral +6.5h on 2026-09-08, OpenAI +47h on 2026-09-12), and one such post
+    made NOW() - MAX(...) negative, so no FrontierNoNewPosts threshold was reachable
+    for that workspace until the wall clock caught up. A post cannot have been
+    published after we stored it; capping at created_at keeps the post as proof of
+    ingest at that moment and lets the age grow from there. LEAST skips NULL, so
+    dateless posts still count through created_at exactly as COALESCE did.
     """
     try:
         engine = get_engine()
@@ -238,7 +246,7 @@ async def _refresh_last_post_age_metric() -> None:
                     """
                     SELECT
                         workspace_id,
-                        EXTRACT(EPOCH FROM (NOW() - MAX(COALESCE(published_at, created_at)))) AS age_seconds
+                        EXTRACT(EPOCH FROM (NOW() - MAX(LEAST(published_at, created_at)))) AS age_seconds
                     FROM posts
                     GROUP BY workspace_id
                     """

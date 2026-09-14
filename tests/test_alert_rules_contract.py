@@ -578,3 +578,45 @@ def test_every_scrape_target_is_covered_by_a_down_rule() -> None:
         f"скрейп-цели без правила на падение: {uncovered}. Цель, которую никто "
         "не проверяет на up == 0, отказывает молча."
     )
+
+
+def test_cluster_split_rule_compares_each_publisher_with_itself() -> None:
+    """Базовая линия FrontierClusterArtifactSplitRising — внутри одного джоба.
+
+    Заведено 14.09.2026. До этого frontier_cluster_quality писали run_semantic_clusters
+    и run_signal_analysis с одинаковыми метками и разной выборкой (disruption
+    same_artifact_groups 260 <-> 1493 за сутки). Правило сравнивало малый режим с
+    базой, набранной в основном из большого, и будило на смене публикатора.
+
+    Ломается, если метку `job_kind` уберут из гейджа (ряды снова сольются) или из
+    `on(...)` правила: `and on(workspace)` при двух рядах на воркспейс взял бы
+    знаменатель чужого джоба.
+    """
+    tree = ast.parse(METRICS_MODULE.read_text(encoding="utf-8"))
+    labelnames: list[str] | None = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "Gauge"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "frontier_cluster_quality"
+        ):
+            labelnames = [elt.value for elt in node.args[2].elts]
+    assert labelnames is not None, "Gauge frontier_cluster_quality не найден в shared/metrics.py"
+    assert "job_kind" in labelnames, (
+        f"labels={labelnames}: без job_kind два кластерных джоба снова пишут в один ряд"
+    )
+
+    rule = _rule("FrontierClusterArtifactSplitRising")
+    assert rule is not None, "FrontierClusterArtifactSplitRising пропал из alerts.yml"
+    expr = str(rule.get("expr") or "")
+    on_clauses = [
+        {label.strip() for label in clause.split(",") if label.strip()}
+        for clause in re.findall(r"\bon\s*\(([^()]*)\)", expr)
+    ]
+    assert on_clauses, f"в правиле нет on(...): {expr}"
+    assert all({"workspace", "job_kind"} <= clause for clause in on_clauses), (
+        f"on-клаузы {on_clauses}: знаменатель same_artifact_groups обязан браться из "
+        "того же джоба, что и доля, иначе сравнение смешивает две выборки"
+    )

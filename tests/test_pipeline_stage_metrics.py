@@ -625,6 +625,57 @@ async def test_graph_health_is_republished_with_workspace_labels(monkeypatch) ->
     )
 
 
+async def test_cluster_quality_of_two_jobs_lands_in_separate_series(monkeypatch) -> None:
+    """Два кластерных джоба больше не затирают один ряд.
+
+    До 14.09.2026 оба писали frontier_cluster_quality с одинаковыми метками, и
+    последний отработавший перетирал значение первого — отсюда суточная волна и
+    ложные FrontierClusterArtifactSplitRising.
+    """
+    import json as _json
+
+    from admin.backend import scheduler as scheduler_module
+
+    def _payload(groups: int) -> dict:
+        return {
+            "status": "ok",
+            "workspace_id": None,
+            "results": [
+                {"workspace_id": "disruption", "quality_metrics": {"same_artifact_groups": groups}}
+            ],
+        }
+
+    for job_name, groups in (("run_semantic_clusters", 1493), ("run_signal_analysis", 260)):
+
+        class _FakeProc:
+            returncode = 0
+            _body = _json.dumps(_payload(groups)).encode()
+
+            async def communicate(self):
+                return self._body, b""
+
+        monkeypatch.setattr(
+            scheduler_module.asyncio,
+            "create_subprocess_exec",
+            lambda *a, _p=_FakeProc, **k: _as_awaitable(_p()),
+        )
+        await scheduler_module._run_job_subprocess(job_name, None)
+
+    base = {"service": "admin", "workspace": "disruption", "metric": "same_artifact_groups"}
+    assert (
+        REGISTRY.get_sample_value(
+            "frontier_cluster_quality", {**base, "job_kind": "semantic_clusters"}
+        )
+        == 1493.0
+    )
+    assert (
+        REGISTRY.get_sample_value(
+            "frontier_cluster_quality", {**base, "job_kind": "signal_analysis"}
+        )
+        == 260.0
+    )
+
+
 async def _as_awaitable(value):
     return value
 

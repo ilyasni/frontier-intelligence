@@ -646,11 +646,18 @@ sources:
         article_selector: "article, main"
 
   # batch:smart_city
+  # 2026-09-14: переведён с web на ленту, id сохранён (как auto_web_ieee_spectrum_autonomous).
+  # Страница /topic/transportation/ отдавала 403 на 320 прогонах из 321 с 05.08, в том
+  # числе через xray. Единственный прорыв 10.09 принёс 17 «постов» — ссылки навигационного
+  # меню (/signup/, /topic/housing/, соседние *dive.com), без дат: отсюда
+  # FrontierSourceDatelessRatioJumped. Лента того же раздела через тот же клиент ingest
+  # отдаёт 200: 20 записей, у всех pubDate. Сами статьи тоже закрыты 403, поэтому
+  # full_content выключен; description в ленте содержательный — 1.6–7.5 тыс. символов HTML.
   - id: web_smartcitiesdive_transportation
     workspace_id: disruption
-    source_type: web
+    source_type: rss
     name: Smart Cities Dive — Transportation
-    url: https://www.smartcitiesdive.com/topic/transportation/
+    url: https://www.smartcitiesdive.com/feeds/topic/transportation/
     schedule_cron: "51 */3 * * *"
     is_enabled: true
     proxy_config:
@@ -664,11 +671,6 @@ sources:
       source_authority: 0.63
       parse:
         full_content: false
-        listing_selector: "article, .feed__item, li"
-        link_selector: "a[href]"
-        title_selector: "h2, h3"
-        date_selector: "time"
-        article_selector: "article, main"
 
   - id: web_uitp_news_views
     workspace_id: disruption
