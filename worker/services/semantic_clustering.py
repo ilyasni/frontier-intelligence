@@ -933,7 +933,7 @@ async def _upsert_signal(
 ) -> str:
     if table == "trend_clusters":
         signal_id = item.get("existing_id") or _digest(item["signal_key"], "trend")
-        await session.execute(
+        result = await session.execute(
             text(
                 """
                 INSERT INTO trend_clusters (
@@ -952,7 +952,7 @@ async def _upsert_signal(
                     :deduped_source_count, :distinct_voices, :echo_ratio, :arrival_dispersion, :distinct_originators, :independence_score, CAST(:doc_ids AS jsonb),
                     CAST(:semantic_cluster_ids AS jsonb), CAST(:keywords AS jsonb), CAST(:explainability AS jsonb),
                     NULL, NOW(), NOW(), NOW()
-                ) ON CONFLICT (id) DO UPDATE SET
+                ) ON CONFLICT (workspace_id, cluster_key) DO UPDATE SET
                     cluster_key = EXCLUDED.cluster_key, title = EXCLUDED.title, title_ru = EXCLUDED.title_ru,
                     insight = EXCLUDED.insight,
                     opportunity = EXCLUDED.opportunity, time_horizon = EXCLUDED.time_horizon, burst_score = EXCLUDED.burst_score,
@@ -969,6 +969,7 @@ async def _upsert_signal(
                     distinct_originators = EXCLUDED.distinct_originators, independence_score = EXCLUDED.independence_score,
                     doc_ids = EXCLUDED.doc_ids, semantic_cluster_ids = EXCLUDED.semantic_cluster_ids,
                     keywords = EXCLUDED.keywords, explainability = EXCLUDED.explainability, detected_at = NOW(), updated_at = NOW()
+                RETURNING id
                 """
             ),
             {
@@ -1010,9 +1011,9 @@ async def _upsert_signal(
                 "explainability": json.dumps({**item["explainability"], "run_id": run_id}),
             },
         )
-        return signal_id
+        return result.scalar_one()
     signal_id = item.get("existing_id") or _digest(item["signal_key"], "emerging")
-    await session.execute(
+    result = await session.execute(
         text(
             """
             INSERT INTO emerging_signals (
@@ -1028,7 +1029,7 @@ async def _upsert_signal(
                 :deduped_source_count, :distinct_voices, :echo_ratio, :arrival_dispersion, :distinct_originators, :independence_score,
                 CAST(:keywords AS jsonb), CAST(:evidence AS jsonb), CAST(:explainability AS jsonb), :recommended_watch_action,
                 NOW(), :first_seen_at, :last_seen_at, NOW(), NOW()
-            ) ON CONFLICT (id) DO UPDATE SET
+            ) ON CONFLICT (workspace_id, signal_key) DO UPDATE SET
                 signal_key = EXCLUDED.signal_key, title = EXCLUDED.title, signal_stage = EXCLUDED.signal_stage,
                 signal_score = EXCLUDED.signal_score, confidence = EXCLUDED.confidence,
                 velocity_score = EXCLUDED.velocity_score, acceleration_score = EXCLUDED.acceleration_score,
@@ -1045,6 +1046,7 @@ async def _upsert_signal(
                 recommended_watch_action = EXCLUDED.recommended_watch_action, detected_at = NOW(),
                 first_seen_at = LEAST(emerging_signals.first_seen_at, EXCLUDED.first_seen_at),
                 last_seen_at = GREATEST(emerging_signals.last_seen_at, EXCLUDED.last_seen_at), updated_at = NOW()
+            RETURNING id
             """
         ),
         {
@@ -1080,7 +1082,7 @@ async def _upsert_signal(
             "last_seen_at": item["last_seen_at"],
         },
     )
-    return signal_id
+    return result.scalar_one()
 
 
 def _series_rows_for_posts(
